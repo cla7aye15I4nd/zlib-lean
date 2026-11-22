@@ -1,0 +1,13 @@
+{
+  "proof": "0784b3e17eb85bb7699f55cb975ed1d47c1452dc",
+  "proofTree": "94fa7f04ca73c042a4fe8f8cb6b4fe9486374263",
+  "zlib": "617e19a81f38c15ff04de9f86882f42ad8a8ffd1",
+  "patches": {
+    "0002-gzseek-negative-position-overflow.patch": "7a4483de9066053741acb45ba2c2daabc3bd1c77847adb4a46d94cf8373f7428",
+    "0003-gzread-stale-next-and-position-overflow.patch": "40edc059ccb5ea58991fcefb63ae39ecde48a82af4729adf2da21c2e17667b49",
+    "0004-gzwrite-position-overflow.patch": "0af2a5bf1d07635571303ee2a83a31cd359340f14a4e4c1cbe8eb2830e580406",
+    "0005-gzoffset-negative-lseek.patch": "2baf911b001f54731b09899b64382a4ce03fda0e0eb62b0d84a3db19c3732263",
+    "0006-deflatebound-fixed-conservative.patch": "5baa8f82d91f1372a766d73a74cc69303879a052ca8f4d9806ba4216bb895b40",
+    "0007-deflatebound-gzip-extra-length.patch": "2ffa8d8f3d3a96e58cf370855e036132f2548b6fa0602a55771ff00bd8fda9f0"
+  }
+}

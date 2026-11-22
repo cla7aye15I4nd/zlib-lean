@@ -1,0 +1,213 @@
+import ZlibF.Proof.«inflate.c.default-public»
+import ZlibF.Proof.«inflate.c.window-platform»
+
+namespace Zlib.Inflate.Proofs
+open C Zlib.Inflate Zlib.Inflate.Spec ZlibF.Spec.Public
+set_option autoImplicit false
+
+/-- `inflateSetDictionary` installs a window only in DICT or in a raw stream;
+both have a width. -/
+theorem DefaultStateJ.width_of_allowed {h : Heap} {r : ZStreamRef} {zs : Nat} {z : ZStream}
+    {s : InflateState} (invariant : DefaultStateJ h r zs z s) (allowed : s.wrap = 0 ∨ s.mode = DICT) :
+    s.wbits ≠ 0 := by
+  intro zero
+  have small : ¬ (8 ≤ s.wbits.toNat) := by rw [zero]; decide
+  rcases allowed with raw | dict
+  · exact small (invariant.range_of_read (Or.inl raw)).1
+  rcases invariant.phase with e | e | e | e | done | pending
+  all_goals first
+    | (rw [dict] at e; exact absurd e (by decide))
+    | exact small (invariant.range_of_read done).1
+    | exact absurd (dict.symm.trans pending.1) (by decide)
+
+/-- The window branch of inf_leave runs with a width: a decoder without a
+width has no window (so `wsize = 0`), is in HEAD, BAD, MEM or SYNC, and in
+HEAD it has written nothing. -/
+theorem DefaultStateJ.width_of_update {h : Heap} {r : ZStreamRef} {zs : Nat} {z : ZStream}
+    {s : InflateState} {l : IL} {flush : Int32} (invariant : DefaultStateJ h r zs z s)
+    (lowOut : s.mode ≤ DICT → l.out_ = l.left)
+    (update : (s.wsize != 0 || (l.out_ != l.left && s.mode < BAD &&
+      (s.mode < CHECK || flush != Z_FINISH))) = true) : s.wbits ≠ 0 := by
+  intro zero
+  have small : ¬ (8 ≤ s.wbits.toNat) := by rw [zero]; decide
+  rcases invariant.window with range | ⟨_, null, unread, nonraw⟩
+  · rw [zero] at range
+    exact absurd range.1 (by decide)
+  have wsize : s.wsize = 0 := invariant.good.inv.win.nullws null
+  rcases invariant.phase with e | e | e | e | done | pending
+  · have same := lowOut (by rw [e]; decide)
+    simp [wsize, same] at update
+  all_goals first
+    | (rw [e] at update; simp (config := {decide := true}) [wsize] at update)
+    | exact small (invariant.range_of_read done).1
+    | exact small (invariant.range_of_pending pending).1
+
+/-- Retain every default decoder and history clause across the checked
+window fields while admitting the actual returned heap. -/
+theorem DefaultStateJ.window_update {h after : Heap} {r : ZStreamRef} {zs : Nat}
+    {z stream : ZStream} {s state : InflateState} (invariant : DefaultStateJ h r zs z s)
+    (good : Good after r zs stream state) (frame : WindowStateFrame s state)
+    (codeViews : ∀ ref : CodeRef, (Space.get after ref : Option (Array Code)) = Space.get h ref)
+    (platform : ZlibF.PlatformMemory.ByteObjectsFit after) (static : after.static = h.static)
+    (set : s.wbits ≠ 0) :
+    DefaultStateJ after r zs stream state := by
+  refine ⟨⟨good, frame.tables codeViews invariant.tables, frame.pending invariant.pending,
+    ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, platform⟩, ?_, ?_, ?_⟩
+  · rw [frame]
+    exact invariant.lengths
+  · rw [frame]
+    exact invariant.headerLengths
+  · rw [frame]
+    exact invariant.held
+  · rw [frame]
+    exact Or.inl (invariant.range_of_nonzero set)
+  · rw [frame]
+    exact invariant.wrapper
+  · rw [frame]
+    exact invariant.header
+  · rw [frame]
+    exact invariant.modes
+  · rw [frame]
+    exact invariant.trailer
+  · change after.static = _
+    rw [static]
+    exact invariant.globals
+  · rw [frame]
+    exact invariant.requestedBits
+  · rw [frame]
+    exact invariant.requestedWrap
+  · rw [frame]
+    exact invariant.phase
+/-- Retain every default decoder and history clause across the checked
+counter and checksum fields while admitting the actual returned heap. -/
+theorem DefaultStateJ.leave_metadata {h after : Heap} {r : ZStreamRef} {zs : Nat}
+    {z stream : ZStream} {s state : InflateState} (invariant : DefaultStateJ h r zs z s)
+    (good : Good after r zs stream state) (frame : LeaveMetadataFrame s state)
+    (codeViews : ∀ ref : CodeRef, (Space.get after ref : Option (Array Code)) = Space.get h ref)
+    (platform : ZlibF.PlatformMemory.ByteObjectsFit after) (static : after.static = h.static) :
+    DefaultStateJ after r zs stream state := by
+  refine ⟨⟨good, frame.tables codeViews invariant.tables, frame.pending invariant.pending,
+    ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, platform⟩, ?_, ?_, ?_⟩
+  · rw [frame]
+    exact invariant.lengths
+  · rw [frame]
+    exact invariant.headerLengths
+  · rw [frame]
+    exact invariant.held
+  · rw [frame]
+    exact invariant.window
+  · rw [frame]
+    exact invariant.wrapper
+  · rw [frame]
+    exact invariant.header
+  · rw [frame]
+    exact invariant.modes
+  · rw [frame]
+    exact invariant.trailer
+  · change after.static = _
+    rw [static]
+    exact invariant.globals
+  · rw [frame]
+    exact invariant.requestedBits
+  · rw [frame]
+    exact invariant.requestedWrap
+  · rw [frame]
+    exact invariant.phase
+
+/-- RESTORE writes the actual register bit buffer and caller cursors, while
+retaining construction state and every requested/default configuration field. -/
+theorem DefaultStateJ.restore {c : Ctx} {h : Heap} {r : ZStreamRef} {zs : Nat}
+    {z : ZStream} {s : InflateState} {l : IL} {bs : List UInt8}
+    (E : Env c h r zs z s) (invariant : DefaultStateJ h r zs z s)
+    (buffers : DispatchBuffers h r l bs) (bits : l.bits.toNat ≤ 39) :
+    DefaultStateJ (setI (r.put h (leaveStream z l)) zs (leaveState s l))
+      r zs (leaveStream z l) (leaveState s l) := by
+  obtain ⟨good, pending, held, sizes⟩ :=
+    leave_restore_invariant E invariant.good invariant.pending buffers.bits bits
+  exact ⟨⟨good, leave_restore_tables l E.hs invariant.tables, pending,
+    invariant.lengths, invariant.headerLengths, held, invariant.window,
+    invariant.wrapper, invariant.header, invariant.modes, invariant.trailer,
+    by simpa only [LibraryGlobals, setI, ZStreamRef.put_static] using invariant.globals,
+    sizes.platform invariant.platform⟩,
+    invariant.requestedBits, invariant.requestedWrap, invariant.phase⟩
+
+/-- A genuine window-allocation failure selects MEM and retains the
+complete default relation, including the requested reset configuration. -/
+theorem DefaultStateJ.mem_update {h after : Heap} {r : ZStreamRef} {zs : Nat}
+    {z stream : ZStream} {s : InflateState} (invariant : DefaultStateJ h r zs z s)
+    (good : Good after r zs stream { s with mode := MEM })
+    (platform : ZlibF.PlatformMemory.ByteObjectsFit after) (static : after.static = h.static) :
+    DefaultStateJ after r zs stream { s with mode := MEM } := by
+  refine ⟨⟨good, ?_, dataPendingInvariant_idle invariant.pending.sane ?_, ?_, ?_,
+    invariant.held, invariant.window, invariant.wrapper, invariant.header,
+    Or.inr ?_, ?_, ?_, platform⟩, invariant.requestedBits, invariant.requestedWrap,
+    Or.inr (Or.inr (Or.inl rfl))⟩
+  · intro active
+    exact False.elim ((by unfold DataTableMode; decide : ¬ DataTableMode MEM) active)
+  · change MEM ≠ LENEXT ∧ MEM ≠ DIST ∧ MEM ≠ DISTEXT ∧ MEM ≠ MATCH
+    decide
+  · intro active
+    change MEM = CODELENS at active
+    contradiction
+  · intro active
+    change MEM = LENLENS at active
+    contradiction
+  · left
+    change DICTID ≤ MEM ∧ MEM ≤ SYNC
+    decide
+  · rintro (active | active)
+    · change MEM = CHECK at active
+      contradiction
+    · change MEM = LENGTH at active
+      contradiction
+  · change after.static = _
+    rw [static]
+    exact invariant.globals
+
+/-- Removing a raw local object cannot create an oversized byte view. -/
+theorem platform_free_local {h : Heap} (platform : ZlibF.PlatformMemory.ByteObjectsFit h) (block : Nat) :
+    ZlibF.PlatformMemory.ByteObjectsFit (freeWin h (.ref (.blk block) 0)) := by
+  intro ref array get
+  cases ref with
+  | blk b =>
+    by_cases same : b = block
+    · subst b
+      simp only [Space.get, freeWin, upd_same] at get
+      cases get
+    · have old : h.bytes b = some array := by
+        simpa only [Space.get, freeWin, upd_ne _ _ _ _ same] using get
+      exact platform (BRef.blk b) array old
+  | str index => exact platform (.str index) array get
+  | dstate_depth index => exact platform (.dstate_depth index) array get
+  | st_dist_code => exact platform .st_dist_code array get
+  | st_length_code => exact platform .st_length_code array get
+
+/-- Final local cleanup retains the full initialized decoder relation.
+The actual local size and default window size prove the necessary separation. -/
+theorem DefaultStateJ.free_local {h : Heap} {r : ZStreamRef} {zs : Nat}
+    {z : ZStream} {s : InflateState} {block : Nat} {array : Array UInt8}
+    (invariant : DefaultStateJ h r zs z s) (localGet : h.bytes block = some array)
+    (localSize : array.size = 4) :
+    DefaultStateJ (freeWin h (.ref (.blk block) 0)) r zs z s := by
+  have good := good_freeBuf invariant.good (nb := block) (by
+    intro w window same
+    subst w
+    rcases invariant.local_width with bits | null
+    · exact default_local_not_window invariant.good localGet localSize bits window
+    · rw [null] at window
+      cases window)
+  have tables : DataTableInvariant (freeWin h (.ref (.blk block) 0)) s := by
+    intro active
+    have old := invariant.tables active
+    constructor
+    · obtain ⟨ref, offset, array, pointer, get, safe⟩ := old.lengthTable
+      exact ⟨ref, offset, array, pointer, by cases ref <;> exact get, safe⟩
+    · obtain ⟨ref, offset, array, pointer, get, safe⟩ := old.distanceTable
+      exact ⟨ref, offset, array, pointer, by cases ref <;> exact get, safe⟩
+    · exact old.lengthLeaves_frame rfl rfl (fun ref _ _ => by cases ref <;> rfl)
+  exact ⟨⟨good, tables, invariant.pending, invariant.lengths, invariant.headerLengths,
+    invariant.held, invariant.window, invariant.wrapper, invariant.header, invariant.modes,
+    invariant.trailer, invariant.globals, platform_free_local invariant.platform block⟩,
+    invariant.requestedBits, invariant.requestedWrap, invariant.phase⟩
+
+end Zlib.Inflate.Proofs

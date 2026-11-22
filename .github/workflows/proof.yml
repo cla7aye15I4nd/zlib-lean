@@ -1,0 +1,23 @@
+name: Lean proof
+on:
+  pull_request:
+    paths: ['ZlibF/**', 'ZlibF.lean', 'lakefile.toml', 'lean-toolchain', '.github/workflows/proof.yml']
+  push:
+    paths: ['ZlibF/**', 'ZlibF.lean', 'lakefile.toml', 'lean-toolchain', '.github/workflows/proof.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      LEAN_NUM_THREADS: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install pinned Lean
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y elan
+          elan toolchain install "$(cat lean-toolchain)"
+      - run: lake build --wfail ZlibF
+      - run: lake env leanchecker --fresh ZlibF.Results

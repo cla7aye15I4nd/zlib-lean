@@ -1,0 +1,15 @@
+name = "ZlibF"
+version = "0.1.0"
+defaultTargets = ["ZlibF"]
+
+[[lean_lib]]
+name = "ZlibF"
+# ZlibF.Results is the registry of results; it imports the whole library and checks it.
+roots = ["ZlibF", "ZlibF.Results"]
+
+[[lean_lib]]
+name = "Lean2C"
+
+[[lean_exe]]
+name = "lean2c"
+root = "Main"

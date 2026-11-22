@@ -1,0 +1,32 @@
+name: C translation fidelity
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    env:
+      LEAN_NUM_THREADS: 3
+      CLANG: /usr/bin/clang
+      CC: /usr/bin/clang
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [audit, differential]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          submodules: true
+      - name: Install the pinned Lean toolchain
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y elan clang
+          elan toolchain install "$(cat lean-toolchain)"
+      - run: make ${{ matrix.target }}
+      - if: matrix.target == 'audit'
+        run: make test
+      - if: matrix.target == 'audit' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-ast-report
+          path: build/ast-report.json
+          if-no-files-found: error
