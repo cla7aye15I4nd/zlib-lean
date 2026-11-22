@@ -8,10 +8,11 @@ import ZlibF.Spec.Safety.WholeLibrary
 The safety-only registry of results, checked by Lean when the library is built.
 
 `proved` pairs each proved safety goal with the theorem that proves it. `notDone` is empty (`[]`).
-`required` lists the 100 required safety goals: the safety goal of every documented function of
-`zlib.h`, the safety goals of sequences and refusals, the non-vacuity goals, and
-`whole_library_safety`. Functional and round-trip goals outside the maintained safety scope have
-been excluded from the registry.
+`required` lists the 109 required safety goals: the safety goal of every documented function of
+`zlib.h`, the four C-ABI companion `compress*_c` wrappers, the safety goals of sequences and
+refusals, disjoint multi-stream interleaving compositionality, the non-vacuity goals,
+`whole_library_safety`, and `extended_library_safety`. Functional and round-trip goals outside
+the maintained safety scope have been excluded from the registry.
 
 The command at the end of this file (`checkWith`, in `ZlibF/ResultsCheck.lean`) fails the build
 unless each theorem's type is exactly its goal, each theorem depends only on `propext`,
@@ -78,6 +79,10 @@ private def componentProofs : List (Name × Name) := [
   (``ZlibF.Spec.Public.Goal.compress2_z_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress2_z_safety),
   (``ZlibF.Spec.Public.Goal.compress_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress_safety),
   (``ZlibF.Spec.Public.Goal.compress_z_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress_z_safety),
+  (``ZlibF.Spec.Public.Goal.compress2_z_c_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress2_z_c_safety_pub),
+  (``ZlibF.Spec.Public.Goal.compress2_c_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress2_c_safety_pub),
+  (``ZlibF.Spec.Public.Goal.compress_z_c_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress_z_c_safety_pub),
+  (``ZlibF.Spec.Public.Goal.compress_c_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress_c_safety_pub),
   (``ZlibF.Spec.Public.Goal.uncompress2_safe, ``ZlibF.Spec.Public.Proofs.Uncompress.uncompress2_safe),
   (``ZlibF.Spec.Public.Goal.uncompress2_z_safe, ``ZlibF.Spec.Public.Proofs.Uncompress.uncompress2_z_safe),
   (``ZlibF.Spec.Public.Goal.uncompress_safe, ``ZlibF.Spec.Public.Proofs.Uncompress.uncompress_safe),
@@ -126,6 +131,11 @@ private def componentProofs : List (Name × Name) := [
   (``ZlibF.Spec.Public.Goal.deflate_sequence_safety, ``Zlib.Deflate.Universal.deflate_sequence_safety),
   (``ZlibF.Spec.Public.Goal.inflate_back_sequence_safety, ``Zlib.Infback.Safety.inflate_back_sequence_safety),
   (``ZlibF.Spec.Public.Goal.inflate_sequence_safety, ``Zlib.Inflate.Proofs.inflate_sequence_safety_public),
+  -- Disjoint multi-stream compositionality and non-interference
+  (``ZlibF.Spec.Public.Goal.multi_stream_init_disjoint, ``ZlibF.Spec.Public.MultiStreamProof.multi_stream_init_disjoint),
+  (``ZlibF.Spec.Public.Goal.multi_stream_step_safety, ``ZlibF.Spec.Public.MultiStreamProof.multi_stream_step_safety),
+  (``ZlibF.Spec.Public.Goal.multi_stream_end_safety, ``ZlibF.Spec.Public.MultiStreamProof.multi_stream_end_safety),
+  (``ZlibF.Spec.Public.Goal.multi_stream_nonvacuity, ``ZlibF.Spec.Public.MultiStreamProof.multi_stream_nonvacuity),
   -- Refusals of the stream functions
   (``ZlibF.Spec.Public.Goal.deflate_refusal, ``ZlibF.Spec.Public.RefusalProof.Deflate.deflate_refusal),
   (``ZlibF.Spec.Public.Goal.inflate_refusal, ``ZlibF.Spec.Public.RefusalProof.inflate_refusal),
@@ -178,19 +188,34 @@ theorem whole_library_safety : ZlibF.Spec.Public.Goal.whole_library_safety := by
       obligation.assign (mkConst witness)
     Lean.Elab.Tactic.setGoals []
 
-/-- All registered proofs, including the theorem covering the public library. -/
+/-- The extended library safety theorem covering `whole_library_safety`, C-ABI `_c` companions,
+and disjoint multi-stream interleaving non-interference. -/
+theorem extended_library_safety : ZlibF.Spec.Public.Goal.extended_library_safety := by
+  refine ⟨whole_library_safety, ?_, ?_⟩ <;> intro contract selector <;> cases selector
+  run_tac
+    for obligation in ← Lean.Elab.Tactic.getGoals do
+      let type ← obligation.getType
+      let some (_, witness) := componentProofs.find? (fun entry => type.isConstOf entry.1)
+        | throwError "no registered proof for extended library contract {type}"
+      obligation.assign (mkConst witness)
+    Lean.Elab.Tactic.setGoals []
+
+/-- All registered proofs, including the theorems covering the public library. -/
 def proved : List (Name × Name) := componentProofs ++
-  [(``ZlibF.Spec.Public.Goal.whole_library_safety, ``whole_library_safety)]
+  [ (``ZlibF.Spec.Public.Goal.whole_library_safety, ``whole_library_safety)
+  , (``ZlibF.Spec.Public.Goal.extended_library_safety, ``extended_library_safety) ]
 
 /-- No unproved safety goals remain. -/
 def notDone : List Name := []
 
 /-- The required safety goals: the safety goal of every documented function of `zlib.h`, the
-safety goals of sequences and refusals, the non-vacuity goals, and `whole_library_safety`.
-`tools/check_public_safety.py` checks `PublicEntry` and `StreamProtocol` against the patched
-header, API inventory, and compiled Lean dispatcher. -/
+four C-ABI `compress*_c` companion wrappers, the safety goals of sequences and refusals, disjoint
+multi-stream interleaving non-interference, the non-vacuity goals, `whole_library_safety`, and
+`extended_library_safety`. `tools/check_public_safety.py` checks `PublicEntry` and `StreamProtocol`
+against the patched header, API inventory, and compiled Lean dispatcher. -/
 def required : List Name := [
   ``ZlibF.Spec.Public.Goal.whole_library_safety,
+  ``ZlibF.Spec.Public.Goal.extended_library_safety,
   ``ZlibF.Spec.Public.Goal.adler32_safety,
   ``ZlibF.Spec.Public.Goal.adler32_combine_safety,
   ``ZlibF.Spec.Public.Goal.adler32_combine64_safety,
@@ -289,7 +314,15 @@ def required : List Name := [
   ``ZlibF.Spec.Public.Goal.deflate_initialisation_domain,
   ``ZlibF.Spec.Public.Goal.inflate_back_initialisation_domain,
   ``ZlibF.Spec.Public.Goal.inflateBack_call_domain,
-  ``ZlibF.Spec.Public.Goal.gz_sequence_nonvacuity
+  ``ZlibF.Spec.Public.Goal.gz_sequence_nonvacuity,
+  ``ZlibF.Spec.Public.Goal.compress2_z_c_safety,
+  ``ZlibF.Spec.Public.Goal.compress2_c_safety,
+  ``ZlibF.Spec.Public.Goal.compress_z_c_safety,
+  ``ZlibF.Spec.Public.Goal.compress_c_safety,
+  ``ZlibF.Spec.Public.Goal.multi_stream_init_disjoint,
+  ``ZlibF.Spec.Public.Goal.multi_stream_step_safety,
+  ``ZlibF.Spec.Public.Goal.multi_stream_end_safety,
+  ``ZlibF.Spec.Public.Goal.multi_stream_nonvacuity
 ]
 
 /-- Restrict registry discovery to the safety specifications (`ZlibF.Spec.Safety.*`) and the two

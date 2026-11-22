@@ -3,7 +3,7 @@ import ZlibF.Spec.Common.Sequences
 /-!
 # Sequences: safety goals
 
-The split into safety and functional modules: `docs/en/design/safety-functional-split.md`. The
+Safety specifications and scope: `docs/SAFETY.md`. The
 namespace is `ZlibF.Spec.Public`.
 -/
 
@@ -22,22 +22,20 @@ def Goal.deflate_sequence_safety : Prop := StreamSequenceSafety .deflate
 permitted call returns without a fault, keeps the invariant, writes only the stream's own blocks,
 the stream record, the gzip header record and the declared caller regions, and changes the live
 blocks exactly as the allocation ledger says (no leak); `inflateEnd` frees every block the stream
-owns. The functional clauses of `Goal.inflate_sequence` are not planned (`docs/en/progress.md`,
-"Not planned"). -/
+owns. The functional clauses of `Goal.inflate_sequence` are out of scope (`docs/SAFETY.md`). -/
 def Goal.inflate_sequence_safety : Prop := StreamSequenceSafety .inflate
 
 /-- **Safety of every permitted callback-decoder sequence** (the safety half of
 `Goal.inflate_back_sequence`). A null stream is refused. Every reachable history leaves a valid
 state over the caller's window. One more `inflateBack` call, for every caller protocol whose total
-input is below `2^48` bytes (the runtime bounds every loop by `2^64` iterations; `docs/en/deviations.md`),
+input is below `2^48` bytes (the runtime bounds every loop by `2^64` iterations; `docs/SAFETY.md`),
 returns without a fault with one of its three results, keeps the state valid over the same window,
 changes only the stream record, the state record, the callback's own blocks and the window slice,
 and leaves the live blocks outside the callback's own unchanged (no leak). `inflateBackEnd` frees the
 state. The histories are those of `BackSafeReachable`: the window is a slice of a heap byte block,
 every byte object has fewer than `2^63` bytes on the heap of each call and after each call-back
 step (`BackPlatform`), and every input chunk lies in a heap byte block (`BackFirstChunk`,
-`BackPlatform`); `docs/en/deviations.md` lists these premises. The decoding clauses of
-`Goal.inflateBack` (what reaches `out`, `Decodes`) are not planned (`docs/en/progress.md`, "Not planned"). -/
+`BackPlatform`); `docs/SAFETY.md` lists these premises; decoding functional clauses are out of scope. -/
 def Goal.inflate_back_sequence_safety : Prop :=
   (∀ h input inDesc output outDesc,
     C.run (Zlib.Infback.inflateBack none input inDesc output outDesc) h = .ok (Z_STREAM_ERROR, h)) ∧

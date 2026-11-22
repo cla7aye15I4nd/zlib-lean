@@ -3,7 +3,7 @@ import ZlibF.Spec.Common.Queries
 /-!
 # Library queries: safety goals
 
-Safety goals (`docs/en/design/safety-functional-split.md`, "Two goals per public function"). On every heap the call returns without a fault
+Safety goals (`docs/SAFETY.md`). On every heap the call returns without a fault
 and leaves the heap exactly as it was. The value is the subject of the functional goal.
 `compressBound` and `compressBound_z` have no separate safety goal: their translations are pure
 functions with no heap and no fault, so such a goal would hold by definition; their full

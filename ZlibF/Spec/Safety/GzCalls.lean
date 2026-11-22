@@ -3,7 +3,7 @@ import ZlibF.Spec.Safety.GzSafety
 /-!
 # gz file interface: one safety goal per function
 
-Safety goals (`docs/en/design/safety-functional-split.md`, "Two goals per public function"). Each goal restricts a clause of
+Safety goals (`docs/SAFETY.md`). Each goal restricts a clause of
 `Goal.gz_sequence_safety` to the calls of one function:
 - a call on a handle (`GzCallSafety`): clause 2, one more call on a handle of any `GzHistory`;
 - `gzgetc` also has clause 3, the `gzgetc()` macro of `zlib.h`; `gzerror` also has clause 4, the

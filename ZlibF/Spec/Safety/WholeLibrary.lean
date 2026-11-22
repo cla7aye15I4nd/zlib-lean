@@ -8,6 +8,8 @@ import ZlibF.Spec.Safety.Queries
 import ZlibF.Spec.Safety.Sequences
 import ZlibF.Spec.Safety.Streams
 import ZlibF.Spec.Safety.Utilities
+import ZlibF.Spec.Safety.UtilitiesCAbi
+import ZlibF.Spec.Safety.MultiStream
 
 namespace ZlibF.Spec.Public
 
@@ -114,5 +116,26 @@ safety contract. Each protocol retains its own reachability, frame and ownership
 def Goal.whole_library_safety : Prop :=
   (∀ {contract : Prop}, PublicEntry contract → contract) ∧
   (∀ {contract : Prop}, StreamProtocol contract → contract)
+
+/-- C-ABI companion contracts (`_c` pointer-to-length wrappers in `compress.c.lean`). -/
+inductive CAbiCompanion : Prop → Type where
+  | compress2_z_c : CAbiCompanion Goal.compress2_z_c_safety
+  | compress2_c : CAbiCompanion Goal.compress2_c_safety
+  | compress_z_c : CAbiCompanion Goal.compress_z_c_safety
+  | compress_c : CAbiCompanion Goal.compress_c_safety
+
+/-- Disjoint multi-stream compositionality and non-interference contracts. -/
+inductive MultiStreamContract : Prop → Type where
+  | initDisjoint : MultiStreamContract Goal.multi_stream_init_disjoint
+  | stepSafety : MultiStreamContract Goal.multi_stream_step_safety
+  | endSafety : MultiStreamContract Goal.multi_stream_end_safety
+  | nonvacuity : MultiStreamContract Goal.multi_stream_nonvacuity
+
+/-- Extended library safety: `Goal.whole_library_safety` together with the C-ABI
+companion contracts and disjoint multi-stream interleaving safety. -/
+def Goal.extended_library_safety : Prop :=
+  Goal.whole_library_safety ∧
+  (∀ {contract : Prop}, CAbiCompanion contract → contract) ∧
+  (∀ {contract : Prop}, MultiStreamContract contract → contract)
 
 end ZlibF.Spec.Public

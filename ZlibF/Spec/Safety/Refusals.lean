@@ -18,7 +18,7 @@ already was before the call. These goals state that every stream function of a f
 stream without a fault and without a change. The domain is `RefusedInflate` and
 `RefusedDeflate`. A record whose state field holds a garbage pointer, such as a never-initialised
 automatic `z_stream`, is outside the domain: reading through that pointer is undefined in C
-(`docs/en/deviations.md`).
+(`docs/SAFETY.md`).
 
 The functions already covered by `CheckedInflate`/`CheckedDeflate` goals, and `deflateEnd`,
 `deflateReset`, `deflatePrime` and `deflateBound`, are not repeated here.

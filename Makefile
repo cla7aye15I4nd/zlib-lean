@@ -38,9 +38,12 @@ proof:
 
 library-safety: proof
 	python3 tools/check_public_safety.py
+	python3 tools/check_baseline_equiv.py
 
 test:
-	lake build --wfail Lean2C.Lower ZlibF.Proof.LibcMemory
-	lake env lean tests/ShiftLowering.lean
+	lake build --wfail Lean2C.Lower Lean2C.Soundness ZlibF.Proof.LibcMemory ZlibF.Proof.LibcScalar
+	lake env lean -DwarningAsError=true tests/ShiftLowering.lean
 	lake env lean -DwarningAsError=true tests/SafetyRules.lean
+	lake env lean -DwarningAsError=true tests/LemmaEquivalence.lean
+	lake env lean -DwarningAsError=true tests/CSourceSoundness.lean
 	python3 -m unittest discover -s tests -p 'test_*.py'

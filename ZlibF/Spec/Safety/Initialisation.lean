@@ -4,7 +4,7 @@ import ZlibF.Spec.Common.Sequences
 /-!
 # Initialisation: one safety goal per inflate and deflate init function
 
-Safety goals (`docs/en/design/safety-functional-split.md`, "Two goals per public function"). The domain is `InitArguments`: every call that
+Safety goals (`docs/SAFETY.md`). The domain is `InitArguments`: every call that
 `zlib.h` allows. The stream pointer is `NULL` or a readable record with the default allocator (or
 `NULL` allocator fields, which the call fills in); every other field of the record, `state`
 included, may hold any value, since init overwrites it without reading it. The version pointer is

@@ -435,3 +435,8 @@ import ZlibF.Proof.«public-deflate-copy»
 import ZlibF.Proof.«public-deflate-init-domain»
 import ZlibF.Proof.«public-gz-refusal»
 import ZlibF.Proof.«public-gz-sequence-nonvacuity»
+import ZlibF.Proof.LibcScalar
+import ZlibF.Spec.Safety.UtilitiesCAbi
+import ZlibF.Proof.«public-compress-safe-c»
+import ZlibF.Spec.Safety.MultiStream
+import ZlibF.Proof.«public-multi-stream-safety»

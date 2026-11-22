@@ -1,11 +1,13 @@
 import ZlibF.Proof.«public-compress-safe»
 import ZlibF.Proof.«public-compress-safe-mid»
 import ZlibF.Proof.«public-uncompress-wrappers»
+import ZlibF.Spec.Safety.UtilitiesCAbi
 
 /-!
 # compress.c: safety of the C-ABI wrappers `compress2_z_c`, `compress2_c`, `compress_z_c`, `compress_c`
 
-Proves `CompressorCSafety` (pointer-cell `destLen : PtrU64` contract) for the C-ABI companion
+Proves `Goal.compress2_z_c_safety`, `Goal.compress2_c_safety`, `Goal.compress_z_c_safety`, and
+`Goal.compress_c_safety` (pointer-cell `destLen : PtrU64` contract) for the C-ABI companion
 definitions exported by `Lean2C.Simple`, reusing `compressReach_mid`, `goalDeflate_mid`,
 `loopFacts_mid`, `init_cases`, `loop_result`, `epilogue`, `deflate_end_public`, and the 8-byte
 scalar cell infrastructure (`public-uncompress-memory`, `public-uncompress-cells`).
@@ -20,34 +22,6 @@ open Zlib.Inflate.Proofs (byte_view_get_put)
 open ZlibF.Spec.Public.DeflateEndProof (deflate_end_public)
 variable {R : Heap → ZStreamRef → Prop}
 set_option autoImplicit false
-
-/-- **Safety of a pointer-cell compressor entry**: runs without undefined behavior (`C.run … = .ok`),
-returns `Z_STREAM_ERROR` without mutating objects on rejected arguments, writes at most `capacity`
-bytes at `dest` and the resulting length to `destLen`, releases all temporary allocations, and
-blames `Z_MEM_ERROR` only on an allocator failure. -/
-def CompressorCSafety
-    (program : BPtr → BPtr → BPtr → UInt64 → M Int32)
-    (nullableLength : Bool) : Prop :=
-  ∀ h dest destLen source capacity n xs,
-    Fresh h → Zlib.Deflate.Spec.Uniq h → LibraryGlobals h → ZlibF.PlatformMemory.ByteObjectsFit h →
-    (destLen ≠ .null → LengthCell h destLen capacity) →
-    (nullableLength = false → destLen ≠ .null) →
-    (source ≠ .null → Bytes h source n.toNat xs) →
-    (dest ≠ .null → Writable h dest capacity.toNat) →
-    Separate source n.toNat dest capacity.toNat →
-    Separate destLen 8 dest capacity.toNat →
-    Separate destLen 8 source n.toNat →
-    ∃ rc after,
-      C.run (program dest destLen source n) h = .ok (rc, after) ∧
-      (compressRejected dest (if destLen = .null then none else some capacity) source n →
-        rc = Z_STREAM_ERROR ∧ SameObjectsUpToTableShape h after) ∧
-      (destLen ≠ .null → (source = .null → n = 0) → (dest = .null → capacity = 0) →
-        ∃ out got h₁ expected,
-          Store h dest out h₁ ∧
-          Store h₁ destLen (lengthBytes got) expected ∧
-          SameObjectsUpToTableShape expected after ∧
-          out.length ≤ capacity.toNat ∧
-          (rc = Z_MEM_ERROR → AllocationFailed h after))
 
 private theorem version_gz_run (h : Heap) :
     Zlib.GzFs.strLit ZLIB_VERSION h = .ok (.ref (.str 57) 0, h) := by
@@ -1300,18 +1274,16 @@ theorem compress_c_safety (cr : CompressReach R) (call : GoalDeflateFor R)
   compress2_c_safety_gen cr call facts Z_DEFAULT_COMPRESSION
 
 /-- Public hypothesis-free safety theorems for all four C-ABI compressor entrypoints. -/
-theorem compress2_z_c_safety_pub (level : Int32) :
-    CompressorCSafety (fun d dl s n => compress2_z_c d dl s n level) true :=
+theorem compress2_z_c_safety_pub : Goal.compress2_z_c_safety := fun level =>
   compress2_z_c_safety_gen compressReach_mid goalDeflate_mid loopFacts_mid level
 
-theorem compress2_c_safety_pub (level : Int32) :
-    CompressorCSafety (fun d dl s n => compress2_c d dl s n level) false :=
+theorem compress2_c_safety_pub : Goal.compress2_c_safety := fun level =>
   compress2_c_safety_gen compressReach_mid goalDeflate_mid loopFacts_mid level
 
-theorem compress_z_c_safety_pub : CompressorCSafety compress_z_c true :=
+theorem compress_z_c_safety_pub : Goal.compress_z_c_safety :=
   compress2_z_c_safety_pub Z_DEFAULT_COMPRESSION
 
-theorem compress_c_safety_pub : CompressorCSafety compress_c false :=
+theorem compress_c_safety_pub : Goal.compress_c_safety :=
   compress2_c_safety_pub Z_DEFAULT_COMPRESSION
 
 #print axioms compress2_z_c_safety_pub

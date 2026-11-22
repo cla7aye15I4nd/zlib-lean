@@ -762,41 +762,63 @@ private def paramType? (name paramName : Name) (t : Expr) (abi : Bool) : Option 
       if paramName == `destLen || paramName == `sourceLen then return .ptr .u64
   ty? t abi
 
-/-- The out-parameter adapter supplies the C ABI information removed by the
-original model. All operations in the function body still come from its Expr. -/
-def lower? (env : Environment) (name : Name) (type body : Expr) (abi : Bool := false) : Option String := do
+/-- Lower a translated Lean function definition into its parameter signature and C statement list.
+All operations in the function body still come from its `Expr`. -/
+def lowerStmts? (env : Environment) (name : Name) (type body : Expr) (abi : Bool := false) :
+    Option (List (String × Ty) × List Stmt) := do
   if abi && name == ``Zlib.Zutil.zError then
     let some (.defnInfo d) := env.find? name | none
     guard (d.value == body)
     let .lam n _ index _ ← ErrorIndex.extract? body | none
-    let i ← value? index (({ abi } : Locals).push (some (.var .i32 (← ident? n)))) (some .i32)
+    let paramName ← ident? n
+    let i ← value? index (({ abi } : Locals).push (some (.var .i32 paramName))) (some .i32)
     -- ErrorIndex.inBounds checks precisely the index extracted above.
-    return renderBody [.ret (.index (.ptr .u8) (.var (.ptr (.ptr (.named "char"))) "z_errmsg") i)]
+    return ([(paramName, .i32)], [.ret (.index (.ptr .u8) (.var (.ptr (.ptr (.named "char"))) "z_errmsg") i)])
   let outName := firstOutParam? name
-  let rec args (e : Expr) (ctx : Locals) : Option (List Stmt) := do
+  let rec args (e : Expr) (ctx : Locals) (params : List (String × Ty)) :
+      Option (List (String × Ty) × List Stmt) := do
     if let .lam n t b _ := e then
       -- do1 is an inline helper instantiated with byte offsets 0..15 by do16.
       let ct ← if abi && name == ``Zlib.Adler32.do1 && t.isConstOf ``Int then some Ty.i64 else paramType? name n t ctx.abi
-      let mut v := Value.var ct (← ident? n)
+      let paramName ← ident? n
+      let mut v := Value.var ct paramName
+      let paramInfo :=
+        if ctx.values.isEmpty then
+          if let some p := outName then (p, Ty.ptr ct) else (paramName, ct)
+        else (paramName, ct)
       if ctx.values.isEmpty then
         if let some p := outName then v := .load ct (.var (.ptr ct) p)
-      return ← args b (ctx.push (some v))
+      return ← args b (ctx.push (some v)) (params ++ [paramInfo])
     let rt := stripCAbi type.getForallBody
     let result := stripCAbi (if rt.isAppOfArity ``C.M 1 || (abi && rt.isAppOfArity ``Zlib.GzFs.G 1) then rt.getAppArgs.back! else rt)
-    if let some p := outName then
-      return ← stmts? env e ctx (.outParam (.var (.ptr .u32) p) .u32)
-    if abi && result.isAppOfArity ``Prod 2 then
-      let lhs := result.getAppArgs[0]!
-      let rhs := result.getAppArgs[1]!
-      if lhs.isConstOf ``Int32 then
-        let destLenPtr := Value.var (.ptr .u64) "destLen"
-        if rhs.isAppOfArity ``Option 1 && rhs.getAppArgs.back!.isConstOf ``UInt64 then
-          return ← stmts? env e ctx (.retOptU64 destLenPtr)
-        if rhs.isConstOf ``UInt64 then
-          return ← stmts? env e ctx (.retPairU64 destLenPtr)
-    if abi && result.isConstOf ``Unit then return ← stmts? env e ctx (.ret .void)
-    return ← stmts? env e ctx (.ret (← ty? result ctx.abi))
-  let stmts ← args body { abi, env? := some env, constBytes := abi && name.getPrefix == `Zlib.Adler32 }
-  return renderBody (if abi then hoistStackStreams stmts else stmts)
+    let bodyStmts ←
+      if let some p := outName then
+        stmts? env e ctx (.outParam (.var (.ptr .u32) p) .u32)
+      else if abi && result.isAppOfArity ``Prod 2 then
+        let lhs := result.getAppArgs[0]!
+        let rhs := result.getAppArgs[1]!
+        if lhs.isConstOf ``Int32 then
+          let destLenPtr := Value.var (.ptr .u64) "destLen"
+          if rhs.isAppOfArity ``Option 1 && rhs.getAppArgs.back!.isConstOf ``UInt64 then
+            stmts? env e ctx (.retOptU64 destLenPtr)
+          else if rhs.isConstOf ``UInt64 then
+            stmts? env e ctx (.retPairU64 destLenPtr)
+          else
+            stmts? env e ctx (.ret (← ty? result ctx.abi))
+        else
+          stmts? env e ctx (.ret (← ty? result ctx.abi))
+      else if abi && result.isConstOf ``Unit then
+        stmts? env e ctx (.ret .void)
+      else
+        stmts? env e ctx (.ret (← ty? result ctx.abi))
+    return (params, bodyStmts)
+  let (params, stmts) ← args body { abi, env? := some env, constBytes := abi && name.getPrefix == `Zlib.Adler32 } []
+  return (params, if abi then hoistStackStreams stmts else stmts)
+
+/-- The out-parameter adapter supplies the C ABI information removed by the
+original model. All operations in the function body still come from its Expr. -/
+def lower? (env : Environment) (name : Name) (type body : Expr) (abi : Bool := false) : Option String := do
+  let (_, stmts) ← lowerStmts? env name type body abi
+  return renderBody stmts
 
 end Lean2C.Lower

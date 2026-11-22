@@ -23,4 +23,25 @@ theorem copyRange.getElem? {T : Type} [Inhabited T] (d s : Array T) (doff soff n
       · simp [h1]; omega
       · simp [h1]; intro _ ; omega
 
+theorem fillRange.succ {T : Type} (d : Array T) (off n : Nat) (v : T) :
+    fillRange d off (n + 1) v = (fillRange d off n v).set! (off + n) v := by
+  unfold fillRange; rw [List.range_succ, List.foldl_append]; rfl
+
+/-- `fillRange`, pointwise: positions in `[off, off + n)` get `v`, the others keep their value. -/
+theorem fillRange.getElem? {T : Type} (d : Array T) (off n : Nat) (v : T) (i : Nat)
+    (hfit : off + n ≤ d.size) :
+    (fillRange d off n v)[i]? = if off ≤ i ∧ i < off + n then some v else d[i]? := by
+  induction n generalizing i with
+  | zero => simp [fillRange]; intro h1 h2; omega
+  | succ n ih =>
+    rw [fillRange.succ, Array.set!_eq_setIfInBounds, Array.getElem?_setIfInBounds, ih i (by omega)]
+    have hs : (fillRange d off n v).size = d.size := size_fillRange _ _ _ _
+    by_cases hi : off + n = i
+    · subst hi
+      simp [hs, show off + n < d.size by omega]
+    · simp [hi]
+      by_cases h1 : off ≤ i ∧ i < off + n
+      · simp [h1]; omega
+      · simp [h1]; intro _; omega
+
 end C

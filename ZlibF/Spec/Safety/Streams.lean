@@ -3,7 +3,7 @@ import ZlibF.Spec.Common.Sequences
 /-!
 # Streams: one safety goal per inflate and deflate function
 
-Safety goals (`docs/en/design/safety-functional-split.md`, "Two goals per public function"). Each goal is clause 2 of `StreamSequenceSafety`
+Safety goals (`docs/SAFETY.md`). Each goal is clause 2 of `StreamSequenceSafety`
 (one more call on a reachable stream) specialised to the `Call` constructor of one function, or
 clause 3 for `inflateEnd` and `deflateEnd`. Each can fail: the executed call must return `.ok`, keep
 `StreamInvariant`, write only its frame and change the live blocks as the allocation ledger says.

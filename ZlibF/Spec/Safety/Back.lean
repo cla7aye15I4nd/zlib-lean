@@ -5,7 +5,7 @@ import ZlibF.Spec.Safety.Initialisation
 /-!
 # Callback decoder: one safety goal per function
 
-Safety goals (`docs/en/design/safety-functional-split.md`, "Two goals per public function"). `Goal.inflateBack_safety` and
+Safety goals (`docs/SAFETY.md`). `Goal.inflateBack_safety` and
 `Goal.inflateBackEnd_safety` restrict `Goal.inflate_back_sequence_safety` to one function: the
 refusal of a null stream and one more call on a history of `BackSafeReachable` (clauses 1 and 3),
 and the end call (clause 4). Each also has the other refusals `zlib.h` allows for that function: a

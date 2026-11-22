@@ -3,7 +3,7 @@ import ZlibF.Spec.Common.Checksums
 /-!
 # Checksums: one safety goal per checksum function
 
-Safety goals (`docs/en/design/safety-functional-split.md`, "Two goals per public function"). A checksum call reads only its buffer and the
+Safety goals (`docs/SAFETY.md`). A checksum call reads only its buffer and the
 library's constant tables. Its safety goal says that on the documented domain the call returns
 without a fault and leaves the heap exactly as it was: it writes nothing and allocates nothing.
 Each can fail. The value is the subject of the functional goal of the same function
@@ -15,7 +15,7 @@ open C
 
 /-- `uLong adler32(uLong adler, const Bytef *buf, uInt len)`.
 **Safety of `adler32`**: on a readable buffer of `len` bytes, or `NULL` with `len = 0`
-(`AdlerBufferBytes`; narrower than zlib.h, `docs/en/deviations.md`), the call returns and the heap
+(`AdlerBufferBytes`; narrower than zlib.h, `docs/SAFETY.md`), the call returns and the heap
 is unchanged. -/
 def Goal.adler32_safety : Prop :=
   ∀ (h : Heap) (seed : UInt64) (pointer : BPtr) (length : UInt32) (bytes : List UInt8),

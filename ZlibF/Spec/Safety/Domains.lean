@@ -4,7 +4,7 @@ import ZlibF.Spec.Common.Sequences
 /-!
 # Domains: safety goals
 
-The split into safety and functional modules: `docs/en/design/safety-functional-split.md`. The
+Safety specifications and scope: `docs/SAFETY.md`. The
 namespace is `ZlibF.Spec.Public`.
 -/
 
