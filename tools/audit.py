@@ -11,8 +11,8 @@ import subprocess
 import sys
 import tempfile
 
-from ast_compare import Canonical, clang, first_diff, function_body, main_decls, tree
-from reference import BUILD, ROOT, make_reference
+from ast_compare import Canonical, IncompleteAST, clang, first_diff, function_body, main_decls, tree
+from reference import BUILD, LOCK, ROOT, make_reference
 
 API = json.loads((ROOT / "tests/public-api.json").read_text())
 PUBLIC = {e["function"]: e["implementation"] for e in API["apis"]
@@ -23,8 +23,11 @@ NAMESPACES = {"adler32": "Adler32", "compress": "Compress", "crc32": "Crc32", "d
               "trees": "Trees", "uncompr": "Uncompr", "zutil": "Zutil"}
 
 
-def configure(ref):
+def configure(ref, pinned):
     env = {**os.environ, "CC": os.environ.get("CLANG", "clang")}
+    if pinned:
+        target = LOCK["clangAudit"]
+        env["CFLAGS"] = f"-O3 --target={target['target']} -std={target['standard']}"
     subprocess.run(["./configure", "--static"], cwd=ref, env=env, check=True, stdout=subprocess.DEVNULL)
     result = subprocess.check_output(["make", "-s", "-f", "Makefile", "-f", "-", "audit-flags"],
                                     input=b"audit-flags:\n\t@echo $(CFLAGS) $(ZINC)\n", cwd=ref)
@@ -36,7 +39,8 @@ def functions(root):
             if node["kind"] == "FunctionDecl" and function_body(node) is not None}
 
 
-def candidate(data, body, emitted):
+def candidate(data, node, names, emitted):
+    body = function_body(node)
     bounds = body["range"]
     lo, hi = bounds["begin"], bounds["end"]
     if "offset" not in lo or "offset" not in hi:
@@ -44,7 +48,24 @@ def candidate(data, body, emitted):
     end = hi["offset"] + hi["tokLen"]
     if data[lo["offset"]:lo["offset"] + 1] != b"{" or data[end-1:end] != b"}":
         raise ValueError("invalid Clang function body range")
-    return data[:lo["offset"]] + emitted.encode() + data[end:]
+    params = [p for p in node.get("inner", []) if p["kind"] == "ParmVarDecl"]
+    if len(params) != len(names) or len(set(names)) != len(names):
+        raise ValueError("Lean parameters do not correspond to the C declaration")
+    edits = [(lo["offset"], end, emitted.encode())]
+    for param, name in zip(params, names):
+        if name == param.get("name"):
+            continue
+        loc = param["loc"]
+        if "offset" not in loc or "name" not in param:
+            raise ValueError("parameter name has no editable source token")
+        start = loc["offset"]
+        stop = start + loc["tokLen"]
+        if data[start:stop] != param["name"].encode():
+            raise ValueError("parameter token differs from the Clang declaration")
+        edits.append((start, stop, name.encode()))
+    for start, stop, replacement in sorted(edits, reverse=True):
+        data = data[:start] + replacement + data[stop:]
+    return data
 
 
 def native_types(directory, symbols, flags, cwd):
@@ -78,10 +99,12 @@ def check_bodies(ref, file, data, flags, root, bodies, symbols, signatures):
             entry["native_declaration"] = {"symbol": native, "first_difference": witness}
         if symbol in bodies:
             try:
-                edited = candidate(data, function_body(node), bodies[symbol])
+                edited = candidate(data, node, *bodies[symbol])
                 alt, = clang(edited, flags, ref)
                 target = functions(alt)[name]
-                diff = first_diff(canon.clean(function_body(node)), Canonical([alt]).clean(function_body(target)))
+                # Parameter renames must also preserve signature-level bindings
+                # (e.g. a VLA bound can depend on an earlier parameter).
+                diff = first_diff(canon.clean(node), Canonical([alt]).clean(target))
                 entry["status"] = "different" if diff else "equal"
                 if diff:
                     entry["first_difference"] = diff
@@ -109,23 +132,31 @@ def macro_values(data, flags, ref, expected):
             for key, value in expected}
 
 
-def audit():
+def audit(pinned=False):
+    cc = os.environ.get("CLANG", "clang")
+    version = subprocess.check_output([cc, "--version"], text=True).splitlines()[0]
+    if pinned and version != LOCK["clangAudit"]["version"]:
+        raise ValueError(f"expected {LOCK['clangAudit']['version']}, found {version}")
     BUILD.mkdir(exist_ok=True)
     subprocess.run([ROOT / "bin/lean2c", "emit", BUILD / "generated"], check=True)
-    subprocess.run([ROOT / "bin/lean2c", "bodies", BUILD / "bodies.json"], check=True)
+    subprocess.run([ROOT / "bin/lean2c", "candidates", BUILD / "candidates.json"], check=True)
     subprocess.run([ROOT / "bin/lean2c", "macros", BUILD / "macros.json"], check=True)
     macros = dict(json.loads((BUILD / "macros.json").read_text()))
     subprocess.run([ROOT / "bin/lean2c", "symbols", BUILD / "symbols.json"], check=True)
     symbols = dict(json.loads((BUILD / "symbols.json").read_text()))
-    bodies = dict(json.loads((BUILD / "bodies.json").read_text()))
+    bodies = dict(json.loads((BUILD / "candidates.json").read_text()))
+    (BUILD / "bodies.json").write_text(json.dumps([(name, body) for name, (_, body) in bodies.items()],
+                                                indent=2) + "\n")
     lean_prefix = subprocess.check_output(["lean", "--print-prefix"], text=True).strip()
-    report = {"host": platform.platform(), "clang": subprocess.check_output(
-        [os.environ.get("CLANG", "clang"), "--version"], text=True).splitlines()[0],
-              "units": {}, "functions": {}, "headers": {}, "macros": {}}
+    report = {"host": platform.platform(), "clang": version, "pinned": pinned,
+              "comparison": "normalized Clang JSON AST", "units": {}, "functions": {}, "headers": {}, "macros": {}}
     with tempfile.TemporaryDirectory(dir=BUILD) as tmp:
         ref = Path(tmp)
         units = make_reference(ref, configure=True)
-        flags = [*configure(ref), "-I", str(Path(lean_prefix) / "include")]
+        flags = [*configure(ref, pinned), "-I", str(Path(lean_prefix) / "include")]
+        report["target"] = subprocess.check_output([cc, *flags, "-print-target-triple"], text=True).strip()
+        if pinned and report["target"] != LOCK["clangAudit"]["target"]:
+            raise ValueError(f"configured compiler has unexpected target {report['target']}")
         report["flags"] = [f.replace(lean_prefix, "<lean-prefix>") for f in flags]
         if {Path(f).stem for f in units} != set(NAMESPACES):
             raise ValueError("translation unit inventory changed")
@@ -144,8 +175,12 @@ def audit():
                 diff = ["$.FunctionDecl", missing[0], "absent from native declarations"]
             else:
                 other, = clang(native, flags, ref)
-                diff = first_diff(Canonical([root]).clean(root), Canonical([other]).clean(other))
-            report["units"][file] = {"status": "different" if diff else "equal", "first_difference": diff}
+                try:
+                    diff = first_diff(Canonical([root]).clean(root), Canonical([other]).clean(other))
+                except IncompleteAST as exc:
+                    report["units"][file] = {"status": "unsupported", "reason": str(exc)}
+            if file not in report["units"]:
+                report["units"][file] = {"status": "different" if diff else "equal", "first_difference": diff}
             report["functions"].update(check_bodies(ref, file, data, flags, root, bodies, symbols, signatures))
         contexts = {"crc32.h": "crc32.c", "inffixed.h": "inftrees.c", "trees.h": "trees.c"}
         for h in sorted(ref.glob("*.h")):
@@ -160,10 +195,13 @@ def audit():
                 # Parse inside the real including unit. inffixed.h is included
                 # at block scope, so it cannot be parsed as a standalone header.
                 context = (ref / contexts[h.name]).read_bytes()
-                before = tree(context, flags, ref)
                 try:
+                    before = tree(context, flags, ref)
                     h.write_bytes(generated.read_bytes())
                     diff = first_diff(before, tree(context, flags, ref))
+                except IncompleteAST as exc:
+                    report["headers"][h.name] = {"status": "unsupported", "byte_equal": False, "reason": str(exc)}
+                    continue
                 finally:
                     h.write_bytes(original)
             report["headers"][h.name] = {"status": "different" if diff else "equal",
@@ -179,8 +217,9 @@ def audit():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--require-equal", action="store_true", help="require full source AST coverage and equality")
+    parser.add_argument("--pinned", action="store_true", help="use the compiler, target and C dialect in pins.json")
     args = parser.parse_args()
-    result = audit()
+    result = audit(args.pinned)
     counts = Counter(e["status"] for e in result["functions"].values())
     print("Source-format function bodies:", dict(counts))
     print("Native translation units:", dict(Counter(e["status"] for e in result["units"].values())))

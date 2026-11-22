@@ -46,18 +46,28 @@ private def body? (unitResult : Bool) (e : Expr) (params : List String := []) : 
     let stmt := if unitResult then "" else "return "
     return "{\n    " ++ stmt ++ (← expr? params e) ++ ";\n}"
 
+private def parameters? (e : Expr) : Option (List String) := do
+  match e with
+  | .lam n _ body _ => return (← cName? n) :: (← parameters? body)
+  | _ => return []
+
 /-- Read the kernel expressions of real definitions. No docstrings or C inputs
 are available to this traversal. -/
-elab "forwardBodies%" : term => do
+elab "sourceCandidates%" : term => do
   let env ← getEnv
-  let mut bodies : Array (String × String) := #[]
+  let mut candidates : Array (String × (List String × String)) := #[]
   for (name, info) in env.constants.toList do
     unless (`Zlib).isPrefixOf name do continue
     let .defnInfo defn := info | continue
     let unitResult := defn.type.getForallBody.getAppArgs.back? == some (Lean.mkConst ``Unit)
     let output := (body? unitResult defn.value).orElse fun _ => Lean2C.Lower.lower? env name defn.type defn.value
-    if let some body := output then bodies := bodies.push (name.toString, body)
-  return toExpr (bodies.qsort fun a b => a.1 < b.1)
+    if let some body := output then
+      let some params := parameters? defn.value | continue
+      let names := match Lean2C.Lower.firstOutParam? name, params with
+        | some out, _ :: rest => out :: rest
+        | _, _ => params
+      candidates := candidates.push (name.toString, (names, body))
+  return toExpr (candidates.qsort fun a b => a.1 < b.1)
 
 /-- Record the pinned compiler's symbol spelling for each model definition. -/
 elab "nativeSymbols%" : term => do
@@ -69,6 +79,7 @@ elab "nativeSymbols%" : term => do
   return toExpr (symbols.qsort fun a b => a.1 < b.1)
 
 def symbols : Array (String × String) := nativeSymbols%
-def bodies : Array (String × String) := forwardBodies%
+def candidates : Array (String × (List String × String)) := sourceCandidates%
+def bodies : Array (String × String) := candidates.map fun (name, _, body) => (name, body)
 
 end Lean2C.Forward

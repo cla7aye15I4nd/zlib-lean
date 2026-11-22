@@ -24,10 +24,14 @@ class ClangAST(unittest.TestCase):
         self.assertIsNotNone(self.compare(a, a.replace("OP <", "OP <=")))
 
     def test_binding_signedness_and_order(self):
+        self.assertIsNone(self.compare("int f(int x){int y=x; {int x=y; return x;}}",
+                                       "int f(int a){int b=a; {int c=b; return c;}}"))
         for a, b in [
             ("int f(int a,int b){return a;}", "int f(int a,int b){return b;}"),
             ("int f(int a){return a >> 1;}", "int f(unsigned a){return a >> 1;}"),
             ("int f(int a){a++;return a;}", "int f(int a){return a++;}"),
+            ("int f(int a,int b){int v[a];return sizeof v;}",
+             "int f(int b,int a){int v[a];return sizeof v;}"),
             ("extern int x; int f(void){int x=2; {int x=3; return x;}}",
              "extern int x; int f(void){int x=2; {int y=3; return x;}}"),
         ]:
@@ -53,6 +57,21 @@ class ClangAST(unittest.TestCase):
             h.write_text("static int helper(void){return 2;}")
             self.assertIsNotNone(first_diff(a, tree(src, [], root)))
 
+    def test_function_header_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            h = root / "helper.h"
+            src = b'#include "helper.h"\nint f(const struct S *p){return helper(p);}'
+            header = ("struct S { int x, y; }; typedef struct S Pair; "
+                      "static int helper(const Pair *p){return p->x;}")
+            h.write_text(header)
+            a = tree(src, [], root, "f")
+            h.write_text("typedef long Unused;\n" + header)
+            self.assertIsNone(first_diff(a, tree(src, [], root, "f")))
+            for changed in [header.replace("x, y", "y, x"), header.replace("p->x", "p->y")]:
+                h.write_text(changed)
+                self.assertIsNotNone(first_diff(a, tree(src, [], root, "f")))
+
 
 class Baseline(unittest.TestCase):
     def test_sources(self):
@@ -64,6 +83,8 @@ class Baseline(unittest.TestCase):
         self.assertEqual(sum(b["public"] for b in report["functions"].values()), 86)
         for path in ("adler32.c/adler32", "compress.c/compress", "crc32.c/crc32"):
             self.assertEqual(report["functions"][path]["status"], "equal")
+        if report["pinned"]:
+            self.assertEqual(report["functions"]["crc32.c/byte_swap"]["status"], "equal")
         self.assertEqual(report["functions"]["compress.c/compressBound"]["status"], "different")
         for path in ("crc32.h", "inffixed.h", "trees.h"):
             self.assertTrue(report["headers"][path]["byte_equal"])

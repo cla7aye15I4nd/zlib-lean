@@ -1,9 +1,12 @@
 export LEAN_NUM_THREADS ?= 3
 
-.PHONY: audit ast-equal emit reference bytes differential proof test
+.PHONY: audit audit-pinned ast-equal emit reference bytes differential proof test
 
 audit:
 	python3 tools/audit.py
+
+audit-pinned:
+	python3 tools/audit.py --pinned
 
 ast-equal:
 	python3 tools/audit.py --require-equal
@@ -25,4 +28,5 @@ proof:
 	lake env leanchecker --fresh ZlibF.Results
 
 test:
+	lake env lean tests/ShiftLowering.lean
 	python3 -m unittest discover -s tests -p 'test_*.py'

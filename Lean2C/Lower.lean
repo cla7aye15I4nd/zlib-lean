@@ -5,7 +5,33 @@ import ZlibF.Zlib.«uncompr.c»
 namespace Lean2C.Lower
 open Lean CSource
 
-private abbrev Locals := List (Option Value)
+private structure Locals where
+  values : List (Option Value) := []
+  /-- Exclusive bounds from true branches on immutable unsigned Lean locals. -/
+  bounds : List (Value × Nat) := []
+
+private def Locals.push (ctx : Locals) (v : Option Value) : Locals :=
+  { ctx with values := v :: ctx.values }
+
+private def uintWidth? : Ty → Option Nat
+  | .u8 => some 8 | .u16 => some 16 | .u32 => some 32 | .u64 => some 64
+  | _ => none
+
+private def Locals.inTrueBranch (ctx : Locals) (cond : Value) : Locals := Id.run do
+  if let .op _ op (v@(.var t _)) (.num rt k) := cond then
+    if let some bits := uintWidth? t then
+      if rt == t && k < 2^bits && ctx.values.contains (some v) && (op == "<" || op == "<=") then
+        let limit := if op == "<" then k else k + 1
+        return { ctx with bounds := (v, limit) :: ctx.bounds }
+  return ctx
+
+private def boundedCount (ctx : Locals) (r : Value) (width : Nat) : Bool :=
+  match r with
+  | .num _ k => k < width
+  | .op _ "&" _ (.num _ mask) => mask < width
+  | .op _ "%" _ (.num _ divisor) => 0 < divisor && divisor ≤ width
+  | .var .. => ctx.bounds.any fun (v, limit) => r == v && limit ≤ width
+  | _ => false
 
 private def ty? (e : Expr) : Option Ty :=
   match e.getAppFn.constName? with
@@ -23,7 +49,7 @@ private def ident? (n : Name) : Option String := do
 private def fresh (n : Name) (ctx : Locals) : String := Id.run do
   let suggested := (ident? n).getD "tmp"
   let base := if suggested.startsWith "__" then "tmp" else suggested
-  let used := ctx.filterMap fun v => match v with
+  let used := ctx.values.filterMap fun v => match v with
     | some (.var _ s) => some s
     | _ => none
   if !used.contains base then return base
@@ -44,19 +70,21 @@ private def asTy (v : Value) (t : Ty) : Value := if v.type == t then v else .cas
 
 private partial def value? (e : Expr) (ctx : Locals) (wanted : Option Ty := none) : Option Value := do
   let e := e.consumeMData
-  if let .bvar i := e then return ← ctx[i]?.join
+  if let .bvar i := e then return ← ctx.values[i]?.join
   if let .lit (.natVal k) := e then return .num (wanted.getD .i32) k
   let n ← e.getAppFn.constName?
   let a := e.getAppArgs
   if n == ``OfNat.ofNat then
     let .lit (.natVal k) := a[1]! | none
-    return .num ((ty? a[0]!).orElse (fun _ => wanted) |>.getD .i32) k
+    let t := ((ty? a[0]!).orElse (fun _ => wanted) |>.getD .i32)
+    return .num t ((uintWidth? t).map (fun bits => k % (2^bits)) |>.getD k)
   if n == ``Bool.true then return .num .bool 1
   if n == ``Bool.false then return .num .bool 0
   if n == ``Decidable.decide then return ← value? a[0]! ctx (.some .bool)
   if n == ``Eq && a.back!.isConstOf ``Bool.true then return ← value? a[a.size-2]! ctx
   if n == ``ite then
-    return .choose (← value? a[1]! ctx) (← value? a[3]! ctx wanted) (← value? a[4]! ctx wanted)
+    let cond ← value? a[1]! ctx
+    return .choose cond (← value? a[3]! (ctx.inTrueBranch cond) wanted) (← value? a[4]! ctx wanted)
   if n == ``Pure.pure || n == ``liftM then return ← value? a.back! ctx wanted
   if n == ``C.index8 then return .index .u8 (← value? a[0]! ctx) (← value? a[1]! ctx)
   if n == ``C.load8 then return .load .u8 (← value? a.back! ctx)
@@ -77,11 +105,23 @@ private partial def value? (e : Expr) (ctx : Locals) (wanted : Option Ty := none
       -- A Nat/Int operator has unbounded semantics; a C-width result requires
       -- an explicit model type. Narrow unsigned operations wrap after promotion.
       let t ← ty? a[2]!
+      let mut rhs := r
+      if op == "<<" || op == ">>" then
+        let width ← uintWidth? t
+        guard (l.type == t && r.type == t)
+        -- Lean reduces every count modulo its word width. A raw C shift
+        -- is valid only when a bound already follows from this expression.
+        unless boundedCount ctx r width do rhs := .op t "%" r (.num .i32 width)
+      -- A small int constant beside an unsigned word gets the C promotions
+      -- of the original bitwise expression. Shift operands promote separately.
+      if (t == .u32 || t == .u64) && ["&", "|", "^", "<<", ">>"].contains op then
+        if let .num _ k := rhs then
+          if k < 2^31 then rhs := .num .i32 k
       if t == .u8 || t == .u16 then
         -- C promotes small integers to signed int. Use unsigned arithmetic
         -- before narrowing so a 16-bit product cannot overflow signed int.
-        return .cast t (.op .u32 op (asTy l .u32) (asTy r .u32))
-      return .op t op l r
+        return .cast t (.op .u32 op (asTy l .u32) (asTy rhs .u32))
+      return .op t op l rhs
     return .op .bool op l r
   if a.isEmpty && ((`C).isPrefixOf n || (`Zlib).isPrefixOf n) then
     let s ← ident? n
@@ -131,10 +171,11 @@ private partial def stmts? (env : Environment) (e : Expr) (ctx : Locals) (sink :
     let ct ← ty? t
     let v ← value? rhs ctx ct
     let name := fresh n ctx
-    return .decl ct name (some v) :: (← stmts? env body (some (.var ct name) :: ctx) sink)
+    return .decl ct name (some v) :: (← stmts? env body (ctx.push (some (.var ct name))) sink)
   if e.isAppOfArity ``ite 5 then
     let a := e.getAppArgs
-    return [.branch (← value? a[1]! ctx) (← stmts? env a[3]! ctx sink) (← stmts? env a[4]! ctx sink)]
+    let cond ← value? a[1]! ctx
+    return [.branch cond (← stmts? env a[3]! (ctx.inTrueBranch cond) sink) (← stmts? env a[4]! ctx sink)]
   if e.isAppOfArity ``Pure.pure 4 then return ← finish sink e.getAppArgs.back! ctx
   if e.isAppOfArity ``Bind.bind 6 then
     let a := e.getAppArgs
@@ -147,39 +188,44 @@ private partial def stmts? (env : Environment) (e : Expr) (ctx : Locals) (sink :
       let (_, xt'', _, yt'', afterLoop) ← splitPair? env cont
       guard (xt == xt' && xt == xt'' && yt == yt' && yt == yt'')
       let x := Value.var xt (fresh xn ctx)
-      let y := Value.var yt (fresh yn (some x :: ctx))
-      let locals := some y :: some x :: none :: ctx
+      let y := Value.var yt (fresh yn (ctx.push (some x)))
+      let locals := ((ctx.push none).push (some x)).push (some y)
       guard (test.isAppOfArity ``Pure.pure 4)
       let (guardExpr, remaining) ← pair? test.getAppArgs.back!
       let (left, right) ← pair? remaining
       guard (left == .bvar 1 && right == .bvar 0)
       let (ix, iy) ← pair? w[3]!
-      let loopBody ← stmts? env step locals (.update x y)
+      let cond ← value? guardExpr locals
+      let loopBody ← stmts? env step (locals.inTrueBranch cond) (.update x y)
       return [.decl xt x.render (some (← value? ix ctx xt)), .decl yt y.render (some (← value? iy ctx yt)),
-        .loop (← value? guardExpr locals) loopBody] ++ (← stmts? env afterLoop locals sink)
+        .loop cond loopBody] ++ (← stmts? env afterLoop locals sink)
     let .lam n t rest _ := cont | none
     let ct ← ty? t
     let v ← value? action ctx ct
     let name := fresh n ctx
-    return .decl ct name (some v) :: (← stmts? env rest (some (.var ct name) :: ctx) sink)
+    return .decl ct name (some v) :: (← stmts? env rest (ctx.push (some (.var ct name))) sink)
   finish sink e ctx
+
+/-- Name of the C out-parameter represented by the first scalar argument. -/
+def firstOutParam? (name : Name) : Option String :=
+  if name == ``Zlib.Inflate.syncsearch then some "have" else none
 
 /-- The out-parameter adapter supplies the C ABI information removed by the
 original model. All operations in the function body still come from its Expr. -/
 def lower? (env : Environment) (name : Name) (type body : Expr) : Option String := do
-  let outName := if name == ``Zlib.Inflate.syncsearch then some "have" else none
+  let outName := firstOutParam? name
   let rec args (e : Expr) (ctx : Locals) : Option (List Stmt) := do
     if let .lam n t b _ := e then
       let ct ← ty? t
       let mut v := Value.var ct (← ident? n)
-      if ctx.isEmpty then
+      if ctx.values.isEmpty then
         if let some p := outName then v := .load ct (.var (.ptr ct) p)
-      return ← args b (some v :: ctx)
+      return ← args b (ctx.push (some v))
     let rt := type.getForallBody
     let result := if rt.isAppOfArity ``C.M 1 then rt.getAppArgs.back! else rt
     if let some p := outName then
       return ← stmts? env e ctx (.outParam (.var (.ptr .u32) p) .u32)
     return ← stmts? env e ctx (.ret (← ty? result))
-  return renderBody (← args body [])
+  return renderBody (← args body {})
 
 end Lean2C.Lower
