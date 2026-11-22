@@ -5,7 +5,7 @@ open C Zlib.Inflate Zlib.Inflate.Spec ZlibF.Spec.Public
 set_option autoImplicit false
 set_option maxHeartbeats 1000000
 
-theorem inflateCopy_fixed_window_exec
+theorem inflateCopy_fixed_window_framed
     {h : Heap} {source dest : ZStreamRef} {zs nextOff : Nat}
     {z oldDest : ZStream} {s : InflateState}
     (good : Good h source zs z s)
@@ -19,15 +19,8 @@ theorem inflateCopy_fixed_window_exec
     (nextBound : nextOff ≤ 1732)
     (fixed : s.lencode = .ref .st_lenfix 0 ∧
       s.distcode = .ref .st_distfix 0) :
-    ∃ finished,
-      C.run (inflateCopy (some dest) (some source)) h = .ok (Z_OK, finished) ∧
-      source.get finished = some z ∧ finished.istates zs = some s ∧
-      dest.get finished = some { z with state := some (.inflate h.nextBlk) } ∧
-      finished.istates h.nextBlk =
-        some (copiedGeneric dest zs h.nextBlk nextOff 0 (.ref (.blk (h.nextBlk + 1)) 0) s) ∧
-      ∃ sourceArray, finished = copiedWindowHeap h dest z s
-        (copiedGeneric dest zs h.nextBlk nextOff 0
-          (.ref (.blk (h.nextBlk + 1)) 0) s) sourceArray := by
+    ∃ finished, WindowCopyResult h finished source dest zs z s
+      (copiedGeneric dest zs h.nextBlk nextOff 0 (.ref (.blk (h.nextBlk + 1)) 0) s) := by
   have sourceCheck := stateCheck_live good.live
   have firstRun := (copy_state_allocation_success good allocator first).1
   change (ZALLOCS (some source)) h = _ at firstRun
@@ -123,52 +116,18 @@ theorem inflateCopy_fixed_window_exec
     simp [wrI_eq, backGet, afterNext, nextState]
   have nextGet : afterNext.istates h.nextBlk = some nextState := by
     simp [afterNext]
-  rcases good.inv.win.block with noBlock | ⟨w, sourceArray, sourcePtr, sourceArrayGet,
-    sourceRo, sourceSize⟩
-  · exact False.elim (window noBlock)
-  have sourceLive : h.live w := by simp [Heap.live, sourceArrayGet]
-  have wBound : w < h.nextBlk := by
-    by_cases bound : w < h.nextBlk
-    · exact bound
-    · exact False.elim (good.fresh w (by omega) sourceLive)
-  have windowDifferent : zeroed.nextBlk ≠ w := by
-    simp [zeroed, allocIstHeap]
-    omega
   let freshArray : Array UInt8 := Array.ofFn (n := size)
     (fun i => Junk.of (zeroed.garbage zeroed.nalloc i.val))
   have bytesEq : afterNext.bytes = windowAllocated.bytes := by
     simp [afterNext, backlinked, copied, copiedStream]
-  have windowArray : afterNext.bytes zeroed.nextBlk = some freshArray := by
-    rw [bytesEq]
-    simp [windowAllocated, Zlib.Zutil.Proofs.allocHeap, freshArray]
-  have sourceArrayNext : afterNext.bytes w = some sourceArray := by
-    rw [bytesEq]
-    change (upd h.bytes (h.nextBlk + 1)
-      (some (Array.ofFn (n := size)
-        (fun i => Junk.of (zeroed.garbage zeroed.nalloc i.val))))).get w =
-      some sourceArray
-    rw [upd_ne _ _ _ _ (by omega)]
-    exact sourceArrayGet
   have windowWritable : afterNext.ro zeroed.nextBlk = false := by
     simp [afterNext, backlinked, copied,
       copiedStream, windowAllocated, Zlib.Zutil.Proofs.allocHeap,
       zeroed, allocIstHeap]
-  have count : s.whave.toNat ≤ size := by
-    rcases good.inv.win.ws with small | full
-    · have hv := good.inv.win.hv
-      omega
-    · have hv := good.inv.win.hv
-      omega
-  have freshRoom : 0 + s.whave.toNat ≤ freshArray.size := by
-    simpa [freshArray, size] using count
-  have sourceRoom : 0 + s.whave.toNat ≤ sourceArray.size := by omega
+  obtain ⟨w, sourceArray, sourcePtr, sourceGet, memcpyRun, sourceKept, suffix⟩ :=
+    inflateCopy_window_memcpy_framed good window bytesEq windowWritable
   let afterMemcpy := { afterNext with bytes := upd afterNext.bytes zeroed.nextBlk (some (copyRange freshArray sourceArray 0 0 s.whave.toNat)) }
-  have memcpyRun : memcpyB windowRef s.window s.whave.toNat afterNext =
-      .ok ((), afterMemcpy) := by
-    rw [sourcePtr]
-    simpa [afterMemcpy, windowRef] using
-      (memcpyB_blk_ok windowArray sourceArrayNext windowWritable
-        windowDifferent freshRoom sourceRoom)
+  change memcpyB windowRef s.window s.whave.toNat afterNext = .ok ((), afterMemcpy) at memcpyRun
   let windowState := { nextState with window := windowRef }
   let afterWindow := setI afterMemcpy h.nextBlk windowState
   have nextAfterMemcpy : afterMemcpy.istates h.nextBlk = some nextState := by
@@ -250,9 +209,45 @@ theorem inflateCopy_fixed_window_exec
         windowRef, freshArray, Zlib.Zutil.Proofs.allocHeap, allocIstHeap,
         ZStreamRef.put_setI,         setI, ZStreamRef.put, hg, upd_upd]
       rfl
-  exact ⟨finished, run, sourceFinished, sourceStateFinished,
-    destFinished, copiedFinished, sourceArray, heapEq⟩
+  have bytesKept : finished.bytes = afterMemcpy.bytes := by simp [finished, afterWindow]
+  refine ⟨finished, run, sourceFinished, sourceStateFinished, destFinished, copiedFinished,
+    w, sourceArray, sourcePtr, sourceGet, heapEq, ?_, ?_⟩
+  · rw [bytesKept]
+    exact sourceKept
+  · intro i hi
+    rw [bytesKept]
+    exact (suffix i.val hi).trans (by simp [allocIstHeap, i.isLt])
 
+theorem inflateCopy_fixed_window_exec
+    {h : Heap} {source dest : ZStreamRef} {zs nextOff : Nat}
+    {z oldDest : ZStream} {s : InflateState}
+    (good : Good h source zs z s)
+    (allocator : DefAlloc z)
+    (destGet : dest.get h = some oldDest)
+    (different : source ≠ dest)
+    (first : h.allocOk h.nalloc = true)
+    (second : h.allocOk (h.nalloc + 1) = true)
+    (window : s.window ≠ .null)
+    (nextPtr : s.next = .ref (.istate_codes zs) nextOff)
+    (nextBound : nextOff ≤ 1732)
+    (fixed : s.lencode = .ref .st_lenfix 0 ∧
+      s.distcode = .ref .st_distfix 0) :
+    ∃ finished,
+      C.run (inflateCopy (some dest) (some source)) h = .ok (Z_OK, finished) ∧
+      source.get finished = some z ∧ finished.istates zs = some s ∧
+      dest.get finished = some { z with state := some (.inflate h.nextBlk) } ∧
+      finished.istates h.nextBlk =
+        some (copiedGeneric dest zs h.nextBlk nextOff 0 (.ref (.blk (h.nextBlk + 1)) 0) s) ∧
+      ∃ sourceArray, finished = copiedWindowHeap h dest z s
+        (copiedGeneric dest zs h.nextBlk nextOff 0
+          (.ref (.blk (h.nextBlk + 1)) 0) s) sourceArray := by
+  obtain ⟨f, result⟩ := inflateCopy_fixed_window_framed good allocator destGet different
+    first second window nextPtr nextBound fixed
+  obtain ⟨_, a, _, _, heapEq, _⟩ := result.window
+  exact ⟨f, result.run, result.sourceStream, result.sourceState, result.destStream, result.destState,
+    a, heapEq⟩
+
+#print axioms inflateCopy_fixed_window_framed
 #print axioms inflateCopy_fixed_window_exec
 
 end Zlib.Inflate.Proofs

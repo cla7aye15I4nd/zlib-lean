@@ -1,4 +1,4 @@
-import ZlibF.Proof.HeapWP
+import ZlibF.Proof.CountedLoop
 import Std.Tactic.BVDecide
 import ZlibF.Zlib.«crc32.c»
 import ZlibF.Spec.Functional.Format.Checksum
@@ -1681,27 +1681,36 @@ def tailP (crc : UInt64) (buf : BPtr) (len : UInt64) : M UInt64 := do
     match __x with
     | (c, _, _) => pure (c ^^^ 4294967295)
 
+section
+open Std.WP
+open scoped C.HeapWP
+
+/-- One successful CRC byte supplies the exact value and heap to its continuation. -/
+theorem crcByte_spec (ref : BRef) (bs : Array UInt8) (off : Nat) (c : UInt32)
+    (post : UInt64 × BPtr → Heap → Prop) (fault : Fault → Prop) :
+    ⦃ fun h => (StaticsOK h ∧ Space.get h ref = some bs ∧ off < bs.size) ∧
+        post ((ZlibF.Spec.crcByte c bs[off]!).toUInt64, Ptr.ref ref (off + 1)) h ⦄
+      crcByte c.toUInt64 (.ref ref off) ⦃ post; fault ⦄ := by
+  refine ⟨fun h ⟨⟨hs, hb, ho⟩, next⟩ => ?_⟩
+  rw [wp_run, show crcByte _ _ h = _ from crcByte_ok h hs ref off bs hb ho c]
+  exact next
+
+set_option experimental.vcgen true in
 theorem body1_ok (h : Heap) (hs : StaticsOK h) (ref : BRef) (o : Nat) (bs : Array UInt8)
     (hb : Space.get h ref = some bs) (ho : o < bs.size) (c : UInt32) (l : UInt64) :
     OkOn h (body1 (c.toUInt64, .ref ref o, l))
       ((ZlibF.Spec.crcByte c bs[o]!).toUInt64, Ptr.ref ref (o + 1), l - 1) := by
-  unfold body1
-  exact OkOn.bind (crcByte_ok h hs ref o bs hb ho c) (OkOn.pure _ _)
+  apply okOn_iff_triple.mpr
+  vcgen [body1, crcByte_spec ref bs] <;> grind
 
+set_option experimental.vcgen true in
 theorem body8_ok (h : Heap) (hs : StaticsOK h) (ref : BRef) (o : Nat) (bs : Array UInt8)
     (hb : Space.get h ref = some bs) (ho : o + 8 ≤ bs.size) (c : UInt32) (l : UInt64) :
     OkOn h (body8 (c.toUInt64, .ref ref o, l))
       ((rbFrom bs c o 8).toUInt64, Ptr.ref ref (o + 8), l - 8) := by
-  unfold body8
-  refine OkOn.bind (crcByte_ok h hs ref o bs hb (by omega) c) ?_
-  refine OkOn.bind (crcByte_ok h hs ref (o + 1) bs hb (by omega) _) ?_
-  refine OkOn.bind (crcByte_ok h hs ref (o + 1 + 1) bs hb (by omega) _) ?_
-  refine OkOn.bind (crcByte_ok h hs ref (o + 1 + 1 + 1) bs hb (by omega) _) ?_
-  refine OkOn.bind (crcByte_ok h hs ref (o + 1 + 1 + 1 + 1) bs hb (by omega) _) ?_
-  refine OkOn.bind (crcByte_ok h hs ref (o + 1 + 1 + 1 + 1 + 1) bs hb (by omega) _) ?_
-  refine OkOn.bind (crcByte_ok h hs ref (o + 1 + 1 + 1 + 1 + 1 + 1) bs hb (by omega) _) ?_
-  refine OkOn.bind (crcByte_ok h hs ref (o + 1 + 1 + 1 + 1 + 1 + 1 + 1) bs hb (by omega) _) ?_
-  exact OkOn.pure _ _
+  apply okOn_iff_triple.mpr
+  vcgen [body8, crcByte_spec ref bs] <;> first | rfl | grind
+end
 
 theorem rbFrom_snoc (bs : Array UInt8) (c : UInt32) (o j : Nat) :
     rbFrom bs c o (j + 1) = ZlibF.Spec.crcByte (rbFrom bs c o j) bs[o + j]! := by
@@ -1724,89 +1733,46 @@ theorem loop1_ok (h : Heap) (hs : StaticsOK h) (ref : BRef) (o L : Nat) (bs : Ar
     (hb : Space.get h ref = some bs) (hle : o + L ≤ bs.size) (hL : L < 2 ^ 64) (c : UInt32) :
     OkOn h (cwhile cond1 body1 (c.toUInt64, .ref ref o, UInt64.ofNat L))
       ((rbFrom bs c o L).toUInt64, Ptr.ref ref (o + L), 0) := by
-  suffices H : ∃ s, OkOn h (cwhile cond1 body1 (c.toUInt64, .ref ref o, UInt64.ofNat L)) s ∧
-      s = ((rbFrom bs c o L).toUInt64, Ptr.ref ref (o + L), 0) by
-    obtain ⟨s, hs', rfl⟩ := H; exact hs'
-  refine cwhile_ok (fun k s => ∃ j, j + k = L ∧
-      s = ((rbFrom bs c o j).toUInt64, Ptr.ref ref (o + j), UInt64.ofNat (L - j))) _ ?_ ?_ (k := L)
-    (s := (c.toUInt64, .ref ref o, UInt64.ofNat L)) ⟨0, by omega, by simp [rbFrom_zero]⟩ hL
-  · intro k s hP
-    obtain ⟨j, hj, rfl⟩ := hP
-    have hne : (UInt64.ofNat (L - j) != 0) = true := by
-      have : UInt64.ofNat (L - j) ≠ 0 := by
-        intro h0
-        have := congrArg UInt64.toNat h0
-        rw [ofNat_toNat_lt _ (by omega)] at this
-        have h1 : (0 : UInt64).toNat = 0 := rfl
-        omega
-      simpa using this
-    refine ⟨((rbFrom bs c o j).toUInt64, Ptr.ref ref (o + j), UInt64.ofNat (L - j)),
-      ((ZlibF.Spec.crcByte (rbFrom bs c o j) bs[o + j]!).toUInt64, Ptr.ref ref (o + j + 1),
-      UInt64.ofNat (L - j) - 1), ?_, ?_, ?_⟩
-    · show OkOn h (pure _) _
-      simp only [hne]
-      exact OkOn.pure _ _
-    · exact body1_ok h hs ref (o + j) bs hb (by omega) _ _
-    · refine ⟨j + 1, by omega, ?_⟩
-      rw [rbFrom_snoc, show (1 : UInt64) = UInt64.ofNat 1 from rfl, ofNat_sub64 _ _ (by omega) (by omega)]
-      rw [show L - j - 1 = L - (j + 1) by omega]
-      rfl
-  · intro s hP
-    obtain ⟨j, hj, rfl⟩ := hP
-    have hjL : L = j := by omega
-    subst hjL
-    refine ⟨((rbFrom bs c o L).toUInt64, Ptr.ref ref (o + L), UInt64.ofNat (L - L)), ?_, ?_⟩
-    · show OkOn h (pure _) _
-      simp only [Nat.sub_self]
-      exact OkOn.pure _ _
-    · simp [Nat.sub_self]
+  let state (j : Nat) := ((rbFrom bs c o j).toUInt64, Ptr.ref ref (o + j), UInt64.ofNat (L - j))
+  suffices OkOn h (cwhile cond1 body1 (state 0)) (state L) by
+    simpa [state, rbFrom_zero] using this
+  apply okOn_iff_triple.mpr (cwhile_steps_spec state L hL ?_ ?_)
+  · intro j hj
+    change OkOn h (pure (UInt64.ofNat (L - j) != 0, state j)) _
+    have guard : (UInt64.ofNat (L - j) != 0) = decide (j < L) := by
+      apply Bool.eq_iff_iff.mpr
+      simp [← UInt64.toNat_inj, ofNat_toNat_lt _ (show L - j < 2 ^ 64 by omega), Nat.sub_eq_zero_iff_le]
+    rw [guard]
+    exact OkOn.pure _ _
+  · intro j hj
+    dsimp only [state]
+    rw [rbFrom_snoc, show L - (j + 1) = L - j - 1 by omega,
+      ← ofNat_sub64 (L - j) 1 (by omega) (by omega)]
+    exact body1_ok h hs ref (o + j) bs hb (by omega) _ _
 
 theorem loop8_ok (h : Heap) (hs : StaticsOK h) (ref : BRef) (o L : Nat) (bs : Array UInt8)
     (hb : Space.get h ref = some bs) (hle : o + L ≤ bs.size) (hL : L < 2 ^ 64) (c : UInt32) :
     OkOn h (cwhile cond8 body8 (c.toUInt64, .ref ref o, UInt64.ofNat L))
       ((rbFrom bs c o (8 * (L / 8))).toUInt64, Ptr.ref ref (o + 8 * (L / 8)),
         UInt64.ofNat (L - 8 * (L / 8))) := by
-  suffices H : ∃ s, OkOn h (cwhile cond8 body8 (c.toUInt64, .ref ref o, UInt64.ofNat L)) s ∧
-      s = ((rbFrom bs c o (8 * (L / 8))).toUInt64, Ptr.ref ref (o + 8 * (L / 8)),
-        UInt64.ofNat (L - 8 * (L / 8))) by
-    obtain ⟨s, hs', rfl⟩ := H; exact hs'
-  refine cwhile_ok (fun k s => ∃ j, j + k = L / 8 ∧
-      s = ((rbFrom bs c o (8 * j)).toUInt64, Ptr.ref ref (o + 8 * j), UInt64.ofNat (L - 8 * j))) _ ?_ ?_
-    (k := L / 8) (s := (c.toUInt64, .ref ref o, UInt64.ofNat L)) ⟨0, by omega, by simp [rbFrom_zero]⟩
-    (by show L / 8 < 2 ^ 64; omega)
-  · intro k s hP
-    obtain ⟨j, hj, rfl⟩ := hP
-    have hge : (decide (UInt64.ofNat (L - 8 * j) ≥ 8)) = true := by
-      simp only [decide_eq_true_eq, ge_iff_le, UInt64.le_iff_toNat_le]
-      rw [ofNat_toNat_lt _ (by omega)]
-      have : (8 : UInt64).toNat = 8 := rfl
+  let state (j : Nat) := ((rbFrom bs c o (8 * j)).toUInt64, Ptr.ref ref (o + 8 * j),
+    UInt64.ofNat (L - 8 * j))
+  suffices OkOn h (cwhile cond8 body8 (state 0)) (state (L / 8)) by
+    simpa [state, rbFrom_zero] using this
+  apply okOn_iff_triple.mpr (cwhile_steps_spec state (L / 8) (by unfold fuel; omega) ?_ ?_)
+  · intro j hj
+    change OkOn h (pure (decide (UInt64.ofNat (L - 8 * j) ≥ 8), state j)) _
+    have guard : (UInt64.ofNat (L - 8 * j) ≥ 8) ↔ j < L / 8 := by
+      rw [ge_iff_le, UInt64.le_iff_toNat_le, ofNat_toNat_lt _ (by omega)]
+      change 8 ≤ L - 8 * j ↔ j < L / 8
       omega
-    refine ⟨((rbFrom bs c o (8 * j)).toUInt64, Ptr.ref ref (o + 8 * j), UInt64.ofNat (L - 8 * j)),
-      ((rbFrom bs (rbFrom bs c o (8 * j)) (o + 8 * j) 8).toUInt64, Ptr.ref ref (o + 8 * j + 8),
-        UInt64.ofNat (L - 8 * j) - 8), ?_, ?_, ?_⟩
-    · show OkOn h (pure _) _
-      simp only [hge]
-      exact OkOn.pure _ _
-    · exact body8_ok h hs ref (o + 8 * j) bs hb (by omega) _ _
-    · refine ⟨j + 1, by omega, ?_⟩
-      rw [show 8 * (j + 1) = 8 * j + 8 by omega, rbFrom_add,
-        show (8 : UInt64) = UInt64.ofNat 8 from rfl, ofNat_sub64 _ _ (by omega) (by omega)]
-      rw [show L - 8 * j - 8 = L - (8 * j + 8) by omega]
-      rfl
-  · intro s hP
-    obtain ⟨j, hj, rfl⟩ := hP
-    have hjq : j = L / 8 := by omega
-    have hlt : (decide (UInt64.ofNat (L - 8 * j) ≥ 8)) = false := by
-      simp only [decide_eq_false_iff_not, ge_iff_le, UInt64.le_iff_toNat_le, Nat.not_le]
-      rw [ofNat_toNat_lt _ (by omega)]
-      have : (8 : UInt64).toNat = 8 := rfl
-      omega
-    subst hjq
-    refine ⟨((rbFrom bs c o (8 * (L / 8))).toUInt64, Ptr.ref ref (o + 8 * (L / 8)),
-      UInt64.ofNat (L - 8 * (L / 8))), ?_, rfl⟩
-    show OkOn h (pure _) _
-    simp only [hlt]
+    simp only [guard]
     exact OkOn.pure _ _
+  · intro j hj
+    dsimp only [state]
+    rw [Nat.mul_succ, rbFrom_add, Nat.sub_add_eq,
+      ← ofNat_sub64 (L - 8 * j) 8 (by omega) (by omega), ← Nat.add_assoc]
+    exact body8_ok h hs ref (o + 8 * j) bs hb (by omega) _ _
 
 theorem tailBraid_ok (h : Heap) (hs : StaticsOK h) (ref : BRef) (o L : Nat) (bs : Array UInt8)
     (hb : Space.get h ref = some bs) (hle : o + L ≤ bs.size) (hL : L < 2 ^ 64) (c : UInt32) :

@@ -28,5 +28,7 @@ proof:
 	lake env leanchecker --fresh ZlibF.Results
 
 test:
+	lake build --wfail Lean2C.Lower ZlibF.Proof.LibcMemory
 	lake env lean tests/ShiftLowering.lean
+	lake env lean -DwarningAsError=true tests/SafetyRules.lean
 	python3 -m unittest discover -s tests -p 'test_*.py'
