@@ -1,3 +1,5 @@
+import ZlibF.Proof.HeapWP
+import Std.Tactic.BVDecide
 import ZlibF.Zlib.«crc32.c»
 import ZlibF.Spec.Functional.Format.Checksum
 import ZlibF.Spec.Common.Crc32Statics
@@ -717,8 +719,7 @@ theorem bl_le (n : Nat) : bl n ≤ n := by
       omega
 
 theorem u32_roundtrip (x : UInt32) : x.toUInt64.toUInt32 = x := by
-  apply UInt32.toNat_inj.mp
-  rw [UInt64.toNat_toUInt32, UInt32.toNat_toUInt64, Nat.mod_eq_of_lt (UInt32.toNat_lt _)]
+  bv_decide
 
 theorem x2nTab_ok (h : Heap) (hs : StaticsOK h) (i : UInt32) (hi : i.toNat < 32) :
     OkOn h (x2nTab i) (Xt i.toNat) := by
@@ -1164,63 +1165,33 @@ def wob (b0 b1 b2 b3 : UInt8) : UInt32 :=
   (0 : UInt32) ||| b0.toUInt32 <<< (8 * 0).toUInt32 ||| b1.toUInt32 <<< (8 * 1).toUInt32 |||
   b2.toUInt32 <<< (8 * 2).toUInt32 ||| b3.toUInt32 <<< (8 * 3).toUInt32
 
+private theorem byte_mask (i : Nat) : (255#32).getLsbD i = decide (i < 8) :=
+  Nat.testBit_two_pow_sub_one 8 i
+
 theorem getLsbD_255 (i : Nat) (h : 8 ≤ i) : (255#32).getLsbD i = false := by
-  rw [BitVec.getLsbD_ofNat]
-  simp
-  intro _
-  exact Nat.testBit_lt_two_pow (Nat.lt_of_lt_of_le (by decide) (Nat.pow_le_pow_right (by omega) h))
+  simp [byte_mask, Nat.not_lt.mpr h]
 
-theorem bx_wob_0 (b0 b1 b2 b3 : UInt8) : bx (wob b0 b1 b2 b3) 0 = b0.toUInt32 := by
-  unfold bx
+/-- Byte lane `j` of the modeled little-endian word. -/
+theorem bx_wob (b0 b1 b2 b3 : UInt8) (j : Fin 4) :
+    bx (wob b0 b1 b2 b3) j = (#[b0, b1, b2, b3][j.val]).toUInt32 := by
   apply u32_ext
   intro i hi
-  simp [wob, UInt32.toBitVec_shiftLeft]
-  by_cases h8 : i < 8
-  · rcases (by omega : i = 0 ∨ i = 1 ∨ i = 2 ∨ i = 3 ∨ i = 4 ∨ i = 5 ∨ i = 6 ∨ i = 7) with
-      rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp
-  · have : ¬ (255#32).getLsbD i = true := by rw [getLsbD_255 i (by omega)]; decide
-    simp [this]
-    intro _
-    exact BitVec.getLsbD_of_ge _ _ (by omega)
+  match j with
+  | ⟨0, _⟩ | ⟨1, _⟩ | ⟨2, _⟩ | ⟨3, _⟩ =>
+    simp [bx, wob, UInt32.toBitVec_shiftLeft, UInt32.toBitVec_shiftRight]
+    grind [byte_mask]
 
-theorem bx_wob_1 (b0 b1 b2 b3 : UInt8) : bx (wob b0 b1 b2 b3) 1 = b1.toUInt32 := by
-  unfold bx
-  apply u32_ext
-  intro i hi
-  simp [wob, UInt32.toBitVec_or, UInt32.toBitVec_shiftRight, UInt32.toBitVec_shiftLeft]
-  by_cases h8 : i < 8
-  · rcases (by omega : i = 0 ∨ i = 1 ∨ i = 2 ∨ i = 3 ∨ i = 4 ∨ i = 5 ∨ i = 6 ∨ i = 7) with
-      rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp
-  · have : ¬ (255#32).getLsbD i = true := by rw [getLsbD_255 i (by omega)]; decide
-    simp [this]
-    intro _
-    exact BitVec.getLsbD_of_ge _ _ (by omega)
+theorem bx_wob_0 (b0 b1 b2 b3 : UInt8) : bx (wob b0 b1 b2 b3) 0 = b0.toUInt32 :=
+  bx_wob b0 b1 b2 b3 0
 
-theorem bx_wob_2 (b0 b1 b2 b3 : UInt8) : bx (wob b0 b1 b2 b3) 2 = b2.toUInt32 := by
-  unfold bx
-  apply u32_ext
-  intro i hi
-  simp [wob, UInt32.toBitVec_or, UInt32.toBitVec_shiftRight, UInt32.toBitVec_shiftLeft]
-  by_cases h8 : i < 8
-  · rcases (by omega : i = 0 ∨ i = 1 ∨ i = 2 ∨ i = 3 ∨ i = 4 ∨ i = 5 ∨ i = 6 ∨ i = 7) with
-      rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [BitVec.getLsbD_of_ge]
-  · have : ¬ (255#32).getLsbD i = true := by rw [getLsbD_255 i (by omega)]; decide
-    simp [this]
-    intro _
-    exact BitVec.getLsbD_of_ge _ _ (by omega)
+theorem bx_wob_1 (b0 b1 b2 b3 : UInt8) : bx (wob b0 b1 b2 b3) 1 = b1.toUInt32 :=
+  bx_wob b0 b1 b2 b3 1
 
-theorem bx_wob_3 (b0 b1 b2 b3 : UInt8) : bx (wob b0 b1 b2 b3) 3 = b3.toUInt32 := by
-  unfold bx
-  apply u32_ext
-  intro i hi
-  simp [wob, UInt32.toBitVec_or, UInt32.toBitVec_shiftRight, UInt32.toBitVec_shiftLeft]
-  by_cases h8 : i < 8
-  · rcases (by omega : i = 0 ∨ i = 1 ∨ i = 2 ∨ i = 3 ∨ i = 4 ∨ i = 5 ∨ i = 6 ∨ i = 7) with
-      rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [BitVec.getLsbD_of_ge]
-  · have : ¬ (255#32).getLsbD i = true := by rw [getLsbD_255 i (by omega)]; decide
-    simp [this]
-    intro _
-    exact BitVec.getLsbD_of_ge _ _ (by omega)
+theorem bx_wob_2 (b0 b1 b2 b3 : UInt8) : bx (wob b0 b1 b2 b3) 2 = b2.toUInt32 :=
+  bx_wob b0 b1 b2 b3 2
+
+theorem bx_wob_3 (b0 b1 b2 b3 : UInt8) : bx (wob b0 b1 b2 b3) 3 = b3.toUInt32 :=
+  bx_wob b0 b1 b2 b3 3
 
 set_option maxRecDepth 100000 in
 theorem Psi_basis : ∀ t : Fin 32, Psi (e t.val) = pw 32 (e t.val) := by decide +kernel
@@ -1302,24 +1273,18 @@ theorem idx8 (h : Heap) (ref : BRef) (off i : Nat) (bs : Array UInt8) (hb : Spac
   have := Ptr.index_ok hb hlt
   rw [getElem!_pos bs (off + i) hlt]; exact this
 
-set_option maxRecDepth 4000 in
+open Std.WP in
+open scoped C.HeapWP in
+set_option experimental.vcgen true in
 theorem loadWord_ok (h : Heap) (ref : BRef) (off : Nat) (bs : Array UInt8) (hb : Space.get h ref = some bs)
     (hlt : off + 4 ≤ bs.size) :
     OkOn h (loadWord (.ref ref off))
       (wob bs[off + 0]! bs[off + 1]! bs[off + 2]! bs[off + 3]!) := by
+  apply okOn_iff_triple.mpr
   unfold loadWord
-  simp only [forIn, Std.Legacy.Range.forIn'_eq_forIn'_range', Std.Legacy.Range.size]
-  simp only [List.range'_succ, List.range'_zero, List.forIn'_cons, List.forIn'_nil]
-  refine OkOn.bind (x := wob bs[off + 0]! bs[off + 1]! bs[off + 2]! bs[off + 3]!) ?_ (OkOn.pure _ _)
-  refine OkOn.bind (x := ForInStep.yield _) (OkOn.bind (idx8 h ref off _ bs hb (by omega)) (OkOn.pure _ _)) ?_
-  try dsimp only
-  refine OkOn.bind (x := ForInStep.yield _) (OkOn.bind (idx8 h ref off _ bs hb (by omega)) (OkOn.pure _ _)) ?_
-  try dsimp only
-  refine OkOn.bind (x := ForInStep.yield _) (OkOn.bind (idx8 h ref off _ bs hb (by omega)) (OkOn.pure _ _)) ?_
-  try dsimp only
-  refine OkOn.bind (x := ForInStep.yield _) (OkOn.bind (idx8 h ref off _ bs hb (by omega)) (OkOn.pure _ _)) ?_
-  try dsimp only
-  exact OkOn.pure _ _
+  simp only [forIn, Std.Legacy.Range.forIn'_eq_forIn'_range', Std.Legacy.Range.size,
+    List.range'_succ, List.range'_zero, List.forIn'_cons, List.forIn'_nil]
+  vcgen [Ptr.index_spec ref off _ bs (· = h)] with finish [wob]
 
 /-! ### The braid tables (`N = 5`, `NLOW = 2`, `W = 4`) -/
 
