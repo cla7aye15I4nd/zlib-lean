@@ -57,4 +57,6 @@ The unsigned shift emitter keeps a raw C shift for an in-range literal, a bounde
 
 ## Provenance
 
-The entire `ZlibF/` tree is preserved from oss-proof commit `0784b3e17eb85bb7699f55cb975ed1d47c1452dc`. Its Git tree object is `94fa7f04ca73c042a4fe8f8cb6b4fe9486374263`. The [pins](pins.json) also identify the zlib source commit and the SHA-256 digest of each patch. zlib and its modified sources retain the [upstream license](patches/ZLIB-LICENSE).
+The original `ZlibF/` import came from oss-proof commit `0784b3e17eb85bb7699f55cb975ed1d47c1452dc`. The imported Git tree object was `94fa7f04ca73c042a4fe8f8cb6b4fe9486374263`. The [pins](pins.json) also identify the zlib source commit and the SHA-256 digest of each patch. zlib and its modified sources retain the [upstream license](patches/ZLIB-LICENSE).
+
+This branch layers the libc runtime and pilots Hoare triples on the CRC word reader. The migration plan records the proof-size comparison and the axiom checks. [试点与迁移计划](docs/zh/proof-modernization.md)
