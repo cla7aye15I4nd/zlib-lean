@@ -4,11 +4,16 @@ import Lean2C.Compare
 import Lean2C.Native
 
 private def usage : String :=
-  "usage: lean2c emit DIRECTORY | symbols FILE.json | macros FILE.json | bodies FILE.json | compare EXPECTED GENERATED [REPORT.json]"
+  "usage: lean2c emit DIRECTORY | function LEAN_NAME | symbols FILE.json | macros FILE.json | bodies FILE.json | compare EXPECTED GENERATED [REPORT.json]"
 
 def main (args : List String) : IO UInt32 := do
   try
     match args with
+    | ["function", name] =>
+      let some (_, body) := Lean2C.Forward.bodies.find? (·.1 == name)
+        | IO.eprintln s!"No source-form lowering for {name}"; return 1
+      IO.println body
+      return 0
     | ["symbols", out] =>
       IO.FS.writeFile out ((Lean.toJson Lean2C.Forward.symbols).pretty ++ "\n")
       return 0

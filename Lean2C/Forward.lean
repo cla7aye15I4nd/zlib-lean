@@ -1,4 +1,4 @@
-import Lean
+import Lean2C.Lower
 import ZlibF.Zlib.«compress.c»
 import ZlibF.Zlib.«uncompr.c»
 import ZlibF.Zlib.«infback.c»
@@ -55,7 +55,8 @@ elab "forwardBodies%" : term => do
     unless (`Zlib).isPrefixOf name do continue
     let .defnInfo defn := info | continue
     let unitResult := defn.type.getForallBody.getAppArgs.back? == some (Lean.mkConst ``Unit)
-    if let some body := body? unitResult defn.value then bodies := bodies.push (name.toString, body)
+    let output := (body? unitResult defn.value).orElse fun _ => Lean2C.Lower.lower? env name defn.type defn.value
+    if let some body := output then bodies := bodies.push (name.toString, body)
   return toExpr (bodies.qsort fun a b => a.1 < b.1)
 
 /-- Record the pinned compiler's symbol spelling for each model definition. -/
