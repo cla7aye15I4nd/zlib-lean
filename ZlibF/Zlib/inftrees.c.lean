@@ -1,5 +1,6 @@
 import ZlibF.Runtime.Alloc
 import ZlibF.Runtime.Tables
+import ZlibF.Runtime.CAbi
 import ZlibF.Zlib.«inffixed.h»
 
 /-!
@@ -66,20 +67,23 @@ def storeCode (p : CodePtr) (i : Nat) (v : Code) : M Unit := do
 def MAXBITS : UInt32 := 15
 
 /-- `static const unsigned short lbase[31]` -/
-def lbase : Array UInt16 :=
+def inflate_copyright : C.CGlobalConstStr String :=
+  " inflate 1.4.0.1 Copyright 1995-2026 Mark Adler "
+
+def lbase : C.CLocalConst (Array UInt16) :=
   #[3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
     35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258, 0, 0]
 /-- `static const unsigned short lext[31]` -/
-def lext : Array UInt16 :=
+def lext : C.CLocalConst (Array UInt16) :=
   #[16, 16, 16, 16, 16, 16, 16, 16, 17, 17, 17, 17, 18, 18, 18, 18,
     19, 19, 19, 19, 20, 20, 20, 20, 21, 21, 21, 21, 16, 199, 192]
 /-- `static const unsigned short dbase[32]` -/
-def dbase : Array UInt16 :=
+def dbase : C.CLocalConst (Array UInt16) :=
   #[1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
     257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145,
     8193, 12289, 16385, 24577, 0, 0]
 /-- `static const unsigned short dext[32]` -/
-def dext : Array UInt16 :=
+def dext : C.CLocalConst (Array UInt16) :=
   #[16, 16, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22,
     23, 23, 24, 24, 25, 25, 26, 26, 27, 27,
     28, 28, 29, 29, 64, 64]
@@ -240,8 +244,8 @@ unsigned FAR *bits, unsigned short FAR *work)`
 
 `table` and `bits` are passed as the values `*table`, `*bits`; the result is `(return value, *table, *bits)` after
 the call. -/
-def inflate_table (type : UInt32) (lens : WPtr) (codes : UInt32) (table : CodePtr) (bits : UInt32) (work : WPtr) :
-    M (Int32 × CodePtr × UInt32) := do
+def inflate_table (type : CodeType) (lens : ConstWPtr) (codes : UInt32) (table : OutCodePtr)
+    (bits : OutUInt32) (work : WPtr) : M (CHidden (Int32 × CodePtr × UInt32)) := do
   -- unsigned short count[MAXBITS+1]; unsigned short offs[MAXBITS+1];   (uninitialised in C; count is cleared below)
   let count : Array UInt16 := Array.replicate 16 0
   let offs : Array UInt16 := Array.replicate 16 0
@@ -347,7 +351,7 @@ def inflate_table (type : UInt32) (lens : WPtr) (codes : UInt32) (table : CodePt
   return (0, table, root)
 
 /-- `void inflate_fixed(struct inflate_state FAR *state)` -/
-def inflate_fixed (state : InflateStatePtr) : M Unit := do
+def inflate_fixed (state : InflateStatePtr) : M (CHidden Unit) := do
   -- state->lencode = lenfix;
   let st ← ldInflateState state
   stInflateState state { st with lencode := .ref .st_lenfix 0 }

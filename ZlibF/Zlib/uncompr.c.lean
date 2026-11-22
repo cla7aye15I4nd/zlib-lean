@@ -22,7 +22,7 @@ open Zlib.Inflate (inflateInit_ inflate inflateEnd)
 
 /-- A local `z_stream`: a fresh record with arbitrary integers and null pointers, outside the allocation oracle
 (automatic storage cannot fail). Made by the runtime allocator `allocZStream` with the oracle set to succeed. -/
-def allocLocalZ : M ZStreamPtr := fun h =>
+def allocLocalZ : M StackStream := fun h =>
   match allocZStream { h with allocOk := fun _ => true } with
   | .ok (p, h') => .ok (p, { h' with allocOk := h.allocOk, nalloc := h.nalloc })
   | .error e => .error e
@@ -33,10 +33,10 @@ structure UncLoop where
   left : UInt64
 
 /-- `int ZEXPORT uncompress2_z(Bytef *dest, z_size_t *destLen, const Bytef *source, z_size_t *sourceLen)` -/
-def uncompress2_z (dest : BPtr) (destLen : BPtr) (source : BPtr) (sourceLen : BPtr) : M Int32 := do
+def uncompress2_z (dest : BPtr) (destLen : PtrU64) (source : ConstBPtr) (sourceLen : PtrU64) : M (CExport Int32) := do
   -- z_stream stream; int err; const uInt max = (uInt)-1; z_size_t len, left;
   let stream ← allocLocalZ
-  let reserved ← allocLocal 8
+  let reserved ← stackAddr stream "reserved" (allocLocal 8)
   let max : UInt32 := 0xFFFFFFFF
   let free : M Unit := do
     freeB reserved
@@ -104,10 +104,10 @@ def uncompress2_z (dest : BPtr) (destLen : BPtr) (source : BPtr) (sourceLen : BP
   return r
 
 /-- `int ZEXPORT uncompress2(Bytef *dest, uLongf *destLen, const Bytef *source, uLong *sourceLen)` -/
-def uncompress2 (dest : BPtr) (destLen : BPtr) (source : BPtr) (sourceLen : BPtr) : M Int32 := do
+def uncompress2 (dest : BPtr) (destLen : PtrU64) (source : ConstBPtr) (sourceLen : PtrU64) : M (CExport Int32) := do
   -- int ret; z_size_t got = *destLen, used = *sourceLen;
-  let got ← allocLocal 8
-  let used ← allocLocal 8
+  let got ← allocLocal64
+  let used ← allocLocal64
   store64 got (← load64 destLen)
   store64 used (← load64 sourceLen)
   -- ret = uncompress2_z(dest, &got, source, &used);
@@ -120,18 +120,18 @@ def uncompress2 (dest : BPtr) (destLen : BPtr) (source : BPtr) (sourceLen : BPtr
   return ret
 
 /-- `int ZEXPORT uncompress_z(Bytef *dest, z_size_t *destLen, const Bytef *source, z_size_t sourceLen)` -/
-def uncompress_z (dest : BPtr) (destLen : BPtr) (source : BPtr) (sourceLen : UInt64) : M Int32 := do
+def uncompress_z (dest : BPtr) (destLen : PtrU64) (source : ConstBPtr) (sourceLen : UInt64) : M (CExport Int32) := do
   -- z_size_t used = sourceLen;
-  let used ← allocLocal 8
+  let used ← allocLocal64
   store64 used sourceLen
   let r ← uncompress2_z dest destLen source used
   freeB used
   return r
 
 /-- `int ZEXPORT uncompress(Bytef *dest, uLongf *destLen, const Bytef *source, uLong sourceLen)` -/
-def uncompress (dest : BPtr) (destLen : BPtr) (source : BPtr) (sourceLen : UInt64) : M Int32 := do
+def uncompress (dest : BPtr) (destLen : PtrU64) (source : ConstBPtr) (sourceLen : UInt64) : M (CExport Int32) := do
   -- uLong used = sourceLen;
-  let used ← allocLocal 8
+  let used ← allocLocal64
   store64 used sourceLen
   let r ← uncompress2 dest destLen source used
   freeB used

@@ -1,60 +1,63 @@
 # zlib-lean
 
-This fork's verification scope is **safety**. The Lean 4 model covers the 86 documented public functions of zlib 1.4.0.1-motley at `617e19a`, with six patches, for the default x86-64 Linux LP64 static build. For calls that meet their preconditions, the safety goals describe which faults are excluded, where a call may write, which allocations it may keep or release, and when it returns. Malformed compressed data is within scope when the caller supplies valid buffers. [Safety claim and assumptions](docs/en/trusted-base.md)
+**Safety-only formal verification of patched zlib (`1.4.0.1-motley`) in Lean 4, with byte-identical C binary integration.**
 
-Some C operations have deliberately more permissive semantics in the model. For example, subtracting two null pointers yields zero there. A load through a null pointer still faults. The exception register names the precise operations, where the patched source uses them, and what that means for a claim about C. [Undefined-behavior exceptions](docs/en/model-limits.md)
+This repository narrows the verification scope exclusively to **memory and execution safety** for the 86 documented public APIs of zlib `1.4.0.1-motley` (`617e19a` + 6 patches in [pins.json](pins.json)) targeting the default x86-64 Linux LP64 static build. Non-safety (functional correctness / round-trip) proof modules have been pruned from the codebase and registry.
 
-Run `make proof` to check the Lean registry. It still includes functional results inherited from oss-proof, including the default-stream round trip. Those results are outside this fork's verification scope. [Local registry](ZlibF/Results.lean) · [Original oss-proof scope](https://github.com/cla7aye15I4nd/oss-proof/blob/0784b3e17eb85bb7699f55cb975ed1d47c1452dc/projects/zlib/README.md)
+## Architecture
 
-## Lean-to-C comparison
+```mermaid
+flowchart LR
+    Safety["ZlibF Safety Proofs\n(124 proved / 0 remaining / 99 required)"] --> Check["leanchecker --fresh\n(ZlibF.Results)"]
+    Model["ZlibF/Zlib & Runtime\n(Lean 4 Model)"] --> Safety
+    Model --> Lean2C["Lean2C\n(Headers & C Lowering)"]
+    Lean2C --> Binary["make binary\n(5/15 standalone units + ABI _Static_assert + 3/3 headers -> byte-identical .o & libz.a)"]
+    Lean2C --> Audit["make audit\n(Clang JSON AST & macros)"]
+    Model --> Diff["make differential\n(10 test suites vs patched libz.a)"]
+```
 
-**The generated program and the reference have different C ASTs.** Lean compiles the executable heap model to C with the Lean runtime ABI. A second emitter recovers source-level expressions from elaborated Lean definitions. The audit records which recovered function bodies have the same AST as their C originals, which differ, and which the source-level emitter cannot yet express. For example, the original `compressBound` declares a local and checks a conversion. Its Lean definition directly calls `compressBound_z`. The audit reports the differing statement nodes.
+## Verification Status
 
-## Run the comparison
+| Layer | Scope & Result | Entrypoint / Artifact |
+| --- | --- | --- |
+| **Safety Proofs** | **124 / 124** safety goals proved (**0** unproved, **99** required); kernel-checked with only `propext`, `Classical.choice`, `Quot.sound`. | [ZlibF/Results.lean](ZlibF/Results.lean) · `make proof` |
+| **Binary Equivalence** | **`_Static_assert` ABI layout check** passes on all **10** ABI structs (**163** fields: `struct z_stream_s`, `struct gz_header_s`, `ct_data`, `static_tree_desc`, `tree_desc`, `deflate_state`, `code`, `struct inflate_state`, `struct gzFile_s`, `gz_state`); **3 / 3** generated headers byte-equal; **5 / 15** standalone 100%-Lean `.c` units (`adler32.c`, `compress.c`, `gzclose.c`, `uncompr.c`, `zutil.c`; **21** functions) + **15** spliced functions (**36** Lean functions in `.o` total; **1** skipped variadic `gzprintf`, **123** unlowered) compile to **15 / 15** byte-identical `.o` units and a **byte-identical `build/libz.a`**. | [tools/binary_audit.py](tools/binary_audit.py) · `make binary` |
+| **Clang AST Audit** | All **86** public APIs located; **15** target macro constants verified; **3 / 3** headers byte-equal; **13** lowered function bodies AST-identical (`11` differ only in C syntax while compiling to identical `.o` bytes). | [tools/audit.py](tools/audit.py) · `make audit` |
+| **Differential Testing** | Compiled Lean model (`ZlibF/Zlib`) matches patched C `libz.a` line-for-line across **10** fixed-seed test suites on pinned Linux targets (covering the `123` unlowered functions and skipped variadic `gzprintf`). | [tools/differential.py](tools/differential.py) · `make differential` |
 
-Use Git, Python 3.9 or later, Make, Clang, and the Lean version in `lean-toolchain` (available through elan). The GitHub Actions audit uses Ubuntu 24.04 x86-64. A local run on another platform selects that platform's C branches.
+### Standalone Lowering Progress (5 / 15 Units)
+
+Route 1 eliminates reliance on original C source files unit-by-unit via `bin/lean2c abi-sources` using the Zlib-agnostic compiler ([Lean2C/Simple.lean](Lean2C/Simple.lean), [Lean2C/ABI.lean](Lean2C/ABI.lean), [Lean2C/Archive.lean](Lean2C/Archive.lean)):
+
+- **Standalone 100%-Lean (5)**: `adler32.c`, `compress.c`, `gzclose.c`, `uncompr.c`, `zutil.c` (0 lines of original `.c`, compiled directly to byte-identical `.o`).
+- **Remaining / spliced (10)**: `inftrees.c`, `gzlib.c`, `crc32.c`, `infback.c`, `gzwrite.c`, `gzread.c`, `inffast.c`, `trees.c`, `inflate.c`, `deflate.c`.
+
+For caller preconditions, platform/allocator assumptions, the Trusted Computing Base (TCB), and accepted C undefined-behavior exceptions (`Ptr.add p 0`, `Ptr.diff .null .null`), see [docs/SAFETY.md](docs/SAFETY.md).
+
+## Commands
+
+Requires Git, Python 3.9+, Make, Clang, and the Lean toolchain specified in [lean-toolchain](lean-toolchain).
 
 ```sh
 git clone --recurse-submodules https://github.com/cla7aye15I4nd/zlib-lean
 cd zlib-lean
-make audit
+make binary && make audit && make test
 ```
 
-Read `build/ast-report.json` for each translation unit, active C function body, and library header, along with the Clang version and flags. All 86 documented functions are located independently in both the reference and the native output. Each entry records the compiler symbol and a concrete difference in its declaration. `make audit` succeeds when it produces the report and finds every documented API. **Use `make ast-equal` as the strict gate**. It exits unsuccessfully whenever a translation unit differs or a required source comparison is missing. The current revision is expected to fail that gate.
-
-| Command | Result |
+| Command | Purpose |
 | --- | --- |
-| `CLANG=clang-18 make audit-pinned` | Run the CI comparison on Ubuntu 24.04 x86-64. The audit checks the compiler build in `pins.json` and gives both configure and Clang the same Linux target and GNU C17 dialect. |
-| `make emit` | Emit C for every module in `ZlibF/Zlib` and `ZlibF/Runtime`, plus three source-format headers, into `build/generated/`. |
-| `make reference` | Reconstruct the independent 26-file C and header baseline in `build/reference/` from immutable Git blobs and the ordered patch series. |
-| `make bytes` | Compare the two directory trees byte for byte, including comments, whitespace, inactive branches, extra files, and missing files. Save the first differing byte per file in `build/bytes.json`. |
-| `make differential` | Build patched zlib and the native Lean drivers. Run all ten fixed-seed test suites and compare each line of output. |
-| `make proof` | Build the proof registry with warnings as errors, then replay it in a fresh kernel environment. The replay needs about 10 GB of memory. |
-| `make test` | Run the AST, byte-comparison, and coverage regression tests after `make audit`. |
+| `make binary` | Verify `_Static_assert` ABI struct layouts across all 10 ABI structs (163 fields), compile standalone 100%-Lean units (`5/15`) and spliced units (`10/15`) with Lean-generated headers (`3/3`), and check byte-identical `.o` files and `build/libz.a` (report: `build/binary-report.json`). |
+| `make binary-pinned` | Run `make binary` enforcing the pinned Clang version and `x86_64-unknown-linux-gnu` target from [pins.json](pins.json). |
+| `make audit` | Emit C and compare normalized Clang JSON ASTs and target macros across all 15 translation units (report: `build/ast-report.json`). |
+| `make audit-pinned` | Run `make audit` under the pinned Linux Clang configuration in [pins.json](pins.json). |
+| `make ast-equal` | Strict gate requiring full AST equality for every translation unit and body (expected to fail on unlowered functions). |
+| `make differential` | Build patched zlib and Lean drivers, then run all 10 fixed-seed differential test suites ([tests/list.txt](tests/list.txt)). |
+| `make test` | Run Lean shift-lowering tests and Python AST/binary/byte-comparison unit tests ([tests/test_fidelity.py](tests/test_fidelity.py)). |
+| `make proof` | Build `ZlibF` with `--wfail` and replay `ZlibF.Results` in a fresh kernel via `leanchecker --fresh` (~10 GB RAM). |
+| `make emit` | Emit Lean C backend output and the 3 generated headers (`crc32.h`, `inffixed.h`, `trees.h`) into `build/generated/`. |
+| `make reference` | Reconstruct the 26-file patched C baseline in `build/reference/` from [upstream/](upstream) and [patches/](patches). |
+| `make bytes` | Byte-for-byte comparison between `build/reference/` and `build/generated/` (`build/bytes.json`). |
 
-To compare two C files directly, supply the include directories and defines their build requires. The comparator returns 0 for equal ASTs and a nonzero status for a difference or parse error.
+## Provenance & License
 
-```sh
-python3 tools/ast_compare.py expected.c generated.c -- -Iinclude -DFEATURE=1
-python3 tools/ast_compare.py --function byte_swap expected.c generated.c -- --target=x86_64-unknown-linux-gnu -std=gnu17 -Iinclude
-```
-
-The default comparison includes the whole translation unit. `--function` selects a main-file definition and follows declaration references, redeclarations and names in type spellings. This keeps a referenced inline helper and the fields of a referenced structure in scope, while an unrelated header typedef can be skipped. Both sides need headers for the selected target. The comparison measures structural equality of the information Clang exports in JSON. For example, Clang can dump `offsetof(struct S, x)` and `offsetof(struct S, y)` identically. The checker reports this node, inline assembly and pragma-specified field alignment as unsupported when they enter the comparison.
-
-## What each result compares
-
-* **Native C.** The Lean tool requests the pinned compiler's C backend for all 22 implementation modules and 10 runtime modules. It takes no reference C input. The generated units use Lean objects, runtime operations, and compiler-generated declarations. A missing original declaration is sufficient evidence of a different translation-unit AST.
-* **Source-format function bodies.** A second pass walks elaborated Lean expressions and renders supported calls and arguments as C. The checker places a generated body into the original declaration context so both use the same parameter types, prototypes, and macros. Only the replaced body receives a comparison result. An unsupported expression or invalid candidate is reported explicitly. Original C bodies and Lean comments are never used to fill a missing translation. [Lean source emitter](Lean2C/Forward.lean)
-* **Macros and comments.** Clang preprocesses both inputs with the same compiler flags. Comments, source coordinates, compiler allocation IDs, and redundant expression parentheses are discarded. Operators, operands, types, casts, bindings, statement order, and literal values are retained. The audit also compares 15 numeric settings with constants evaluated from the Lean model. For example, the target CRC configuration selects `W=4`, `N=5`, `NLOW=2`, and `BRAID_CUT=320`. A macro and its expansion can therefore match. An inactive branch needs a separate build configuration to exercise it.
-* **Generated headers.** Lean renders `inffixed.h`, `trees.h`, and `crc32.h` from model tables with independently implemented printers. Declaration spelling, comment text, and line layout are explicit printer metadata. CRC braid tables for configurations absent from the model are calculated from the model's byte table. All three complete headers match the patched reference byte for byte, including the inactive CRC branches. [Header emitters](Lean2C/Headers.lean)
-* **Behavior.** Differential results compare the patched C with executables compiled from the Lean definitions used in the proofs. Equal outputs establish agreement on the tested inputs. Applying a safety theorem to C also depends on the accuracy of the translation and the runtime model. [Trusted base](docs/en/trusted-base.md)
-
-### Binding and arithmetic checks
-
-The checker numbers parameters and local variables by declaration order. Every use retains its resolved binding, including uses in nested scopes. Function and field names and block-scope externs retain their spellings. For a VLA bound such as `int a[n]`, Clang may export only the text of the bound. The checker conservatively keeps the original local names in that function. For source-format bodies, the audit puts the emitter's parameter names into the original signature by position and checks the resulting declaration and body together.
-
-The unsigned shift emitter keeps a raw C shift for an in-range literal, a bounded mask or remainder, or a count bounded by a recognized enclosing unsigned comparison. Otherwise it emits the Lean count modulo 8, 16, 32 or 64. For example, an unguarded `UInt64` right shift emits `x >> (n % 64)`. Its count has a different AST from the C expression `x >> n`. For narrow unsigned products the emitter widens to unsigned arithmetic before narrowing the result. The comparator retains each `ImplicitCastExpr`, including the promotion to signed `int` in a C product of two `unsigned short` operands. These results describe emitted syntax. Transferring a safety goal also requires the C operation to be defined on the theorem's input domain and the memory accesses to satisfy its caller premises. [Source lowering](Lean2C/Lower.lean) · [Caller memory contracts](ZlibF/Spec/Common/Memory.lean)
-
-## Provenance
-
-The entire `ZlibF/` tree is preserved from oss-proof commit `0784b3e17eb85bb7699f55cb975ed1d47c1452dc`. Its Git tree object is `94fa7f04ca73c042a4fe8f8cb6b4fe9486374263`. The [pins](pins.json) also identify the zlib source commit and the SHA-256 digest of each patch. zlib and its modified sources retain the [upstream license](patches/ZLIB-LICENSE).
+Derived from [oss-proof](https://github.com/cla7aye15I4nd/oss-proof/blob/0784b3e17eb85bb7699f55cb975ed1d47c1452dc/projects/zlib/README.md) at commit `0784b3e`, with non-safety proof modules removed to retain only the safety verification closure. Upstream zlib source pin and SHA-256 patch digests live in [pins.json](pins.json); modified zlib sources retain [patches/ZLIB-LICENSE](patches/ZLIB-LICENSE).

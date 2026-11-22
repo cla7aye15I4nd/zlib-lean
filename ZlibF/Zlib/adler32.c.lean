@@ -1,4 +1,5 @@
 import ZlibF.Runtime.Alloc
+import ZlibF.Runtime.CAbi
 
 /-!
 # adler32.c — faithful translation
@@ -54,7 +55,7 @@ def lenPostDec (s : Locals) : M (Bool × Locals) :=
   pure (s.len != 0, { s with len := s.len - 1 })
 
 /-- `uLong ZEXPORT adler32_z(uLong adler, const Bytef *buf, z_size_t len)` -/
-def adler32_z (adler : UInt64) (buf : BPtr) (len : UInt64) : M UInt64 := do
+def adler32_z (adler : UInt64) (buf : ConstBPtr) (len : UInt64) : M (CExport UInt64) := do
   -- sum2 = (adler >> 16) & 0xffff; adler &= 0xffff;
   let sum2 := (adler >>> 16) &&& 0xffff
   let adler := adler &&& 0xffff
@@ -103,13 +104,13 @@ def adler32_z (adler : UInt64) (buf : BPtr) (len : UInt64) : M UInt64 := do
   return s.adler ||| (s.sum2 <<< 16)
 
 /-- `uLong ZEXPORT adler32(uLong adler, const Bytef *buf, uInt len)` -/
-def adler32 (adler : UInt64) (buf : BPtr) (len : UInt32) : M UInt64 :=
+def adler32 (adler : UInt64) (buf : ConstBPtr) (len : UInt32) : M (CExport UInt64) :=
   adler32_z adler buf len.toUInt64
 
 /-- `local uLong adler32_combine_(uLong adler1, uLong adler2, z_off64_t len2)`
 (`z_off64_t` = signed 64-bit `long` on LP64 Linux; `MOD63` is `%=` in the
 default build). -/
-def adler32_combine_ (adler1 adler2 : UInt64) (len2 : Int64) : M UInt64 := do
+def adler32_combine_ (adler1 adler2 : UInt64) (len2 : ZOff64T) : M (CStatic UInt64) := do
   -- if (len2 < 0) return 0xffffffffUL;
   if len2 < 0 then return 0xffffffff
   -- MOD63(len2);  i.e. len2 %= BASE (signed %, operands nonnegative here)
@@ -132,11 +133,11 @@ def adler32_combine_ (adler1 adler2 : UInt64) (len2 : Int64) : M UInt64 := do
   return sum1 ||| (sum2 <<< 16)
 
 /-- `uLong ZEXPORT adler32_combine(uLong adler1, uLong adler2, z_off_t len2)` (`z_off_t` = `long`). -/
-def adler32_combine (adler1 adler2 : UInt64) (len2 : Int64) : M UInt64 :=
+def adler32_combine (adler1 adler2 : UInt64) (len2 : ZOffT) : M (CExport UInt64) :=
   adler32_combine_ adler1 adler2 len2
 
 /-- `uLong ZEXPORT adler32_combine64(uLong adler1, uLong adler2, z_off64_t len2)` -/
-def adler32_combine64 (adler1 adler2 : UInt64) (len2 : Int64) : M UInt64 :=
+def adler32_combine64 (adler1 adler2 : UInt64) (len2 : ZOff64T) : M (CExport UInt64) :=
   adler32_combine_ adler1 adler2 len2
 
 end Zlib.Adler32

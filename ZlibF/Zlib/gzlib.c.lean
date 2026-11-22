@@ -1,3 +1,4 @@
+import ZlibF.Runtime.CAbi
 import ZlibF.Zlib.«gzguts.h»
 
 /-!
@@ -22,14 +23,14 @@ namespace Zlib.Gzlib
 open C Zlib.GzFs Zlib.Gzguts
 
 /-- `unsigned ZLIB_INTERNAL gz_intmax(void)` (`INT_MAX` is defined: `return INT_MAX;`) -/
-def gz_intmax : M UInt32 := pure 2147483647
+def gz_intmax : M (COrder 1001 (CHidden UInt32)) := pure 2147483647
 
 /-- The macro `GT_OFF(x)` of `gzguts.h`: `(sizeof(int) == sizeof(z_off64_t) && (x) > gz_intmax())`. -/
 def GT_OFF (x : UInt32) : M Bool := do
   if (4 : Nat) == 8 then return decide (x > (← gz_intmax)) else return false
 
 /-- `void ZLIB_INTERNAL gz_error(gz_statep state, int err, const char *msg)` -/
-def gz_error (state : GzStatePtr) (err : Int32) (msg : BPtr) : M Unit := do
+def gz_error (state : GzStatePtr) (err : Int32) (msg : ConstCStr) : M (COrder 1000 (CHidden Unit)) := do
   -- if (state->msg != NULL) { if (state->err != Z_MEM_ERROR) free(state->msg); state->msg = NULL; }
   let s ← ldS state
   if s.msg != .null then
@@ -59,7 +60,7 @@ def gz_error (state : GzStatePtr) (err : Int32) (msg : BPtr) : M Unit := do
 
 /-- `local void gz_reset(gz_statep state)`. Does not write `x.next` (a fresh state has
 `x.next = NULL` in the model). -/
-def gz_reset (state : GzStatePtr) : M Unit := do
+def gz_reset (state : GzStatePtr) : M (CStatic Unit) := do
   -- state->x.have = 0; state->past = 0;
   updX state fun x => { x with «have» := 0 }
   updS state fun s => { s with past := 0 }
@@ -85,7 +86,7 @@ structure ModeLoop where
   done : Bool
 
 /-- `local gzFile gz_open(const void *path, int fd, const char *mode)` -/
-def gz_open (path : BPtr) (fd : Int32) (mode : BPtr) : G GzFilePtr := do
+def gz_open (path : ConstVoidPtr) (fd : Int32) (mode : ConstCStr) : G (CStatic GzFilePtr) := do
   -- int oflag = 0; int exclusive = 0;
   -- if (path == NULL || mode == NULL) return NULL;
   if path == .null || mode == .null then return none
@@ -208,13 +209,13 @@ def gz_open (path : BPtr) (fd : Int32) (mode : BPtr) : G GzFilePtr := do
   return castFile state
 
 /-- `gzFile ZEXPORT gzopen(const char *path, const char *mode)` -/
-def gzopen (path mode : BPtr) : G GzFilePtr := gz_open path (-1) mode
+def gzopen (path mode : ConstCStr) : G (CExport GzFilePtr) := gz_open path (-1) mode
 
 /-- `gzFile ZEXPORT gzopen64(const char *path, const char *mode)` -/
-def gzopen64 (path mode : BPtr) : G GzFilePtr := gz_open path (-1) mode
+def gzopen64 (path mode : ConstCStr) : G (CExport GzFilePtr) := gz_open path (-1) mode
 
 /-- `gzFile ZEXPORT gzdopen(int fd, const char *mode)` -/
-def gzdopen (fd : Int32) (mode : BPtr) : G GzFilePtr := do
+def gzdopen (fd : Int32) (mode : ConstCStr) : G (CExport GzFilePtr) := do
   -- if (fd < 0 || (path = (char *)malloc(7 + 3 * sizeof(int))) == NULL) return NULL;
   if fd < 0 then return none
   let path ← allocB (7 + 3 * 4)
@@ -228,7 +229,7 @@ def gzdopen (fd : Int32) (mode : BPtr) : G GzFilePtr := do
   return gz
 
 /-- `int ZEXPORT gzbuffer(gzFile file, unsigned size)` -/
-def gzbuffer (file : GzFilePtr) (size : UInt32) : M Int32 := do
+def gzbuffer (file : GzFilePtr) (size : UInt32) : M (CExport Int32) := do
   -- if (file == NULL) return -1;
   if file.isNone then return -1
   let state := castState file
@@ -245,7 +246,7 @@ def gzbuffer (file : GzFilePtr) (size : UInt32) : M Int32 := do
   return 0
 
 /-- `int ZEXPORT gzrewind(gzFile file)` -/
-def gzrewind (file : GzFilePtr) : G Int32 := do
+def gzrewind (file : GzFilePtr) : G (CExport Int32) := do
   if file.isNone then return -1
   let state := castState file
   let s ← ldS state
@@ -259,7 +260,7 @@ def gzrewind (file : GzFilePtr) : G Int32 := do
 /-- `z_off64_t ZEXPORT gzseek64(gzFile file, z_off64_t offset, int whence)`. With patch 0002 (upstream PR 1361):
 the range checks are safe after a `gzungetc()` right after `gzopen()`. `x.next += n` with `n = 0` on a
 never-written or dangling `x.next` is accepted by the runtime. -/
-def gzseek64 (file : GzFilePtr) (offset : Int64) (whence : Int32) : G Int64 := do
+def gzseek64 (file : GzFilePtr) (offset : ZOff64T) (whence : Int32) : G (CExport ZOff64T) := do
   if file.isNone then return -1
   let state := castState file
   let s ← ldS state
@@ -322,14 +323,14 @@ def gzseek64 (file : GzFilePtr) (offset : Int64) (whence : Int32) : G Int64 := d
   return pos
 
 /-- `z_off_t ZEXPORT gzseek(gzFile file, z_off_t offset, int whence)` (`z_off_t` is `long`) -/
-def gzseek (file : GzFilePtr) (offset : Int64) (whence : Int32) : G Int64 := do
+def gzseek (file : GzFilePtr) (offset : ZOffT) (whence : Int32) : G (CExport ZOffT) := do
   -- ret = gzseek64(file, (z_off64_t)offset, whence);
   let ret ← gzseek64 file offset whence
   -- return ret == (z_off_t)ret ? (z_off_t)ret : -1;
   return if ret == ret then ret else -1
 
 /-- `z_off64_t ZEXPORT gztell64(gzFile file)` -/
-def gztell64 (file : GzFilePtr) : M Int64 := do
+def gztell64 (file : GzFilePtr) : M (CExport ZOff64T) := do
   if file.isNone then return -1
   let state := castState file
   let s ← ldS state
@@ -338,12 +339,12 @@ def gztell64 (file : GzFilePtr) : M Int64 := do
   i64add s.x.pos (if s.past != 0 then 0 else s.skip)
 
 /-- `z_off_t ZEXPORT gztell(gzFile file)` -/
-def gztell (file : GzFilePtr) : M Int64 := do
+def gztell (file : GzFilePtr) : M (CExport ZOffT) := do
   let ret ← gztell64 file
   return if ret == ret then ret else -1
 
 /-- `z_off64_t ZEXPORT gzoffset64(gzFile file)` -/
-def gzoffset64 (file : GzFilePtr) : G Int64 := do
+def gzoffset64 (file : GzFilePtr) : G (CExport ZOff64T) := do
   if file.isNone then return -1
   let state := castState file
   let s ← ldS state
@@ -358,12 +359,12 @@ def gzoffset64 (file : GzFilePtr) : G Int64 := do
   return offset
 
 /-- `z_off_t ZEXPORT gzoffset(gzFile file)` -/
-def gzoffset (file : GzFilePtr) : G Int64 := do
+def gzoffset (file : GzFilePtr) : G (CExport ZOffT) := do
   let ret ← gzoffset64 file
   return if ret == ret then ret else -1
 
 /-- `int ZEXPORT gzeof(gzFile file)` -/
-def gzeof (file : GzFilePtr) : M Int32 := do
+def gzeof (file : GzFilePtr) : M (CExport Int32) := do
   if file.isNone then return 0
   let state := castState file
   let s ← ldS state
@@ -373,7 +374,7 @@ def gzeof (file : GzFilePtr) : M Int32 := do
 
 /-- `const char * ZEXPORT gzerror(gzFile file, int *errnum)`. `errnum` is a pointer to a 4-byte block
 (little-endian `int`, see `gzguts.h.lean`). -/
-def gzerror (file : GzFilePtr) (errnum : BPtr) : M BPtr := do
+def gzerror (file : GzFilePtr) (errnum : OutInt32) : M (CExport ConstCStr) := do
   if file.isNone then return .null
   let state := castState file
   let s ← ldS state
@@ -386,7 +387,7 @@ def gzerror (file : GzFilePtr) (errnum : BPtr) : M BPtr := do
   else pure s.msg
 
 /-- `void ZEXPORT gzclearerr(gzFile file)` -/
-def gzclearerr (file : GzFilePtr) : M Unit := do
+def gzclearerr (file : GzFilePtr) : M (CExport Unit) := do
   if file.isNone then return
   let state := castState file
   let s ← ldS state

@@ -264,7 +264,7 @@ def inflateInit2_ (strm : ZStreamPtr) (windowBits : Int32) (version : BPtr) (str
   return ret
 
 /-- `int ZEXPORT inflateInit_(z_streamp strm, const char *version, int stream_size)` -/
-def inflateInit_ (strm : ZStreamPtr) (version : BPtr) (stream_size : Int32) : M Int32 :=
+def inflateInit_ (strm : ZStreamPtr) (version : ConstCStr) (stream_size : Int32) : M (CExport Int32) :=
   inflateInit2_ strm DEF_WBITS version stream_size
 
 /-- `int ZEXPORT inflatePrime(z_streamp strm, int bits, int value)` -/
@@ -1396,7 +1396,7 @@ def inflate_leave (c : Ctx) (l : IL) : M Int32 := do
   return ret
 
 /-- `int ZEXPORT inflate(z_streamp strm, int flush)` -/
-def inflate (strm : ZStreamPtr) (flush : Int32) : M Int32 := do
+def inflate (strm : ZStreamPtr) (flush : Int32) : M (CExport Int32) := do
   -- unsigned char hbuf[4];
   let hbuf ← allocLocalB 4
   let r ← (do
@@ -1415,7 +1415,7 @@ def inflate (strm : ZStreamPtr) (flush : Int32) : M Int32 := do
   return r
 
 /-- `int ZEXPORT inflateEnd(z_streamp strm)` -/
-def inflateEnd (strm : ZStreamPtr) : M Int32 := do
+def inflateEnd (strm : ZStreamPtr) : M (CExport Int32) := do
   if (← inflateStateCheck strm) != 0 then return Z_STREAM_ERROR
   let z ← ldZStream strm
   let st ← castInflateState z.state

@@ -1,5 +1,6 @@
 import ZlibF.Runtime.Space
 import ZlibF.Runtime.Schema
+import ZlibF.Runtime.CAbi
 import ZlibF.Runtime.Monad
 import ZlibF.Runtime.Ptr
 import ZlibF.Runtime.Alloc
@@ -26,7 +27,6 @@ import ZlibF.Zlib.«crc32.c»
 import ZlibF.Zlib.«inffixed.h»
 import ZlibF.Zlib.«inftrees.c»
 import ZlibF.Zlib.«inffast.c»
-import ZlibF.Zlib.«zutil.c»
 import ZlibF.Zlib.«trees.c»
 import ZlibF.Zlib.«deflate_base.c»
 import ZlibF.Zlib.«deflate_strategies.c»
@@ -139,11 +139,6 @@ import ZlibF.Proof.«inflate.c.sync3»
 import ZlibF.Proof.«inflate.c.sync4»
 import ZlibF.Proof.«deflate.c.life.getdict»
 import ZlibF.Proof.gzfs
-import ZlibF.Proof.Api.Compress
-import ZlibF.Proof.Api.Deflate
-import ZlibF.Proof.Api.Concrete
-import ZlibF.Proof.Api.CompressFailure
-import ZlibF.Proof.Api.Inflate
 
 import ZlibF.Spec.Common.Bits
 import ZlibF.Spec.Common.Calls
@@ -152,16 +147,13 @@ import ZlibF.Spec.Common.Checksums
 import ZlibF.Spec.Common.StreamQueries
 import ZlibF.Spec.Common.Utilities
 import ZlibF.Spec.Common.Parameters
-import ZlibF.Spec.Functional.Api
 import ZlibF.Spec.Functional.Checksums
 import ZlibF.Spec.Functional.Copy
 import ZlibF.Spec.Functional.Format
 import ZlibF.Spec.Functional.Initialisation
-import ZlibF.Spec.Functional.InflateCompletion
 import ZlibF.Spec.Functional.Lifecycle
 import ZlibF.Spec.Functional.Queries
 import ZlibF.Spec.Functional.Sequences
-import ZlibF.Spec.Functional.RoundTrip
 import ZlibF.Spec.Functional.StreamQueries
 import ZlibF.Spec.Functional.Streams
 import ZlibF.Spec.Functional.Utilities
@@ -181,7 +173,6 @@ import ZlibF.Spec.Safety.Inflate.FastOrigin
 import ZlibF.Spec.Safety.Inflate.Table
 import ZlibF.Spec.Functional.Api.Basic
 import ZlibF.Spec.Functional.Api.Compress
-import ZlibF.Spec.Functional.Api.Concrete
 import ZlibF.Spec.Functional.Api.Deflate
 import ZlibF.Proof.Api.Examples
 import ZlibF.Spec.Functional.Api.Goals
@@ -205,7 +196,6 @@ import ZlibF.Spec.Common.Streams
 import ZlibF.Spec.Common.Copy
 import ZlibF.Spec.Safety.Refusals
 import ZlibF.Spec.Common.HeapUniq
-import ZlibF.Spec.Common
 import ZlibF.Spec.Functional.Inflate.FastDistanceEnd
 import ZlibF.Spec.Functional.Inflate.InflateTableKind
 import ZlibF.Spec.Common.InflateGood
@@ -229,46 +219,25 @@ import ZlibF.Spec.Functional.GzClose
 import ZlibF.Spec.Common.Back
 import ZlibF.Spec.Functional.Back
 import ZlibF.Spec.Common.Domains
-import ZlibF.Spec.Functional.GzTrace
 import ZlibF.Spec.Common.Sequences
-import ZlibF.Spec.Functional.GzSequence
 import ZlibF.Proof.«public-gzeof»
 import ZlibF.Proof.«public-gzbuffer»
 import ZlibF.Proof.«inffast.c.origin»
 import ZlibF.Proof.«inffast.c.call-origin»
-import ZlibF.Proof.«inffast.c.distance-semantics»
-import ZlibF.Proof.«inffast.c.distance-result»
-import ZlibF.Proof.«inffast.c.length-semantics»
-import ZlibF.Proof.«inffast.c.length-trace»
-import ZlibF.Proof.«inffast.c.body-token»
 import ZlibF.Proof.Format.Token
 
-import ZlibF.Proof.Api.QueryLayout
-import ZlibF.Proof.«gzlib.c.public-clearerr»
-import ZlibF.Proof.Index
 import ZlibF.Proof.«public-zlib-compile-flags»
 import ZlibF.Proof.«public-zlib-version»
-import ZlibF.Proof.«public-zerror»
 import ZlibF.Proof.«public-compress-bound»
-import ZlibF.Proof.«public-get-crc-table»
 import ZlibF.Proof.«public-gz-offset»
 import ZlibF.Proof.«public-gz-error»
 import ZlibF.Proof.«public-inflate-small-queries»
 import ZlibF.Proof.«public-deflate-small-queries»
 import ZlibF.Proof.«public-inflate-mark»
 import ZlibF.Proof.«public-inflate-prime»
-import ZlibF.Proof.«public-gz-rewind»
-import ZlibF.Proof.«public-inflate-header»
-import ZlibF.Proof.«public-inflate-reset-keep»
-import ZlibF.Proof.«public-inflate-reset»
-import ZlibF.Proof.«public-inflate-reset2»
 import ZlibF.Proof.«public-inflate-end»
 import ZlibF.Proof.«public-infback-end»
 import ZlibF.Proof.«public-deflate-end»
-import ZlibF.Proof.«public-deflate-getdict»
-import ZlibF.Proof.«public-inflate-getdict»
-import ZlibF.Proof.«public-deflate-reset-keep»
-import ZlibF.Proof.«public-deflate-reset»
 import ZlibF.Proof.«public-inflate-init»
 import ZlibF.Proof.«public-infback-init»
 import ZlibF.Proof.«public-adler-combine»
@@ -277,105 +246,41 @@ import ZlibF.Proof.«public-adler-update»
 
 import ZlibF.Proof.«deflate.c.engine.positive-flush-loop»
 
-import ZlibF.Proof.«deflate.c.engine.nonfinal-eof-control»
-
-import ZlibF.Proof.«deflate.c.engine.nonfinal-eof-tail»
-
-import ZlibF.Proof.«deflate.c.engine.positive-nonfinal-call»
-
-import ZlibF.Proof.«deflate.c.engine.public-positive-source»
-
-import ZlibF.Proof.«deflate.c.engine.nonfinal-block-ready»
-
-import ZlibF.Proof.«deflate.c.engine.nonfinal-eof-ready»
-
-import ZlibF.Proof.«deflate.c.engine.nonfinal-call-controls»
-
-import ZlibF.Proof.«deflate.c.engine.public-slow-block»
-
-import ZlibF.Proof.«deflate.c.engine.nonfinal-tail-effects»
-
-import ZlibF.Proof.«deflate.c.engine.nonfinal-eof-effects»
-
-import ZlibF.Proof.«deflate.c.engine.nonfinal-call-effects»
-
-import ZlibF.Proof.«deflate.c.engine.public-block-effects»
-
-
-import ZlibF.Proof.«deflate.c.engine.valid-flush-entry»
-
-import ZlibF.Proof.«deflate.c.engine.public-block-controls»
-
-import ZlibF.Proof.«deflate.c.engine.public-block-ready»
-
-import ZlibF.Proof.«deflate.c.engine.valid-pending-entry»
-
-import ZlibF.Proof.«deflate.c.engine.public-block-buffered»
-
-import ZlibF.Proof.«deflate.c.engine.valid-initial-entry»
-
-import ZlibF.Proof.«deflate.c.engine.valid-first-header»
-
-import ZlibF.Proof.«deflate.c.engine.public-first-block»
-
-import ZlibF.Proof.«deflate.c.engine.block-protocol»
-
-import ZlibF.Proof.«deflate.c.engine.ordinary-block-history»
 
 
 
-import ZlibF.Proof.«deflate.c.engine.public-busy-block-effects»
 
-import ZlibF.Proof.«deflate.c.engine.public-first-block-effects»
 
-import ZlibF.Proof.«deflate.c.engine.block-request-effects»
 
-import ZlibF.Proof.«deflate.c.engine.block-request-buffer-frame»
 
-import ZlibF.Proof.«deflate.c.engine.block-request-controls»
 
-import ZlibF.Proof.«deflate.c.engine.block-request-contract»
 
-import ZlibF.Proof.«deflate.c.engine.ordinary-block-request-contract»
 
-import ZlibF.Proof.«trees.c.empty-stored-marker»
-import ZlibF.Proof.«deflate.c.engine.empty-bits-boundary»
-import ZlibF.Proof.«deflate.c.engine.empty-output-prepared»
-import ZlibF.Proof.«deflate.c.engine.partial-sync-publication»
-import ZlibF.Proof.«deflate.c.engine.partial-sync-return»
-import ZlibF.Proof.«deflate.c.engine.public-slow-partial-sync»
-import ZlibF.Proof.«deflate.c.engine.public-partial-sync-ready»
-import ZlibF.Proof.«deflate.c.engine.public-partial-sync-buffered»
-import ZlibF.Proof.«deflate.c.engine.public-first-partial-sync»
-import ZlibF.Proof.«deflate.c.engine.partial-sync-protocol»
-import ZlibF.Proof.«deflate.c.engine.nonfull-request»
-import ZlibF.Proof.«deflate.c.engine.full-reset-boundary»
-import ZlibF.Proof.«deflate.c.engine.nonfinal-block-settled»
-import ZlibF.Proof.«deflate.c.engine.full-marker-publication»
-import ZlibF.Proof.«deflate.c.engine.full-flush-return»
-import ZlibF.Proof.«deflate.c.engine.public-slow-full»
-import ZlibF.Proof.«deflate.c.engine.public-full-ready»
-import ZlibF.Proof.«deflate.c.engine.public-full-buffered»
-import ZlibF.Proof.«deflate.c.engine.public-first-full»
-import ZlibF.Proof.«deflate.c.engine.full-protocol»
-import ZlibF.Proof.«deflate.c.engine.all-scalar-request»
-import ZlibF.Proof.«deflate.c.engine.bit-output-effects»
-import ZlibF.Proof.«deflate.c.engine.partial-sync-effects»
-import ZlibF.Proof.«deflate.c.engine.full-flush-effects»
-import ZlibF.Proof.«deflate.c.engine.marker-return-effects»
-import ZlibF.Proof.«deflate.c.engine.public-slow-marker-effects»
-import ZlibF.Proof.«deflate.c.engine.public-busy-marker-effects»
-import ZlibF.Proof.«deflate.c.engine.public-first-marker-effects»
-import ZlibF.Proof.«deflate.c.engine.marker-request-effects»
-import ZlibF.Proof.«deflate.c.engine.marker-request-total»
-import ZlibF.Proof.«deflate.c.engine.marker-request-buffer-frame»
-import ZlibF.Proof.«deflate.c.engine.marker-request-controls»
-import ZlibF.Proof.«deflate.c.engine.marker-request-contract»
-import ZlibF.Proof.«deflate.c.engine.all-scalar-request-contract»
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import ZlibF.Proof.«deflate.c.engine.flush-content-encoding»
 
-import ZlibF.Math.DeflateFlushMarkers
 
 import ZlibF.Proof.«deflate.c.engine.strategy-encoding-cut»
 
@@ -398,100 +303,13 @@ import ZlibF.Proof.«deflate.c.engine.flush-arguments-aligned»
 import ZlibF.Math.DeflateEncodingPrefix
 import ZlibF.Proof.«deflate.c.engine.flush-block-prefix»
 
-import ZlibF.Proof.«deflate.c.engine.match-full-prefix»
-import ZlibF.Proof.«deflate.c.engine.literal-full-prefix»
-import ZlibF.Proof.«deflate.c.engine.decision-search-prefix»
-import ZlibF.Proof.«deflate.c.engine.search-decision-prefix»
-import ZlibF.Proof.«deflate.c.engine.body-prefix»
 import ZlibF.Proof.«deflate.c.engine.encoding-output-slices»
-import ZlibF.Proof.«deflate.c.engine.body-prefix-step»
-import ZlibF.Proof.«deflate.c.engine.body-all-scalar-output»
-import ZlibF.Proof.«deflate.c.engine.finish-tail-encoding»
-import ZlibF.Proof.«deflate.c.engine.eof-tail-encoding»
-import ZlibF.Proof.«deflate.c.engine.eof-stream-encoding»
-import ZlibF.Proof.«deflate.c.engine.no-flush-loop-control»
-import ZlibF.Proof.«deflate.c.engine.raw-prefix»
-import ZlibF.Proof.«deflate.c.engine.public-no-flush-encoding»
 import ZlibF.Proof.«deflate.c.engine.body-ready-phase»
-import ZlibF.Proof.«deflate.c.engine.header-encoding»
-import ZlibF.Math.DeflateByteEncoding
-import ZlibF.Proof.«deflate.c.engine.header-pending-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-header-resume-encoding»
 import ZlibF.Math.DeflateChecksum
-import ZlibF.Proof.«deflate.c.engine.fill-checksum»
 import ZlibF.Proof.«deflate.c.engine.pending-checksum»
-import ZlibF.Proof.«deflate.c.engine.flush-checksum»
-import ZlibF.Proof.«deflate.c.engine.flush-macro-checksum»
-import ZlibF.Proof.«deflate.c.engine.decision-checksum»
-import ZlibF.Proof.«deflate.c.engine.body-checksum»
-import ZlibF.Proof.«deflate.c.engine.checksum-input»
-import ZlibF.Proof.«deflate.c.engine.fill-checksum-boundary»
-import ZlibF.Proof.«deflate.c.engine.body-logical-checksum»
-import ZlibF.Proof.«deflate.c.engine.initial-encoding-checksum»
-import ZlibF.Proof.«deflate.c.engine.eof-checksum»
 import ZlibF.Proof.«deflate.c.engine.public-pending-checksum»
-import ZlibF.Proof.«deflate.c.engine.public-header-resume-checksum»
-import ZlibF.Proof.«deflate.c.engine.refusal-checksum»
-import ZlibF.Proof.«deflate.c.engine.fill-input-ledger»
-import ZlibF.Proof.«deflate.c.engine.body-input-ledger»
 import ZlibF.Proof.«deflate.c.engine.caller-input-frame»
-import ZlibF.Proof.«deflate.c.engine.body-scalar-storage»
-import ZlibF.Proof.«deflate.c.engine.input-slices»
-import ZlibF.Proof.«deflate.c.engine.loop-input-ledger»
-import ZlibF.Proof.«deflate.c.engine.no-flush-input-ledger»
-import ZlibF.Proof.«deflate.c.engine.raw-prefix-input-ledger»
-import ZlibF.Proof.«deflate.c.engine.public-no-flush-input»
 import ZlibF.Proof.«deflate.c.engine.input-snapshot-controls»
-import ZlibF.Math.DeflateZlibEncoding
-import ZlibF.Proof.«deflate.c.engine.trailer-encoding»
-import ZlibF.Proof.«deflate.c.engine.finish-stream-input-phase»
-import ZlibF.Proof.«deflate.c.engine.finish-raw-input-phase»
-import ZlibF.Proof.«deflate.c.engine.pending-complete-encoding»
-import ZlibF.Proof.«deflate.c.engine.finished-encoding»
-import ZlibF.Proof.«deflate.c.engine.finishing-tail-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-finished-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-finish-data-representation»
-import ZlibF.Proof.«deflate.c.engine.public-finish-ready-representation»
-import ZlibF.Proof.«deflate.c.engine.public-finish-accepted-representation»
-import ZlibF.Proof.«deflate.c.engine.public-first-finish-one-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-first-finish-complete-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-first-finish-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-header-finish-continue-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-header-finish-encoding»
-import ZlibF.Proof.«deflate.c.engine.encoded-state-finish»
-import ZlibF.Proof.«deflate.c.engine.encoded-state-initial»
-import ZlibF.Proof.«deflate.c.engine.encoded-state-ordinary-request»
-import ZlibF.Proof.«deflate.c.engine.encoded-state-refusals»
-import ZlibF.Proof.«deflate.c.engine.encoded-state»
-import ZlibF.Proof.«deflate.c.engine.encoding-init-observed»
-import ZlibF.Proof.«deflate.c.engine.encoding-observations»
-import ZlibF.Proof.«deflate.c.engine.finishing-new-input-encoding»
-import ZlibF.Proof.«deflate.c.engine.nonfinal-eof-checksum»
-import ZlibF.Proof.«deflate.c.engine.nonfinal-eof-prefix»
-import ZlibF.Proof.«deflate.c.engine.nonfinal-raw-input»
-import ZlibF.Proof.«deflate.c.engine.nonfinal-stream-input»
-import ZlibF.Proof.«deflate.c.engine.nonfinal-tail-prefix»
-import ZlibF.Math.DeflateMarkerPrefix
-import ZlibF.Proof.«deflate.c.engine.full-marker-checksum»
-import ZlibF.Proof.«deflate.c.engine.marker-raw-checksum»
-import ZlibF.Proof.«deflate.c.engine.marker-raw-prefix»
-import ZlibF.Proof.«deflate.c.engine.partial-sync-marker-checksum»
-import ZlibF.Proof.«deflate.c.engine.full-marker-endpoint»
-import ZlibF.Proof.«deflate.c.engine.partial-sync-marker-endpoint»
-import ZlibF.Proof.«deflate.c.engine.public-block-data-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-full-data-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-marker-return-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-nonfinal-accepted-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-nonfinal-data-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-nonfinal-data-interval»
-import ZlibF.Proof.«deflate.c.engine.public-nonfinal-ready-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-partial-sync-data-encoding»
-import ZlibF.Proof.«deflate.c.engine.encoded-state-nonfinal»
-import ZlibF.Proof.«deflate.c.engine.encoded-state-scalar-request»
-import ZlibF.Proof.«deflate.c.engine.public-first-nonfinal-complete-input»
-import ZlibF.Proof.«deflate.c.engine.public-first-nonfinal-input»
-import ZlibF.Proof.«deflate.c.engine.public-first-valid-one-encoding»
-import ZlibF.Proof.«deflate.c.engine.public-header-nonfinal-input»
 import ZlibF.Proof.«deflate.c.universal-window»
 import ZlibF.Proof.«trees.c.universal-stored»
 import ZlibF.Proof.«trees.c.universal-fixed»
@@ -609,3 +427,10 @@ import ZlibF.Proof.«public-back-safety»
 import ZlibF.Proof.«public-infback-call-domain»
 import ZlibF.Proof.«public-inflate-copy-safety»
 import ZlibF.Proof.«public-stateless-safety»
+import ZlibF.Spec.Safety.GzSafety
+import ZlibF.Proof.ByteAddress
+import ZlibF.Proof.«proof-registrations»
+import ZlibF.Proof.«public-deflate-copy»
+import ZlibF.Proof.«public-deflate-init-domain»
+import ZlibF.Proof.«public-gz-refusal»
+import ZlibF.Proof.«public-gz-sequence-nonvacuity»

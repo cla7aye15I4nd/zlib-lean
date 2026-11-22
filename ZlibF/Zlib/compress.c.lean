@@ -1,4 +1,5 @@
 import ZlibF.Zlib.«deflate.c»
+import ZlibF.Zlib.«gzguts.h»
 
 /-!
 # compress.c — faithful translation
@@ -18,7 +19,7 @@ open C Zlib.Deflate
 /-- Automatic storage for the local `z_stream`. As in `uncompr.c`, the runtime creates a fresh
 record without consulting or advancing the allocation-failure oracle. Only the subsequent
 `deflateInit` allocations are default-allocator calls in the C. -/
-def allocLocalZ : M ZStreamPtr := fun h =>
+def allocLocalZ : M StackStream := fun h =>
   match allocZStream { h with allocOk := fun _ => true } with
   | .ok (p, h') => .ok (p, { h' with allocOk := h.allocOk, nalloc := h.nalloc })
   | .error e => .error e
@@ -98,13 +99,82 @@ def compress (dest : BPtr) (destLen : Option UInt64) (source : BPtr) (sourceLen 
     M (Int32 × UInt64) :=
   compress2 dest destLen source sourceLen Z_DEFAULT_COMPRESSION
 
+/-- C-ABI pointer-cell companion for `compress2_z`. -/
+def compress2_z_c (dest : BPtr) (destLen : PtrU64) (source : ConstBPtr) (sourceLen : UInt64) (level : Int32) :
+    M (CExportAs "compress2_z" Int32) := do
+  let strm ← allocLocalZ
+  let max : UInt32 := 0xffffffff
+  let mut bad := false
+  if sourceLen > 0 && source == .null then bad := true
+  else if destLen == .null then bad := true
+  else if (← load64 destLen) > 0 && dest == .null then bad := true
+  if bad then
+    freeZStream strm
+    return Z_STREAM_ERROR
+  let mut left ← load64 destLen
+  store64 destLen 0
+  zwr strm (fun z => { z with zalloc := FnPtr.null, zfree := FnPtr.null, «opaque» := .null })
+  let ver ← Zlib.GzFs.strLit ZLIB_VERSION
+  let mut err ← deflateInit_ strm level ver sizeof_z_stream
+  if err != Z_OK then
+    freeZStream strm
+    return err
+  zwr strm (fun z => { z with next_out := dest, avail_out := 0 })
+  zwr strm (fun z => { z with next_in := source, avail_in := 0 })
+  let mut sourceLen := sourceLen
+  let (e, l, sl) ← cdoWhile
+    (fun ((_, left, sourceLen) : Int32 × UInt64 × UInt64) => do
+      let mut left := left
+      let mut sourceLen := sourceLen
+      if (← zrd strm (·.avail_out)) == 0 then
+        let ao : UInt32 := if left > max.toUInt64 then max else left.toUInt32
+        zwr strm (fun z => { z with avail_out := ao })
+        left := left - ao.toUInt64
+      if (← zrd strm (·.avail_in)) == 0 then
+        let ai : UInt32 := if sourceLen > max.toUInt64 then max else sourceLen.toUInt32
+        zwr strm (fun z => { z with avail_in := ai })
+        sourceLen := sourceLen - ai.toUInt64
+      let err ← deflate strm (if sourceLen != 0 then Z_NO_FLUSH else Z_FINISH)
+      pure (err, left, sourceLen))
+    (fun (st : Int32 × UInt64 × UInt64) => pure (st.1 == Z_OK, st))
+    (err, left, sourceLen)
+  err := e
+  left := l
+  sourceLen := sl
+  let no ← zrd strm (·.next_out)
+  let n ← Ptr.diff no dest
+  store64 destLen n.toUInt64
+  let _ ← deflateEnd strm
+  freeZStream strm
+  return if err == Z_STREAM_END then Z_OK else err
+
+/-- C-ABI pointer-cell companion for `compress2`. -/
+def compress2_c (dest : BPtr) (destLen : PtrU64) (source : ConstBPtr) (sourceLen : UInt64) (level : Int32) :
+    M (CExportAs "compress2" Int32) := do
+  let got ← Zlib.Gzguts.allocLocal64
+  store64 got (← load64 destLen)
+  let ret ← compress2_z_c dest got source sourceLen level
+  store64 destLen (← load64 got)
+  freeB got
+  return ret
+
+/-- C-ABI pointer-cell companion for `compress_z`. -/
+def compress_z_c (dest : BPtr) (destLen : PtrU64) (source : ConstBPtr) (sourceLen : UInt64) :
+    M (CExportAs "compress_z" Int32) :=
+  compress2_z_c dest destLen source sourceLen Z_DEFAULT_COMPRESSION
+
+/-- C-ABI pointer-cell companion for `compress`. -/
+def compress_c (dest : BPtr) (destLen : PtrU64) (source : ConstBPtr) (sourceLen : UInt64) :
+    M (CExportAs "compress" Int32) :=
+  compress2_c dest destLen source sourceLen Z_DEFAULT_COMPRESSION
+
 /-- `z_size_t ZEXPORT compressBound_z(z_size_t sourceLen)` -/
-def compressBound_z (sourceLen : UInt64) : UInt64 :=
+def compressBound_z (sourceLen : UInt64) : CExport UInt64 :=
   let bound := sourceLen + (sourceLen >>> 12) + (sourceLen >>> 14) + (sourceLen >>> 25) + 13
   if bound < sourceLen then 0xffffffffffffffff else bound
 
 /-- `uLong ZEXPORT compressBound(uLong sourceLen)` -/
-def compressBound (sourceLen : UInt64) : UInt64 :=
+def compressBound (sourceLen : UInt64) : CExport UInt64 :=
   -- (uLong)bound != bound is always false: both are 64 bits
   compressBound_z sourceLen
 

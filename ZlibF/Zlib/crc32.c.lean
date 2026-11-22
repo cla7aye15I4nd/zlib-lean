@@ -1,5 +1,6 @@
 import ZlibF.Runtime.Alloc
 import ZlibF.Runtime.Address
+import ZlibF.Runtime.CAbi
 import ZlibF.Zlib.«crc32.h»
 
 /-!
@@ -89,14 +90,14 @@ def loadWord (p : BPtr) : M UInt32 := do
 /-! ### Byte swaps and the word CRCs -/
 
 /-- `local z_word_t byte_swap(z_word_t word)` (`W == 4`) -/
-def byte_swap (word : UInt32) : UInt32 :=
+def byte_swap (word : ZWordT) : CStatic ZWordT :=
   ((word &&& 0xff000000) >>> 24) |||
   ((word &&& 0xff0000) >>> 8) |||
   ((word &&& 0xff00) <<< 8) |||
   ((word &&& 0xff) <<< 24)
 
 /-- `local z_crc_t crc_word(z_word_t data)` (`W == 4`) -/
-def crc_word (data : UInt32) : M UInt32 := do
+def crc_word (data : ZWordT) : M (CStatic ZCrcT) := do
   -- for (k = 0; k < W; k++) data = (data >> 8) ^ crc_table[data & 0xff];
   let (data, _) ← cwhile (fun (data, k) => pure (k < W, (data, k)))
     (fun (data, k) => do
@@ -106,7 +107,7 @@ def crc_word (data : UInt32) : M UInt32 := do
   pure data
 
 /-- `local z_word_t crc_word_big(z_word_t data)` (`W == 4`) -/
-def crc_word_big (data : UInt32) : M UInt32 := do
+def crc_word_big (data : ZWordT) : M (CStatic ZWordT) := do
   -- for (k = 0; k < W; k++) data = (data << 8) ^ crc_big_table[(data >> ((W - 1) << 3)) & 0xff];
   let (data, _) ← cwhile (fun (data, k) => pure (k < W, (data, k)))
     (fun (data, k) => do
@@ -117,7 +118,7 @@ def crc_word_big (data : UInt32) : M UInt32 := do
 /-! ### Polynomial arithmetic -/
 
 /-- `local uLong multmodp(uLong a, uLong b)` -/
-def multmodp (a b : UInt64) : M UInt64 := do
+def multmodp (a b : UInt64) : M (CStatic UInt64) := do
   -- m = (uLong)1 << 31; p = 0;
   -- for (;;) { if (a & m) { p ^= b; if ((a & (m - 1)) == 0) break; }
   --            m >>= 1; b = b & 1 ? (b >> 1) ^ POLY : b >> 1; }
@@ -133,7 +134,7 @@ def multmodp (a b : UInt64) : M UInt64 := do
   pure p
 
 /-- `local uLong x2nmodp(z_off64_t n, unsigned k)` -/
-def x2nmodp (n : Int64) (k : UInt32) : M UInt64 := do
+def x2nmodp (n : ZOff64T) (k : UInt32) : M (CStatic UInt64) := do
   -- p = (uLong)1 << 31;             /* x^0 == 1 */
   -- while (n) { if (n & 1) p = multmodp(x2n_table[k & 31], p); n >>= 1; k++; }
   let (p, _, _) ← cwhile (fun (p, n, k) => pure (n != 0, (p, n, k)))
@@ -146,7 +147,7 @@ def x2nmodp (n : Int64) (k : UInt32) : M UInt64 := do
   pure p
 
 /-- `const z_crc_t FAR * ZEXPORT get_crc_table(void)` -/
-def get_crc_table : M UPtr :=
+def get_crc_table : M (CExport ConstUPtr) :=
   -- return (const z_crc_t FAR *)crc_table;
   pure (Ptr.ref URef.st_crc_table 0)
 
@@ -260,7 +261,7 @@ def crcByte (crc : UInt64) (buf : BPtr) : M (UInt64 × BPtr) := do
   pure ((crc >>> 8) ^^^ t.toUInt64, buf)
 
 /-- `local uLong crc32_braid(uLong crc, const unsigned char FAR *buf, z_size_t len)` -/
-def crc32_braid (crc : UInt64) (buf : BPtr) (len : UInt64) : M UInt64 := do
+def crc32_braid (crc : UInt64) (buf : ConstBPtr) (len : UInt64) : M (CStatic UInt64) := do
   let mut crc := crc
   let mut buf := buf
   let mut len := len
@@ -331,7 +332,7 @@ def crc32_braid (crc : UInt64) (buf : BPtr) (len : UInt64) : M UInt64 := do
   pure c
 
 /-- `uLong ZEXPORT crc32_z(uLong crc, const unsigned char FAR *buf, z_size_t len)` -/
-def crc32_z (crc : UInt64) (buf : BPtr) (len : UInt64) : M UInt64 := do
+def crc32_z (crc : UInt64) (buf : ConstBPtr) (len : UInt64) : M (CExport UInt64) := do
   -- if (buf == Z_NULL) return 0;
   if buf == .null then return 0
   -- crc = (~crc) & 0xffffffff;
@@ -415,24 +416,24 @@ def crc32_z (crc : UInt64) (buf : BPtr) (len : UInt64) : M UInt64 := do
   pure (c ^^^ 0xffffffff)
 
 /-- `uLong ZEXPORT crc32(uLong crc, const unsigned char FAR *buf, uInt len)` -/
-def crc32 (crc : UInt64) (buf : BPtr) (len : UInt32) : M UInt64 :=
+def crc32 (crc : UInt64) (buf : ConstBPtr) (len : UInt32) : M (CExport UInt64) :=
   -- return crc32_z(crc, buf, len);
   crc32_z crc buf len.toUInt64
 
 /-- `uLong ZEXPORT crc32_combine_gen64(z_off64_t len2)` -/
-def crc32_combine_gen64 (len2 : Int64) : M UInt64 := do
+def crc32_combine_gen64 (len2 : ZOff64T) : M (CExport UInt64) := do
   -- if (len2 < 0) return 0;
   if len2 < 0 then return 0
   -- return x2nmodp(len2, 3);
   x2nmodp len2 3
 
 /-- `uLong ZEXPORT crc32_combine_gen(z_off_t len2)` -/
-def crc32_combine_gen (len2 : Int64) : M UInt64 :=
+def crc32_combine_gen (len2 : ZOffT) : M (CExport UInt64) :=
   -- return crc32_combine_gen64((z_off64_t)len2);
   crc32_combine_gen64 len2
 
 /-- `uLong ZEXPORT crc32_combine_op(uLong crc1, uLong crc2, uLong op)` -/
-def crc32_combine_op (crc1 crc2 op : UInt64) : M UInt64 := do
+def crc32_combine_op (crc1 crc2 op : UInt64) : M (CExport UInt64) := do
   -- if (op == 0) return 0;
   if op == 0 then return 0
   -- return multmodp(op, crc1 & 0xffffffff) ^ (crc2 & 0xffffffff);
@@ -440,12 +441,12 @@ def crc32_combine_op (crc1 crc2 op : UInt64) : M UInt64 := do
   pure (m ^^^ (crc2 &&& 0xffffffff))
 
 /-- `uLong ZEXPORT crc32_combine64(uLong crc1, uLong crc2, z_off64_t len2)` -/
-def crc32_combine64 (crc1 crc2 : UInt64) (len2 : Int64) : M UInt64 := do
+def crc32_combine64 (crc1 crc2 : UInt64) (len2 : ZOff64T) : M (CExport UInt64) := do
   -- return crc32_combine_op(crc1, crc2, crc32_combine_gen64(len2));
   crc32_combine_op crc1 crc2 (← crc32_combine_gen64 len2)
 
 /-- `uLong ZEXPORT crc32_combine(uLong crc1, uLong crc2, z_off_t len2)` -/
-def crc32_combine (crc1 crc2 : UInt64) (len2 : Int64) : M UInt64 :=
+def crc32_combine (crc1 crc2 : UInt64) (len2 : ZOffT) : M (CExport UInt64) :=
   -- return crc32_combine64(crc1, crc2, (z_off64_t)len2);
   crc32_combine64 crc1 crc2 len2
 

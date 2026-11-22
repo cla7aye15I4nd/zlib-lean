@@ -1,4 +1,5 @@
 import ZlibF.Runtime.Tables
+import ZlibF.Runtime.CAbi
 import ZlibF.Zlib.gzfs
 
 /-!
@@ -72,30 +73,11 @@ cannot fail). Made by the runtime allocator `allocBytes`. -/
 def allocLocal (n : Nat) : M BPtr := fun h =>
   allocBytes (Array.ofFn (n := n) fun i => Junk.of (h.garbage h.nalloc i.val)) h
 
-/-- `*(int *)p` (the runtime has no pointer to a single `int`: see the file comment). -/
-def load32 (p : BPtr) : M Int32 := do
-  let b0 ← index8 p 0; let b1 ← index8 p 1; let b2 ← index8 p 2; let b3 ← index8 p 3
-  return (b0.toUInt32 ||| (b1.toUInt32 <<< 8) ||| (b2.toUInt32 <<< 16) ||| (b3.toUInt32 <<< 24)).toInt32
+/-- An 8-byte automatic scalar cell (`z_size_t got`, `uLong used`). -/
+abbrev allocLocal64 : M C.StackScalar64 := allocLocal 8
 
-/-- `*(int *)p = v` -/
-def store32 (p : BPtr) (v : Int32) : M Unit := do
-  let u := v.toUInt32
-  store8 (← p.add 0) u.toUInt8
-  store8 (← p.add 1) (u >>> 8).toUInt8
-  store8 (← p.add 2) (u >>> 16).toUInt8
-  store8 (← p.add 3) (u >>> 24).toUInt8
-
-/-- `*(uint64_t *)p` -/
-def load64 (p : BPtr) : M UInt64 := do
-  let mut v : UInt64 := 0
-  for i in [0:8] do
-    v := v ||| ((← index8 p i).toUInt64 <<< (8 * i).toUInt64)
-  return v
-
-/-- `*(uint64_t *)p = v` -/
-def store64 (p : BPtr) (v : UInt64) : M Unit := do
-  for i in [0:8] do
-    store8 (← p.add i) (v >>> (8 * i).toUInt64).toUInt8
+-- `*(int *)p`, `*(uint64_t *)p`, and their stores live in `C` (`ZlibF.Runtime.CAbi`) and are re-exported here.
+export C (load32 store32 load64 store64)
 
 /-- `memchr(p, c, n)`: reads at most `n` bytes and stops at the first match; faults if a byte it reads is outside
 the object. Returns NULL if there is no match. -/

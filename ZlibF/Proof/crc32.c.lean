@@ -2795,6 +2795,7 @@ theorem crc_word_big_safe (h : Heap) (data : UInt32) :
     ∃ r, C.run (crc_word_big data) h = .ok (r, h) := by
   have key : ∃ y, OkOn h (crc_word_big data) y ∧ True := by
     unfold crc_word_big
+    dsimp only [C.CStatic, C.ZWordT]
     refine OkOn.bind_ex (R := fun _ : UInt32 × Int32 => True) ?_ (fun x _ => ⟨x.1, OkOn.pure _ _, trivial⟩)
     refine cwhile_ok (fun cnt s => ∃ i, i + cnt = 4 ∧ s.2 = Int32.ofNat i) (fun _ => True) ?_ ?_ (k := 4)
       (s := (data, (0 : Int32))) ⟨0, rfl, rfl⟩ (by show 4 < 2 ^ 64; omega)
@@ -2814,7 +2815,7 @@ theorem crc_word_big_safe (h : Heap) (data : UInt32) :
       · show OkOn h (pure _) _
         simp only [W, hc]
         exact OkOn.pure _ _
-      · show OkOn h (do let t ← idx1 Crc32H.crc_big_table (((d >>> 24) &&& 0xff).toNat); pure ((d <<< 8) ^^^ t, Int32.ofNat i + 1)) _
+      · dsimp only [C.ZWordT]
         rw [hk]
         exact OkOn.bind ht (OkOn.pure _ _)
     · intro s hP

@@ -1,3 +1,4 @@
+import ZlibF.Runtime.CAbi
 import ZlibF.Zlib.«gzlib.c»
 import ZlibF.Zlib.«inflate.c»
 
@@ -635,7 +636,7 @@ def gzdirect (file : GzFilePtr) : G Int32 := do
   return if (← ldS state).direct == 1 then 1 else 0
 
 /-- `int ZEXPORT gzclose_r(gzFile file)` -/
-def gzclose_r (file : GzFilePtr) : G Int32 := do
+def gzclose_r (file : GzFilePtr) : G (CExport Int32) := do
   if file.isNone then return Z_STREAM_ERROR
   let state := castState file
   let s ← ldS state

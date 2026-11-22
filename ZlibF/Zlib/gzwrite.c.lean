@@ -1,3 +1,4 @@
+import ZlibF.Runtime.CAbi
 import ZlibF.Zlib.«gzlib.c»
 import ZlibF.Zlib.«deflate.c»
 
@@ -519,7 +520,7 @@ def gzsetparams (file : GzFilePtr) (level strategy : Int32) : G Int32 := do
   return Z_OK
 
 /-- `int ZEXPORT gzclose_w(gzFile file)` -/
-def gzclose_w (file : GzFilePtr) : G Int32 := do
+def gzclose_w (file : GzFilePtr) : G (CExport Int32) := do
   let mut ret := Z_OK
   if file.isNone then return Z_STREAM_ERROR
   let state := castState file

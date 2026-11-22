@@ -89,6 +89,45 @@ class Baseline(unittest.TestCase):
         for path in ("crc32.h", "inffixed.h", "trees.h"):
             self.assertTrue(report["headers"][path]["byte_equal"])
 
+    def test_binary_equivalence(self):
+        report_path = ROOT / "build/binary-report.json"
+        if not report_path.exists():
+            self.skipTest("build/binary-report.json not generated yet; run `make binary`")
+        report = json.loads(report_path.read_text())
+        self.assertEqual(len(report["units"]), 15)
+        self.assertTrue(report["abi_layout_verified"])
+        self.assertEqual(
+            report["abi_layout_checks"],
+            {
+                "struct z_stream_s": 14,
+                "struct gz_header_s": 13,
+                "ct_data": 2,
+                "static_tree_desc": 5,
+                "tree_desc": 3,
+                "deflate_state": 61,
+                "code": 3,
+                "struct inflate_state": 37,
+                "struct gzFile_s": 3,
+                "gz_state": 22,
+            },
+        )
+        self.assertTrue(
+            {"adler32.c", "compress.c", "gzclose.c", "uncompr.c", "zutil.c"}.issubset(
+                set(report["standalone_units"])
+            )
+        )
+        for unit in report["standalone_units"]:
+            self.assertEqual(report["units"][unit]["mode"], "standalone")
+            self.assertTrue(report["units"][unit]["obj_equal"])
+        self.assertGreaterEqual(len(report["functions_replaced"]), 28)
+        for header, info in report["headers_replaced"].items():
+            self.assertTrue(info["byte_equal"], f"header {header} differed")
+        for unit, info in report["units"].items():
+            self.assertTrue(info["obj_equal"], f"object file differed for {unit}")
+        self.assertTrue(report["archive"]["members_equal"])
+        self.assertTrue(report["archive"]["equal"])
+        self.assertTrue((ROOT / report["archive"]["path"]).is_file())
+
     def test_byte_cli(self):
         exe = ROOT / ".lake/build/bin/lean2c"
         with tempfile.TemporaryDirectory() as tmp:

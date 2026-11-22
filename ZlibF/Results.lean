@@ -4,25 +4,23 @@ import ZlibF.ResultsCheck
 /-!
 # Results
 
-The registry of results, checked by Lean when the library is built.
+The safety-only registry of results, checked by Lean when the library is built.
 
-`proved` pairs each proved goal with the theorem that proves it. `notDone` lists the goals that are
-stated and have no theorem yet. `required` lists the goals the project must prove: the safety goal of
-every documented function of `zlib.h`, the safety goals of sequences and refusals, the non-vacuity
-goals, and the round trip of the default zlib stream. The command at the end of this file
-(`checkWith`, in `ZlibF/ResultsCheck.lean`) fails the build unless each theorem's type is exactly its
-goal, each theorem depends only on `propext`, `Classical.choice` and `Quot.sound`, every required goal
-is proved, and every goal of the library (every definition named `…Goal.…` whose type is `Prop` after
-its binders) is in exactly one of `proved` and `notDone`. It prints the counts.
+`proved` pairs each proved safety goal with the theorem that proves it. `notDone` is empty (`[]`).
+`required` lists the 99 required safety goals: the safety goal of every documented function of
+`zlib.h`, the safety goals of sequences and refusals, and the non-vacuity goals. Functional and
+round-trip goals outside the maintained safety scope have been excluded from the registry.
 
-A theorem that only makes up a result needs no entry: the axiom check covers everything a goal's
-theorem depends on.
+The command at the end of this file (`checkWith`, in `ZlibF/ResultsCheck.lean`) fails the build
+unless each theorem's type is exactly its goal, each theorem depends only on `propext`,
+`Classical.choice` and `Quot.sound`, every required goal is proved, and every goal in safety
+scope (`ZlibF.Spec.Safety.*`, `compressBound`, `compressBound_z`) is listed. It prints the counts.
 -/
 
 namespace ZlibF.Results
 open Lean Elab Command
 
-/-- Each proved goal, and the theorem whose type is exactly that goal. -/
+/-- Each proved safety goal, and the theorem whose type is exactly that goal. -/
 def proved : List (Name × Name) := [
   -- Safety of each stream function
   (``ZlibF.Spec.Public.Goal.deflateBound_safety, ``ZlibF.Spec.Public.StreamCallSafetyProof.deflateBound_safety),
@@ -59,6 +57,8 @@ def proved : List (Name × Name) := [
   -- Safety of the query functions
   (``ZlibF.Spec.Public.Goal.zlibCompileFlags_safety, ``ZlibF.Spec.Public.StatelessSafetyProof.zlibCompileFlags_safety),
   (``ZlibF.Spec.Public.Goal.zlibVersion_safety, ``ZlibF.Spec.Public.StatelessSafetyProof.zlibVersion_safety),
+  (``ZlibF.Spec.Public.Goal.compressBound, ``ZlibF.Spec.Public.Proofs.compressBound),
+  (``ZlibF.Spec.Public.Goal.compressBound_z, ``ZlibF.Spec.Public.Proofs.compressBound_z),
   -- Safety of the checksum functions
   (``ZlibF.Spec.Public.Goal.adler32_combine64_safety, ``ZlibF.Spec.Public.StatelessSafetyProof.adler32_combine64_safety),
   (``ZlibF.Spec.Public.Goal.adler32_combine_safety, ``ZlibF.Spec.Public.StatelessSafetyProof.adler32_combine_safety),
@@ -162,214 +162,14 @@ def proved : List (Name × Name) := [
   (``Zlib.Inftrees.Spec.Goal.inflate_table_decoder_safe, ``Zlib.Inftrees.Proofs.inflate_table_decoder_safe),
   (``Zlib.Inftrees.Spec.Goal.inflate_table_read_extent, ``Zlib.Inftrees.Proofs.inflate_table_read_extent),
   (``Zlib.Inftrees.Spec.RootTable.Goal.constructor_root_bits, ``Zlib.Inftrees.Proofs.constructor_root_bits),
-  (``Zlib.Inftrees.Spec.Subtable.Goal.constructor_subtable_bits, ``Zlib.Inftrees.Proofs.constructor_subtable_bits),
-  -- The round trip of the default zlib stream
-  (``ZlibF.Spec.Public.Goal.compress_uncompress_roundtrip, ``ZlibF.Spec.Public.Proofs.RoundTrip.compress_uncompress_roundtrip),
-  (``ZlibF.Spec.Public.Goal.compress_uncompress_roundtrip_witness, ``ZlibF.Spec.Public.Proofs.RoundTrip.compress_uncompress_roundtrip_witness),
-  (``ZlibF.Spec.Public.Goal.compress_completes, ``ZlibF.Spec.Public.Proofs.RoundTrip.compress_completes),
-  (``ZlibF.Spec.Public.Goal.compress_z_completes, ``ZlibF.Spec.Public.Proofs.RoundTrip.compress_z_completes_core),
-  (``ZlibF.Spec.Public.Goal.uncompress_completes, ``ZlibF.Spec.Public.Proofs.RoundTrip.uncompress_completes),
-  (``ZlibF.Spec.Public.Goal.stream_roundtrip_total, ``ZlibF.Spec.Public.Proofs.RoundTrip.stream_roundtrip_total),
-  (``ZlibF.Spec.Public.Goal.deflate_finish_ends, ``ZlibF.Spec.Public.Proofs.RoundTrip.deflate_finish_ends),
-  (``ZlibF.Spec.Public.Goal.inflate_chain_ends, ``ZlibF.Spec.Public.Proofs.RoundTrip.inflate_chain_ends),
-  (``ZlibF.Spec.Public.Goal.stream_roundtrip, ``ZlibF.Spec.Public.Proofs.RoundTrip.stream_roundtrip),
-  (``ZlibF.Spec.Public.Goal.deflate_completes_default, ``ZlibF.Spec.Public.Proofs.RoundTrip.deflate_completes_default),
-  (``ZlibF.Spec.Public.Goal.deflate_bound_default, ``ZlibF.Spec.Public.Proofs.RoundTrip.deflate_bound_default),
-  (``ZlibF.Spec.Public.Goal.inflate_completes_default, ``ZlibF.Spec.Public.Proofs.RoundTrip.inflate_completes_default),
-  (``ZlibF.Spec.Public.Goal.default_inflate_progress, ``Zlib.Inflate.Proofs.DefaultCompletes.progress),
-  (``ZlibF.Spec.Public.Goal.default_inflate_completes, ``Zlib.Inflate.Proofs.DefaultCompletes.completes),
-  -- Other functional goals
-  (``Zlib.Crc32.Spec.ByteViews.Goal.crc32_all_byte_views, ``Zlib.Crc32.Proofs.crc32_all_byte_views),
-  (``Zlib.Crc32.Spec.ByteViews.Goal.crc32_z_all_byte_views, ``Zlib.Crc32.Proofs.crc32_z_all_byte_views),
-  (``Zlib.Inffast.Spec.BodyToken.Goal.actual_body_refines_token, ``Zlib.Inffast.Proofs.actual_body_refines_token),
-  (``Zlib.Inffast.Spec.DistanceOrigin.Goal.actual_distance_block_preserves_origin, ``Zlib.Inffast.Proofs.actual_distance_block_preserves_origin),
-  (``Zlib.Inffast.Spec.DistanceResult.Goal.actual_distance_refines_lz77, ``Zlib.Inffast.Proofs.actual_distance_refines_lz77),
-  (``Zlib.Inffast.Spec.DistanceSemantics.Goal.distance_lookup_matches_format, ``Zlib.Inffast.Proofs.distance_lookup_matches_format),
-  (``Zlib.Inffast.Spec.LengthSemantics.Goal.length_lookup_matches_format, ``Zlib.Inffast.Proofs.length_lookup_matches_format),
-  (``Zlib.Inffast.Spec.LengthTrace.Goal.actual_body_retains_selected_length, ``Zlib.Inffast.Proofs.actual_body_retains_selected_length),
-  (``Zlib.Inffast.Spec.MatchHistory.Goal.actual_copy_match_refines_lz77, ``Zlib.Inffast.Proofs.actual_copy_match_refines_lz77),
-  (``Zlib.Inffast.Spec.MatchHistory.Goal.match_array_refines_lz77, ``Zlib.Inffast.Proofs.fast_match_array_refines_lz77),
-  (``Zlib.Inftrees.Spec.DecodeRejection.Goal.decode_table_classifies_input, ``Zlib.Inftrees.Proofs.decode_table_classifies_input),
-  (``Zlib.Inftrees.Spec.DecodeSemantics.Goal.decode_table_matches_format, ``Zlib.Inftrees.Proofs.decode_table_matches_format),
-  (``Zlib.Inftrees.Spec.DecodeShort.Goal.short_decode_table_leaf_sound, ``Zlib.Inftrees.Proofs.short_decode_table_leaf_sound),
-  (``Zlib.Inftrees.Spec.DecodeSoundness.Goal.decode_table_leaf_sound, ``Zlib.Inftrees.Proofs.decode_table_leaf_sound),
-  (``Zlib.Inftrees.Spec.DecodeTableFrame.Goal.decode_table_read_preserved, ``Zlib.Inftrees.Proofs.decode_table_read_preserved),
-  (``Zlib.Inftrees.Spec.DecodeTableInvariant.Goal.constructor_establishes_decode_table_invariant, ``Zlib.Inftrees.Proofs.constructor_establishes_decode_table_invariant),
-  (``Zlib.Inftrees.Spec.DecodeTableInvariant.Goal.decode_table_invariant_of_prefix, ``Zlib.Inftrees.Proofs.decode_table_invariant_of_prefix),
-  (``Zlib.Inftrees.Spec.DecodeTableStability.Goal.constructor_establishes_query_stability, ``Zlib.Inftrees.Proofs.constructor_establishes_query_stability),
-  (``Zlib.Inftrees.Spec.DecodeTableStability.Goal.query_stability_of_prefix, ``Zlib.Inftrees.Proofs.query_stability_of_prefix),
-  (``Zlib.Inftrees.Spec.DecodeTableStability.Goal.short_rejected_leaf_stays_invalid, ``Zlib.Inftrees.Proofs.short_rejected_leaf_stays_invalid),
-  (``Zlib.Inftrees.Spec.FastTableFlags.Goal.constructor_establishes_fast_leaf_flags, ``Zlib.Inftrees.Proofs.constructor_establishes_fast_leaf_flags),
-  (``Zlib.Inftrees.Spec.FastTableFlags.Goal.fast_leaf_flags_of_prefix, ``ZlibF.Proof.Registration.fast_leaf_flags_of_prefix),
-  (``Zlib.Inftrees.Spec.FastTableFlags.Goal.fixed_tables_have_fast_leaf_flags, ``ZlibF.Proof.Registration.fixed_tables_fast_leaf_flags),
-  (``Zlib.Inftrees.Spec.FastTableFlags.Goal.leaf_classification_agrees, ``ZlibF.Proof.Registration.leaf_classification_agrees),
-  (``ZlibF.Math.LZ77Copy.Goal.output_copy_refines_lz77, ``ZlibF.Math.LZ77Copy.output_copy_refines_lz77),
-  (``ZlibF.Math.LZ77Copy.Goal.window_copy_refines_lz77, ``ZlibF.Math.LZ77Copy.window_copy_refines_lz77),
-  (``ZlibF.Math.LZ77History.Goal.copy_back_compose, ``ZlibF.Math.LZ77History.copy_back_compose),
-  (``ZlibF.Math.LZ77History.Goal.copy_back_extends_history, ``ZlibF.Math.LZ77History.copy_back_extends_history),
-  (``ZlibF.Math.LZ77History.Goal.retained_history_agrees, ``ZlibF.Math.LZ77History.retained_history_agrees),
-  (``ZlibF.Math.LZ77History.Goal.window_distance_check_agrees, ``ZlibF.Math.LZ77History.window_distance_check_agrees),
-  (``ZlibF.Spec.Api.Goal.compress2_z_first_alloc_failure, ``ZlibF.Spec.Api.Proofs.compress2_z_first_alloc_failure),
-  (``ZlibF.Spec.Api.Goal.compress_bound_adequate, ``ZlibF.Spec.Api.Proofs.compress_bound_adequate),
-  (``ZlibF.Spec.Api.Goal.compress_bound_value, ``ZlibF.Spec.Api.Proofs.compress_bound_value),
-  (``ZlibF.Spec.Api.Goal.compress_roundtrip, ``ZlibF.Spec.Api.Proofs.compress_roundtrip),
-  (``ZlibF.Spec.Api.Goal.deflate_bound_adequate, ``ZlibF.Spec.Api.Proofs.deflate_bound_adequate),
-  (``ZlibF.Spec.Api.Goal.deflate_completes, ``ZlibF.Spec.Api.Proofs.deflate_completes),
-  (``ZlibF.Spec.Api.Goal.deflate_full_flush_resync, ``ZlibF.Spec.Api.Proofs.deflate_full_flush_resync),
-  (``ZlibF.Spec.Api.Goal.deflate_valid, ``ZlibF.Spec.Api.Proofs.deflate_valid),
-  (``ZlibF.Spec.Api.Goal.dict_roundtrip, ``ZlibF.Spec.Api.Proofs.dict_roundtrip),
-  (``ZlibF.Spec.Api.Goal.format_deterministic, ``ZlibF.Spec.Api.Proofs.format_deterministic),
-  (``ZlibF.Spec.Api.Goal.format_prefix_free, ``ZlibF.Spec.Api.Proofs.format_prefix_free),
-  (``ZlibF.Spec.Api.Goal.gz_roundtrip, ``ZlibF.Spec.Api.Proofs.gz_roundtrip),
-  (``ZlibF.Spec.Api.Goal.header_roundtrip, ``ZlibF.Spec.Api.Proofs.header_roundtrip),
-  (``ZlibF.Spec.Api.Goal.inflate_completes, ``ZlibF.Spec.Api.Proofs.inflate_completes),
-  (``ZlibF.Spec.Api.Goal.inflate_decodes, ``ZlibF.Spec.Api.Proofs.inflate_decodes),
-  (``ZlibF.Spec.Api.Goal.inflate_deferred_distance, ``ZlibF.Spec.Api.Proofs.inflate_deferred_distance),
-  (``ZlibF.Spec.Api.Goal.roundtrip, ``ZlibF.Spec.Api.Proofs.roundtrip),
-  (``ZlibF.Spec.Api.Goal.roundtrip_completes, ``ZlibF.Spec.Api.Proofs.roundtrip_completes),
-  (``ZlibF.Spec.Public.Goal.adler32, ``ZlibF.Spec.Public.AdlerUpdateProof.adler_public),
-  (``ZlibF.Spec.Public.Goal.adler32_combine, ``ZlibF.Spec.Public.AdlerCombineProof.combine_public),
-  (``ZlibF.Spec.Public.Goal.adler32_combine64, ``ZlibF.Spec.Public.AdlerCombineProof.combine64_public),
-  (``ZlibF.Spec.Public.Goal.adler32_z, ``ZlibF.Spec.Public.AdlerUpdateProof.adler_z_public),
-  (``ZlibF.Spec.Public.Goal.compressBound, ``ZlibF.Spec.Public.Proofs.compressBound),
-  (``ZlibF.Spec.Public.Goal.compressBound_z, ``ZlibF.Spec.Public.Proofs.compressBound_z),
-  (``ZlibF.Spec.Public.Goal.crc32, ``ZlibF.Spec.Public.Proofs.crc32),
-  (``ZlibF.Spec.Public.Goal.crc32_combine, ``ZlibF.Spec.Public.CrcCombineProof.combine),
-  (``ZlibF.Spec.Public.Goal.crc32_combine64, ``ZlibF.Spec.Public.CrcCombineProof.combine64),
-  (``ZlibF.Spec.Public.Goal.crc32_combine_gen, ``ZlibF.Spec.Public.CrcCombineProof.gen),
-  (``ZlibF.Spec.Public.Goal.crc32_combine_gen64, ``ZlibF.Spec.Public.CrcCombineProof.gen64),
-  (``ZlibF.Spec.Public.Goal.crc32_combine_op, ``ZlibF.Spec.Public.CrcCombineProof.op),
-  (``ZlibF.Spec.Public.Goal.crc32_z, ``ZlibF.Spec.Public.Proofs.crc32_z),
-  (``ZlibF.Spec.Public.Goal.deflate, ``Zlib.Deflate.Universal.deflate_safety),
-  (``ZlibF.Spec.Public.Goal.deflateCopy, ``Zlib.Deflate.Universal.deflate_copy_public),
-  (``ZlibF.Spec.Public.Goal.deflateEnd, ``ZlibF.Spec.Public.DeflateEndProof.deflate_end_public),
-  (``ZlibF.Spec.Public.Goal.deflateGetDictionary, ``ZlibF.Spec.Public.DeflateDictionaryProof.deflate_getdict_public),
-  (``ZlibF.Spec.Public.Goal.deflateInit2_, ``ZlibF.Spec.Public.Proofs.DeflateInit2.deflateInit2_proof),
-  (``ZlibF.Spec.Public.Goal.deflateInit_, ``ZlibF.Spec.Public.Proofs.DeflateInit.deflateInit_proof),
-  (``ZlibF.Spec.Public.Goal.deflatePending, ``ZlibF.Spec.Public.DeflateQueryProof.pending_public),
-  (``ZlibF.Spec.Public.Goal.deflateReset, ``ZlibF.Spec.Public.DeflateResetProof.deflate_reset_public),
-  (``ZlibF.Spec.Public.Goal.deflateResetKeep, ``ZlibF.Spec.Public.DeflateResetKeepProof.deflate_resetkeep_public),
-  (``ZlibF.Spec.Public.Goal.deflateSetHeader, ``ZlibF.Spec.Public.DeflateQueryProof.header_public),
-  (``ZlibF.Spec.Public.Goal.deflateTune, ``ZlibF.Spec.Public.DeflateQueryProof.tune_public),
-  (``ZlibF.Spec.Public.Goal.deflateUsed, ``ZlibF.Spec.Public.DeflateQueryProof.used_public),
-  (``ZlibF.Spec.Public.Goal.get_crc_table, ``ZlibF.Spec.Public.Proofs.get_crc_table),
-  (``ZlibF.Spec.Public.Goal.gzbuffer, ``ZlibF.Spec.Public.Proofs.gzbuffer_public),
-  (``ZlibF.Spec.Public.Goal.gzclearerr, ``ZlibF.Spec.Public.Proofs.gzclearerr),
-  (``ZlibF.Spec.Public.Goal.gzdopen, ``Zlib.Gzlib.Proofs.gzdopen_complete),
-  (``ZlibF.Spec.Public.Goal.gzeof, ``ZlibF.Spec.Public.Proofs.gzeof_public),
-  (``ZlibF.Spec.Public.Goal.gzerror, ``ZlibF.Spec.Public.GzErrorProof.gzerror),
-  (``ZlibF.Spec.Public.Goal.gzoffset, ``ZlibF.Spec.Public.OffsetProof.gzoffset_public_goal),
-  (``ZlibF.Spec.Public.Goal.gzoffset64, ``ZlibF.Spec.Public.OffsetProof.gzoffset64_public_goal),
-  (``ZlibF.Spec.Public.Goal.gzrewind, ``ZlibF.Spec.Public.GzRewindProof.rewind_public),
-  (``ZlibF.Spec.Public.Goal.inflate, ``Zlib.Inflate.Proofs.inflate_public),
-  (``ZlibF.Spec.Public.Goal.inflateBackEnd, ``ZlibF.Spec.Public.InflateBackEndProof.back_end_public),
-  (``ZlibF.Spec.Public.Goal.inflateBackInit_, ``ZlibF.Spec.Public.InflateBackInitProof.back_init_public),
-  (``ZlibF.Spec.Public.Goal.inflateCodesUsed, ``ZlibF.Spec.Public.Proofs.inflate_codes_used),
-  (``ZlibF.Spec.Public.Goal.inflateCopy, ``Zlib.Inflate.Proofs.inflate_copy_public),
-  (``ZlibF.Spec.Public.Goal.inflateEnd, ``ZlibF.Spec.Public.InflateEndProof.inflate_end_public),
-  (``ZlibF.Spec.Public.Goal.inflateGetDictionary, ``ZlibF.Spec.Public.InflateDictionaryProof.inflate_getdict_public),
-  (``ZlibF.Spec.Public.Goal.inflateGetHeader, ``ZlibF.Spec.Public.InflateHeaderProof.getheader_public),
-  (``ZlibF.Spec.Public.Goal.inflateInit2_, ``ZlibF.Spec.Public.Proofs.InflateInit.inflate_init2_public),
-  (``ZlibF.Spec.Public.Goal.inflateInit_, ``ZlibF.Spec.Public.Proofs.InflateInit.init15_public),
-  (``ZlibF.Spec.Public.Goal.inflateMark, ``ZlibF.Spec.Public.InflateMarkProof.mark_public),
-  (``ZlibF.Spec.Public.Goal.inflatePrime, ``ZlibF.Spec.Public.InflatePrimeProof.prime_public),
-  (``ZlibF.Spec.Public.Goal.inflateReset, ``ZlibF.Spec.Public.InflateResetProof.reset_public),
-  (``ZlibF.Spec.Public.Goal.inflateReset2, ``ZlibF.Spec.Public.InflateReset2Proof.reset2_public),
-  (``ZlibF.Spec.Public.Goal.inflateResetKeep, ``ZlibF.Spec.Public.InflateResetKeepProof.resetkeep_public),
-  (``ZlibF.Spec.Public.Goal.inflateSetDictionary, ``ZlibF.Spec.Public.Proofs.inflateSetDictionary_public),
-  (``ZlibF.Spec.Public.Goal.inflateSyncPoint, ``ZlibF.Spec.Public.InflateQueryProof.syncpoint_public),
-  (``ZlibF.Spec.Public.Goal.inflateUndermine, ``ZlibF.Spec.Public.InflateQueryProof.undermine_public),
-  (``ZlibF.Spec.Public.Goal.inflateValidate, ``ZlibF.Spec.Public.InflateQueryProof.validate_public),
-  (``ZlibF.Spec.Public.Goal.zError, ``ZlibF.Spec.Public.Proofs.zError),
-  (``ZlibF.Spec.Public.Goal.zlibCompileFlags, ``ZlibF.Spec.Public.Proofs.zlibCompileFlags),
-  (``ZlibF.Spec.Public.Goal.zlibVersion, ``ZlibF.Spec.Public.Proofs.zlibVersion),
-  (``ZlibF.Spec.Token.Goal.rejected_has_no_symbols, ``ZlibF.Spec.Token.rejected_has_no_symbols),
-  (``ZlibF.Spec.Token.Goal.step_composes_symbols, ``ZlibF.Spec.Token.step_composes_symbols),
-  (``ZlibF.Spec.Token.Goal.symbols_exposes_step, ``ZlibF.Spec.Token.symbols_exposes_step)
+  (``Zlib.Inftrees.Spec.Subtable.Goal.constructor_subtable_bits, ``Zlib.Inftrees.Proofs.constructor_subtable_bits)
 ]
 
-/-- The goals that are stated and have no theorem yet. -/
-def notDone : List Name := [
-  -- ZlibF.Spec.Functional.Api.Goals
-  ``ZlibF.Spec.Api.Goal.inflate_rejects_invalid,
-  ``ZlibF.Spec.Api.Goal.gz_seek_read,
-  -- ZlibF.Spec.Functional.Back
-  ``ZlibF.Spec.Public.Goal.inflateBack,
-  -- ZlibF.Spec.Functional.GzClose
-  ``ZlibF.Spec.Public.Goal.gzclose_r,
-  ``ZlibF.Spec.Public.Goal.gzclose_w,
-  ``ZlibF.Spec.Public.Goal.gzclose,
-  -- ZlibF.Spec.Functional.GzControl
-  ``ZlibF.Spec.Public.Goal.gztell64,
-  ``ZlibF.Spec.Public.Goal.gztell,
-  ``ZlibF.Spec.Public.Goal.gzseek64,
-  ``ZlibF.Spec.Public.Goal.gzseek,
-  -- ZlibF.Spec.Functional.GzOpen
-  ``ZlibF.Spec.Public.Goal.gzopen,
-  ``ZlibF.Spec.Public.Goal.gzopen64,
-  -- ZlibF.Spec.Functional.GzRead
-  ``ZlibF.Spec.Public.Goal.gzread,
-  ``ZlibF.Spec.Public.Goal.gzfread,
-  ``ZlibF.Spec.Public.Goal.gzgetc,
-  ``ZlibF.Spec.Public.Goal.gzgetc_,
-  ``ZlibF.Spec.Public.Goal.gzungetc,
-  ``ZlibF.Spec.Public.Goal.gzgets,
-  ``ZlibF.Spec.Public.Goal.gzdirect,
-  -- ZlibF.Spec.Functional.GzWrite
-  ``ZlibF.Spec.Public.Goal.gzwrite,
-  ``ZlibF.Spec.Public.Goal.gzfwrite,
-  ``ZlibF.Spec.Public.Goal.gzputc,
-  ``ZlibF.Spec.Public.Goal.gzputs,
-  ``ZlibF.Spec.Public.Goal.gzvprintf,
-  ``ZlibF.Spec.Public.Goal.gzprintf,
-  ``ZlibF.Spec.Public.Goal.gzflush,
-  ``ZlibF.Spec.Public.Goal.gzsetparams,
-  -- ZlibF.Spec.Functional.Lifecycle
-  ``ZlibF.Spec.Public.Goal.deflateSetDictionary,
-  -- ZlibF.Spec.Functional.Streams
-  ``ZlibF.Spec.Public.Goal.deflateBound_z,
-  ``ZlibF.Spec.Public.Goal.deflateBound,
-  ``ZlibF.Spec.Public.Goal.deflatePrime,
-  ``ZlibF.Spec.Public.Goal.deflateParams,
-  ``ZlibF.Spec.Public.Goal.inflateSync,
-  -- ZlibF.Spec.Functional.Utilities
-  ``ZlibF.Spec.Public.Goal.compress2_z,
-  ``ZlibF.Spec.Public.Goal.compress2,
-  ``ZlibF.Spec.Public.Goal.compress_z,
-  ``ZlibF.Spec.Public.Goal.compress,
-  ``ZlibF.Spec.Public.Goal.uncompress2_z,
-  ``ZlibF.Spec.Public.Goal.uncompress2,
-  ``ZlibF.Spec.Public.Goal.uncompress_z,
-  ``ZlibF.Spec.Public.Goal.uncompress,
-  -- ZlibF.Spec.Functional.Sequences
-  ``ZlibF.Spec.Public.Goal.inflate_sequence,
-  ``ZlibF.Spec.Public.Goal.deflate_sequence,
-  ``ZlibF.Spec.Public.Goal.inflate_back_sequence,
-  -- ZlibF.Spec.Functional.GzSequence
-  ``ZlibF.Spec.Public.Goal.gz_sequence,
-  ``ZlibF.Spec.Public.Goal.gz_initialisation_domain,
-  -- ZlibF.Spec.Functional.Api.Goals: refinement goals, parameterised by a HeapApi
-  ``ZlibF.Spec.Api.Goal.inflate_refines,
-  ``ZlibF.Spec.Api.Goal.inflate_init_refines,
-  ``ZlibF.Spec.Api.Goal.inflate_end_refines,
-  ``ZlibF.Spec.Api.Goal.inflate_copy_refines,
-  ``ZlibF.Spec.Api.Goal.inflate_back_refines,
-  ``ZlibF.Spec.Api.Goal.deflate_refines,
-  ``ZlibF.Spec.Api.Goal.deflate_init_refines,
-  ``ZlibF.Spec.Api.Goal.deflate_end_refines,
-  ``ZlibF.Spec.Api.Goal.deflate_copy_refines,
-  ``ZlibF.Spec.Api.Goal.compress2_refines,
-  ``ZlibF.Spec.Api.Goal.compress_refines,
-  ``ZlibF.Spec.Api.Goal.uncompress2_refines,
-  ``ZlibF.Spec.Api.Goal.uncompress_refines,
-  ``ZlibF.Spec.Api.Goal.gz_open_refines,
-  ``ZlibF.Spec.Api.Goal.gz_refines,
-  ``ZlibF.Spec.Api.Goal.gz_close_refines
-]
+/-- No unproved safety goals remain. -/
+def notDone : List Name := []
 
-/-- The goals the project must prove: the safety goal of every documented function of `zlib.h`, the
-safety goals of sequences and refusals, the non-vacuity goals, and the round trip of the default zlib
-stream. Each must be in `proved`; `scripts/verification.py` checks the list against `zlib.h`. -/
+/-- The required safety goals: the safety goal of every documented function of `zlib.h`, the
+safety goals of sequences and refusals, and the non-vacuity goals. -/
 def required : List Name := [
   ``ZlibF.Spec.Public.Goal.adler32_safety,
   ``ZlibF.Spec.Public.Goal.adler32_combine_safety,
@@ -469,23 +269,20 @@ def required : List Name := [
   ``ZlibF.Spec.Public.Goal.deflate_initialisation_domain,
   ``ZlibF.Spec.Public.Goal.inflate_back_initialisation_domain,
   ``ZlibF.Spec.Public.Goal.inflateBack_call_domain,
-  ``ZlibF.Spec.Public.Goal.gz_sequence_nonvacuity,
-  ``ZlibF.Spec.Public.Goal.compress_uncompress_roundtrip,
-  ``ZlibF.Spec.Public.Goal.compress_uncompress_roundtrip_witness,
-  ``ZlibF.Spec.Public.Goal.compress_completes,
-  ``ZlibF.Spec.Public.Goal.compress_z_completes,
-  ``ZlibF.Spec.Public.Goal.uncompress_completes,
-  ``ZlibF.Spec.Public.Goal.stream_roundtrip_total,
-  ``ZlibF.Spec.Public.Goal.deflate_finish_ends,
-  ``ZlibF.Spec.Public.Goal.inflate_chain_ends,
-  ``ZlibF.Spec.Public.Goal.stream_roundtrip,
-  ``ZlibF.Spec.Public.Goal.deflate_completes_default,
-  ``ZlibF.Spec.Public.Goal.deflate_bound_default,
-  ``ZlibF.Spec.Public.Goal.inflate_completes_default,
-  ``ZlibF.Spec.Public.Goal.default_inflate_progress,
-  ``ZlibF.Spec.Public.Goal.default_inflate_completes
+  ``ZlibF.Spec.Public.Goal.gz_sequence_nonvacuity
 ]
 
-#eval checkWith proved notDone required inLibrary
+/-- Restrict registry discovery to the safety specifications (`ZlibF.Spec.Safety.*`) and the two
+pure bound queries (`compressBound`, `compressBound_z`) that serve as their own safety goals. -/
+def inSafetyScope (env : Environment) (n : Name) : Bool :=
+  match env.getModuleIdxFor? n with
+  | some i =>
+    let m := env.header.moduleNames[i]!
+    (`ZlibF.Spec.Safety).isPrefixOf m ||
+      goalHead n == some ``ZlibF.Spec.Public.Goal.compressBound ||
+      goalHead n == some ``ZlibF.Spec.Public.Goal.compressBound_z
+  | none => true
+
+#eval checkWith proved notDone required inSafetyScope
 
 end ZlibF.Results

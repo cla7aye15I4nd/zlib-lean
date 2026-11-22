@@ -52,7 +52,7 @@ def ERR_RETURN (strm : ZStreamPtr) (err : Int32) : M Int32 := do
   return err
 
 /-- `int ZEXPORT deflateEnd(z_streamp strm)` -/
-def deflateEnd (strm : ZStreamPtr) : M Int32 := do
+def deflateEnd (strm : ZStreamPtr) : M (CExport Int32) := do
   if (← deflateStateCheck strm) != 0 then return Z_STREAM_ERROR
   let sp ← castDeflateState (← zrd strm (·.state))
   -- status = strm->state->status;
@@ -219,7 +219,7 @@ def deflateInit2_ (strm : ZStreamPtr) (level method windowBits memLevel strategy
   deflateReset strm
 
 /-- `int ZEXPORT deflateInit_(z_streamp strm, int level, const char *version, int stream_size)` -/
-def deflateInit_ (strm : ZStreamPtr) (level : Int32) (version : BPtr) (stream_size : Int32) : M Int32 :=
+def deflateInit_ (strm : ZStreamPtr) (level : Int32) (version : ConstCStr) (stream_size : Int32) : M (CExport Int32) :=
   deflateInit2_ strm level Z_DEFLATED MAX_WBITS DEF_MEM_LEVEL Z_DEFAULT_STRATEGY version stream_size
 
 /-- `int ZEXPORT deflateSetDictionary(z_streamp strm, const Bytef *dictionary, uInt dictLength)` -/
@@ -443,7 +443,7 @@ def RANK (f : Int32) : M Int32 := do
   isub (← chk32 (f.toInt * 2)) (if f > 4 then 9 else 0)
 
 /-- `int ZEXPORT deflate(z_streamp strm, int flush)` -/
-def deflate (strm : ZStreamPtr) (flush : Int32) : M Int32 := do
+def deflate (strm : ZStreamPtr) (flush : Int32) : M (CExport Int32) := do
   -- if (deflateStateCheck(strm) || flush > Z_BLOCK || flush < 0) return Z_STREAM_ERROR;
   if (← deflateStateCheck strm) != 0 || flush > Z_BLOCK || flush < 0 then return Z_STREAM_ERROR
   -- s = strm->state;

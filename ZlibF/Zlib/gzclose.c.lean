@@ -1,3 +1,4 @@
+import ZlibF.Runtime.CAbi
 import ZlibF.Zlib.«gzread.c»
 import ZlibF.Zlib.«gzwrite.c»
 
@@ -11,7 +12,7 @@ namespace Zlib.Gzclose
 open C Zlib.GzFs Zlib.Gzguts Zlib.Gzlib
 
 /-- `int ZEXPORT gzclose(gzFile file)` -/
-def gzclose (file : GzFilePtr) : G Int32 := do
+def gzclose (file : GzFilePtr) : G (CExport Int32) := do
   -- if (file == NULL) return Z_STREAM_ERROR;
   if file.isNone then return Z_STREAM_ERROR
   -- state = (gz_statep)file;

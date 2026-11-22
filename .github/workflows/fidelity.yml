@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [audit-pinned, differential]
+        target: [audit-pinned, binary-pinned, differential]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -23,10 +23,12 @@ jobs:
           elan toolchain install "$(cat lean-toolchain)"
       - run: make ${{ matrix.target }}
       - if: matrix.target == 'audit-pinned'
-        run: make test
+        run: make binary-pinned && make test
       - if: matrix.target == 'audit-pinned' && always()
         uses: actions/upload-artifact@v4
         with:
           name: clang-ast-report
-          path: build/ast-report.json
+          path: |
+            build/ast-report.json
+            build/binary-report.json
           if-no-files-found: error

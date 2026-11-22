@@ -1,6 +1,6 @@
 export LEAN_NUM_THREADS ?= 3
 
-.PHONY: audit audit-pinned ast-equal emit reference bytes differential proof test
+.PHONY: audit audit-pinned archive-equal ast-equal binary binary-pinned emit reference bytes differential proof test
 
 audit:
 	python3 tools/audit.py
@@ -8,8 +8,17 @@ audit:
 audit-pinned:
 	python3 tools/audit.py --pinned
 
+archive-equal:
+	python3 tools/archive.py
+
 ast-equal:
 	python3 tools/audit.py --require-equal
+
+binary:
+	python3 tools/binary_audit.py
+
+binary-pinned:
+	python3 tools/binary_audit.py --pinned
 
 emit:
 	bin/lean2c emit build/generated

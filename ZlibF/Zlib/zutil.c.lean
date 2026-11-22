@@ -1,4 +1,5 @@
 import ZlibF.Runtime.Alloc
+import ZlibF.Runtime.CAbi
 
 /-!
 # zutil.c — faithful translation
@@ -25,7 +26,7 @@ open C
 def strLit (s : String) : M BPtr := strLitRef s
 
 /-- `z_const char * const z_errmsg[10]`: the texts, indexed by `2 - error code`. -/
-def z_errmsg : Array String :=
+def z_errmsg : CGlobalConstStrArray (Array String) :=
   #["need dictionary",      -- Z_NEED_DICT       2
     "stream end",           -- Z_STREAM_END      1
     "",                     -- Z_OK              0
@@ -38,12 +39,12 @@ def z_errmsg : Array String :=
     ""]
 
 /-- `const char * ZEXPORT zlibVersion(void)` -/
-def zlibVersion : M BPtr :=
+def zlibVersion : M (CExport ConstCStr) :=
   -- return ZLIB_VERSION;
   strLit ZLIB_VERSION
 
 /-- `uLong ZEXPORT zlibCompileFlags(void)` -/
-def zlibCompileFlags : M UInt64 := do
+def zlibCompileFlags : M (CExport UInt64) := do
   -- flags = 0;
   let flags : UInt64 := 0
   -- switch ((int)(sizeof(uInt))) { case 2: break; case 4: flags += 1; break; case 8: flags += 2; break; default: flags += 3; }
@@ -69,7 +70,7 @@ def zlibCompileFlags : M UInt64 := do
 
 /-- `const char * ZEXPORT zError(int err)`  (`ERR_MSG(err)` is
 `z_errmsg[(err) < -6 || (err) > 2 ? 9 : 2 - (err)]`) -/
-def zError (err : Int32) : M BPtr := do
+def zError (err : Int32) : M (CExport ConstCStr) := do
   let i : Int32 := if err < -6 || err > 2 then 9 else 2 - err
   -- the index is in 0..9 for every err, so the access is inside the array
   match z_errmsg[i.toInt.toNat]? with
@@ -78,14 +79,14 @@ def zError (err : Int32) : M BPtr := do
 
 /-- `voidpf ZLIB_INTERNAL zcalloc(voidpf opaque, unsigned items, unsigned size)` (the default allocator, `malloc` branch
 since `sizeof(uInt) > 2`; the product is computed in `unsigned`). -/
-def zcalloc («opaque» : BPtr) (items size : UInt32) : M BPtr := do
+def zcalloc («opaque» : VoidPtr) (items size : UInt32) : M (CHidden VoidPtr) := do
   -- (void)opaque;
   let _ := «opaque»
   -- return sizeof(uInt) > 2 ? (voidpf)malloc(items * size) : (voidpf)calloc(items, size);
   allocB (items * size).toNat
 
 /-- `void ZLIB_INTERNAL zcfree(voidpf opaque, voidpf ptr)` -/
-def zcfree («opaque» ptr : BPtr) : M Unit := do
+def zcfree («opaque» ptr : VoidPtr) : M (CHidden Unit) := do
   -- (void)opaque;
   let _ := «opaque»
   -- free(ptr);
