@@ -5,6 +5,7 @@ import ZlibF.Runtime.Monad
 import ZlibF.Runtime.Ptr
 import ZlibF.Runtime.Alloc
 import ZlibF.Runtime.Libc
+import ZlibF.Proof.LibcMemory
 import ZlibF.Runtime.LibcTables
 import ZlibF.Runtime.Tables
 import ZlibF.Zlib.«adler32.c»

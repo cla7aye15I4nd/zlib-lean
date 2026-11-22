@@ -1,5 +1,6 @@
 import ZlibF
 import ZlibF.ResultsCheck
+import ZlibF.Spec.Safety.WholeLibrary
 
 /-!
 # Results
@@ -7,9 +8,10 @@ import ZlibF.ResultsCheck
 The safety-only registry of results, checked by Lean when the library is built.
 
 `proved` pairs each proved safety goal with the theorem that proves it. `notDone` is empty (`[]`).
-`required` lists the 99 required safety goals: the safety goal of every documented function of
-`zlib.h`, the safety goals of sequences and refusals, and the non-vacuity goals. Functional and
-round-trip goals outside the maintained safety scope have been excluded from the registry.
+`required` lists the 100 required safety goals: the safety goal of every documented function of
+`zlib.h`, the safety goals of sequences and refusals, the non-vacuity goals, and
+`whole_library_safety`. Functional and round-trip goals outside the maintained safety scope have
+been excluded from the registry.
 
 The command at the end of this file (`checkWith`, in `ZlibF/ResultsCheck.lean`) fails the build
 unless each theorem's type is exactly its goal, each theorem depends only on `propext`,
@@ -21,7 +23,7 @@ namespace ZlibF.Results
 open Lean Elab Command
 
 /-- Each proved safety goal, and the theorem whose type is exactly that goal. -/
-def proved : List (Name × Name) := [
+private def componentProofs : List (Name × Name) := [
   -- Safety of each stream function
   (``ZlibF.Spec.Public.Goal.deflateBound_safety, ``ZlibF.Spec.Public.StreamCallSafetyProof.deflateBound_safety),
   (``ZlibF.Spec.Public.Goal.deflateBound_z_safety, ``ZlibF.Spec.Public.StreamCallSafetyProof.deflateBound_z_safety),
@@ -165,12 +167,30 @@ def proved : List (Name × Name) := [
   (``Zlib.Inftrees.Spec.Subtable.Goal.constructor_subtable_bits, ``Zlib.Inftrees.Proofs.constructor_subtable_bits)
 ]
 
+/-- The library safety theorem, assembled from the registered proof for each selector. -/
+theorem whole_library_safety : ZlibF.Spec.Public.Goal.whole_library_safety := by
+  constructor <;> intro contract selector <;> cases selector
+  run_tac
+    for obligation in ← Lean.Elab.Tactic.getGoals do
+      let type ← obligation.getType
+      let some (_, witness) := componentProofs.find? (fun entry => type.isConstOf entry.1)
+        | throwError "no registered proof for library contract {type}"
+      obligation.assign (mkConst witness)
+    Lean.Elab.Tactic.setGoals []
+
+/-- All registered proofs, including the theorem covering the public library. -/
+def proved : List (Name × Name) := componentProofs ++
+  [(``ZlibF.Spec.Public.Goal.whole_library_safety, ``whole_library_safety)]
+
 /-- No unproved safety goals remain. -/
 def notDone : List Name := []
 
 /-- The required safety goals: the safety goal of every documented function of `zlib.h`, the
-safety goals of sequences and refusals, and the non-vacuity goals. -/
+safety goals of sequences and refusals, the non-vacuity goals, and `whole_library_safety`.
+`tools/check_public_safety.py` checks `PublicEntry` and `StreamProtocol` against the patched
+header, API inventory, and compiled Lean dispatcher. -/
 def required : List Name := [
+  ``ZlibF.Spec.Public.Goal.whole_library_safety,
   ``ZlibF.Spec.Public.Goal.adler32_safety,
   ``ZlibF.Spec.Public.Goal.adler32_combine_safety,
   ``ZlibF.Spec.Public.Goal.adler32_combine64_safety,

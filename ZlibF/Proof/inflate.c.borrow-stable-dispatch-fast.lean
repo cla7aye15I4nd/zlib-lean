@@ -232,17 +232,8 @@ theorem stable_fast_inflate_fast (strm : ZStreamPtr) (start : UInt32) : StableM 
   repeat' first
     | with_reducible exact stable_fast_inflate_fast_body _ _
     | with_reducible exact stable_fast_inflate_fast_body8 _ _
-    | with_reducible exact stable_fast_dolen _ _
-    | with_reducible exact stable_fast_dodist _ _
-    | with_reducible exact stable_fast_copyMatch _ _
-    | with_reducible exact stable_fast_badData _ _
-    | with_reducible exact stable_fast_copyOp _
-    | with_reducible exact stable_fast_copy1 _
-    | with_reducible exact stable_fast_pull _
     | with_reducible exact stable_fast_subn _ _
     | with_reducible exact stable_fast_chk64 _
-    | with_reducible exact stable_fast_shr64 _ _
-    | with_reducible exact stable_fast_shl64 _ _
     | with_reducible exact stable_fast_shl32 _ _
     | with_reducible exact stable_ptr_le _ _
     | inflate_borrow_m_step

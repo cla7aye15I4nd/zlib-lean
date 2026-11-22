@@ -1,6 +1,6 @@
 export LEAN_NUM_THREADS ?= 3
 
-.PHONY: audit audit-pinned archive-equal ast-equal binary binary-pinned emit reference bytes differential proof test
+.PHONY: audit audit-pinned archive-equal ast-equal binary binary-pinned emit reference bytes differential proof library-safety test
 
 audit:
 	python3 tools/audit.py
@@ -36,6 +36,11 @@ proof:
 	lake build --wfail ZlibF
 	lake env leanchecker --fresh ZlibF.Results
 
+library-safety: proof
+	python3 tools/check_public_safety.py
+
 test:
+	lake build --wfail Lean2C.Lower ZlibF.Proof.LibcMemory
 	lake env lean tests/ShiftLowering.lean
+	lake env lean -DwarningAsError=true tests/SafetyRules.lean
 	python3 -m unittest discover -s tests -p 'test_*.py'
