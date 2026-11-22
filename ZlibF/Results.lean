@@ -1,5 +1,6 @@
 import ZlibF
 import ZlibF.ResultsCheck
+import ZlibF.Spec.Safety.WholeLibrary
 
 /-!
 # Results
@@ -23,7 +24,7 @@ namespace ZlibF.Results
 open Lean Elab Command
 
 /-- Each proved goal, and the theorem whose type is exactly that goal. -/
-def proved : List (Name × Name) := [
+private def componentProofs : List (Name × Name) := [
   -- Safety of each stream function
   (``ZlibF.Spec.Public.Goal.deflateBound_safety, ``ZlibF.Spec.Public.StreamCallSafetyProof.deflateBound_safety),
   (``ZlibF.Spec.Public.Goal.deflateBound_z_safety, ``ZlibF.Spec.Public.StreamCallSafetyProof.deflateBound_z_safety),
@@ -288,6 +289,21 @@ def proved : List (Name × Name) := [
   (``ZlibF.Spec.Token.Goal.symbols_exposes_step, ``ZlibF.Spec.Token.symbols_exposes_step)
 ]
 
+/-- The library safety theorem, assembled from the registered proof for each selector. -/
+theorem whole_library_safety : ZlibF.Spec.Public.Goal.whole_library_safety := by
+  constructor <;> intro contract selector <;> cases selector
+  run_tac
+    for obligation in ← Lean.Elab.Tactic.getGoals do
+      let type ← obligation.getType
+      let some (_, witness) := componentProofs.find? (fun entry => type.isConstOf entry.1)
+        | throwError "no registered proof for library contract {type}"
+      obligation.assign (mkConst witness)
+    Lean.Elab.Tactic.setGoals []
+
+/-- All registered proofs, including the theorem covering the public library. -/
+def proved : List (Name × Name) := componentProofs ++
+  [(``ZlibF.Spec.Public.Goal.whole_library_safety, ``whole_library_safety)]
+
 /-- The goals that are stated and have no theorem yet. -/
 def notDone : List Name := [
   -- ZlibF.Spec.Functional.Api.Goals
@@ -369,8 +385,10 @@ def notDone : List Name := [
 
 /-- The goals the project must prove: the safety goal of every documented function of `zlib.h`, the
 safety goals of sequences and refusals, the non-vacuity goals, and the round trip of the default zlib
-stream. Each must be in `proved`; `scripts/verification.py` checks the list against `zlib.h`. -/
+stream, and the whole-library safety theorem. The public coverage check matches the pinned
+header and inventory to the selectors and compiled registry. -/
 def required : List Name := [
+  ``ZlibF.Spec.Public.Goal.whole_library_safety,
   ``ZlibF.Spec.Public.Goal.adler32_safety,
   ``ZlibF.Spec.Public.Goal.adler32_combine_safety,
   ``ZlibF.Spec.Public.Goal.adler32_combine64_safety,

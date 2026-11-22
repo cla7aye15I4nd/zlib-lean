@@ -1,6 +1,6 @@
 export LEAN_NUM_THREADS ?= 3
 
-.PHONY: audit audit-pinned ast-equal emit reference bytes differential proof test
+.PHONY: audit audit-pinned ast-equal emit reference bytes differential proof library-safety test
 
 audit:
 	python3 tools/audit.py
@@ -26,6 +26,9 @@ differential:
 proof:
 	lake build --wfail ZlibF
 	lake env leanchecker --fresh ZlibF.Results
+
+library-safety: proof
+	python3 tools/check_public_safety.py
 
 test:
 	lake build --wfail Lean2C.Lower ZlibF.Proof.LibcMemory
