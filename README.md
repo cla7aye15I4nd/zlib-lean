@@ -2,6 +2,8 @@
 
 This fork's verification scope is **safety**. The Lean 4 model covers the 86 documented public functions of zlib 1.4.0.1-motley at `617e19a`, with six patches, for the default x86-64 Linux LP64 static build. For calls that meet their preconditions, the safety goals describe which faults are excluded, where a call may write, which allocations it may keep or release, and when it returns. Malformed compressed data is within scope when the caller supplies valid buffers. [Safety claim and assumptions](docs/en/trusted-base.md)
 
+The single Lean theorem `ZlibF.Results.whole_library_safety` supplies the original contract of any documented entry point and of the deflate, inflate, inflateBack and gzip protocols. For example, `whole_library_safety.1 .inflate` selects the call contract and `whole_library_safety.2 .inflate` selects the stream-history contract after opening `ZlibF.Results`. [Theorem and proof](ZlibF/Results.lean) · [Contract selectors](ZlibF/Spec/Safety/WholeLibrary.lean)
+
 Some C operations have deliberately more permissive semantics in the model. For example, subtracting two null pointers yields zero there. A load through a null pointer still faults. The exception register names the precise operations, where the patched source uses them, and what that means for a claim about C. [Undefined-behavior exceptions](docs/en/model-limits.md)
 
 Run `make proof` to check the Lean registry. It still includes functional results inherited from oss-proof, including the default-stream round trip. Those results are outside this fork's verification scope. [Local registry](ZlibF/Results.lean) · [Original oss-proof scope](https://github.com/cla7aye15I4nd/oss-proof/blob/0784b3e17eb85bb7699f55cb975ed1d47c1452dc/projects/zlib/README.md)
@@ -30,7 +32,8 @@ Read `build/ast-report.json` for each translation unit, active C function body, 
 | `make bytes` | Compare the two directory trees byte for byte, including comments, whitespace, inactive branches, extra files, and missing files. Save the first differing byte per file in `build/bytes.json`. |
 | `make differential` | Build patched zlib and the native Lean drivers. Run all ten fixed-seed test suites and compare each line of output. |
 | `make proof` | Build the proof registry with warnings as errors, then replay it in a fresh kernel environment. The replay needs about 10 GB of memory. |
-| `make test` | Run the AST, byte-comparison, and coverage regression tests after `make audit`. |
+| `make library-safety` | Replay the registry and check the public selectors against the patched header, API inventory and compiled Lean dispatcher. Requires the pinned `upstream` submodule. |
+| `make test` | Run the shift, memory-frame, loop-fuel, AST, byte-comparison and coverage regressions after `make audit`. |
 
 To compare two C files directly, supply the include directories and defines their build requires. The comparator returns 0 for equal ASTs and a nonzero status for a difference or parse error.
 
@@ -59,4 +62,4 @@ The unsigned shift emitter keeps a raw C shift for an in-range literal, a bounde
 
 The original `ZlibF/` import came from oss-proof commit `0784b3e17eb85bb7699f55cb975ed1d47c1452dc`. The imported Git tree object was `94fa7f04ca73c042a4fe8f8cb6b4fe9486374263`. The [pins](pins.json) also identify the zlib source commit and the SHA-256 digest of each patch. zlib and its modified sources retain the [upstream license](patches/ZLIB-LICENSE).
 
-This branch layers the libc runtime and pilots Hoare triples on the CRC word reader. The migration plan records the proof-size comparison and the axiom checks. [试点与迁移计划](docs/zh/proof-modernization.md)
+The libc proof layer supplies heap triples, counted-loop rules and byte-range frames used by CRC and inflate. The migration report records declaration sizes, timings and checks. [试点与迁移计划](docs/zh/proof-modernization.md)

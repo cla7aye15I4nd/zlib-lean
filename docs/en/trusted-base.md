@@ -10,10 +10,26 @@ The claim is about executions of the Lean translation of patched zlib. For examp
 | Allocation and caller memory | The goals cover the default allocator, including allocation failure. Custom allocators are outside scope. Each call specifies the extents, writability and separation required of its buffers. Two ranges can share an allocation when the relevant separation predicate allows disjoint intervals. [Memory predicates](../../ZlibF/Spec/Common/Memory.lean) |
 | Stream history | Sequence goals follow one object from initialization or open. Between calls, the caller may replace buffers and change memory as permitted by the caller frame. Composing arbitrary histories across objects or threads is outside these goals. [Stream goals](../../ZlibF/Spec/Safety/Sequences.lean) · [Gzip handle history](../../ZlibF/Spec/Safety/GzSafety.lean) |
 | Callback decoder | The `inflateBack` sequence goal requires returning callbacks that respect ownership and preserve the window. Its protocol bounds total input for one call to fewer than `2^48` bytes. [Callback sequence goal](../../ZlibF/Spec/Safety/Sequences.lean) |
-| Gzip I/O | For `gzread`, `gzfread`, `gzgetc`, `gzgetc_`, `gzgets` and `gzungetc`, the goal excludes `Fault.ub` even without a read budget. To exclude `Fault.outOfFuel` and prove return, it also requires a nonnegative descriptor with fewer than `2^61` bytes left in its read budget. Writes assume a nonempty OS write either fails or makes progress. [Gzip safety contract](../../ZlibF/Proof/gz.inv-model.lean) · [Read budget](../../ZlibF/Spec/Common/GzInv.lean) |
+| Gzip I/O | For `gzread`, `gzfread`, `gzgetc`, `gzgetc_`, `gzgets` and `gzungetc`, the goal excludes `Fault.ub` even without a read budget. For a general read on a reachable handle, a nonnegative descriptor with a read budget below `2^61` bytes guarantees return. Null-handle refusals and the buffered-output branch of the `gzgetc` macro return without this budget. Writes assume a nonempty OS write either fails or makes progress. [Gzip safety contract](../../ZlibF/Proof/gz.inv-model.lean) · [Read budget](../../ZlibF/Spec/Common/GzInv.lean) |
 | Formatted output | For `gzprintf` and `gzvprintf`, the C caller must supply a defined format/argument combination without `%n`. The external formatter model bounds its writes and takes the result from its environment. It cannot detect a type mismatch in the caller's format. [Formatter model](../../ZlibF/Zlib/gzfs.lean) |
 
 To trace one of the 86 functions, find its `safety_goal` in the API inventory, read the goal and its premises, then look up its theorem in `proved`. For example, `Goal.crc32_safety` gives a normal return and an unchanged heap. Its result value is existential. The two pure bound queries, `compressBound` and `compressBound_z`, use their stronger inherited contracts as their registry entries. [API inventory](../../tests/public-api.json) · [Checksum goals](../../ZlibF/Spec/Safety/Checksums.lean) · [Registry](../../ZlibF/Results.lean)
+
+## Using the whole-library theorem
+
+Import the registry to use the kernel-checked proof. The selector determines the proposition at the type level, so either projection recovers the existing contract with all of its premises. The protocol projection covers reachable histories of a single stream or handle under that protocol. [Selectors](../../ZlibF/Spec/Safety/WholeLibrary.lean) · [Proof and registration](../../ZlibF/Results.lean)
+
+```lean
+import ZlibF.Results
+
+open ZlibF.Results ZlibF.Spec.Public
+
+example : Goal.compressBound_z := whole_library_safety.1 .compressBound_z
+example : Goal.inflateCopy_safety := whole_library_safety.1 .inflateCopy
+example : Goal.gz_sequence_safety := whole_library_safety.2 .gzip
+```
+
+`make library-safety` also checks the documented declarations in the reconstructed header, the entries in the API inventory, the elaborated dispatcher and the selectors against the compiled registry. The header lists ten additional functions below its undocumented boundary. The registry separately requires `gzvprintf_safety`. [Coverage check](../../tools/check_public_safety.py) · [Public inventory](../../tests/public-api.json)
 
 ## From a Lean theorem to a claim about C
 
