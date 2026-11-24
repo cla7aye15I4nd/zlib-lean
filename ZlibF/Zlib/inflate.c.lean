@@ -1,4 +1,5 @@
 import ZlibF.Runtime.Alloc
+import ZlibF.Runtime.PointerLocals
 import ZlibF.Runtime.Tables
 import ZlibF.Zlib.«adler32.c»
 import ZlibF.Zlib.«inftrees.c»
@@ -134,13 +135,20 @@ def wrZ (strm : ZStreamPtr) (f : ZStream → ZStream) : M Unit := do
 
 /-- `state->lens` (a pointer to element 0 of the array field). -/
 def lensP (st : InflateStatePtr) : WPtr := match st with | some (.tab i) => .ref (.istate_lens i) 0 | none => .null
+/-- Store at the previous value of the incremented code-length index. -/
+@[reducible, inline] def appendLength {m : Type → Type} [Monad m] [MonadLiftT M m]
+    (st : InflateStatePtr) (value : UInt16) : m Unit := do
+  let index ← rdS st (·.«have»)
+  wrS st fun s => { s with «have» := s.«have» + 1 }
+  Ptr.store (← (lensP st).add (index.toNat : Int)) value
+
 /-- `state->work`. -/
 def workP (st : InflateStatePtr) : WPtr := match st with | some (.tab i) => .ref (.istate_work i) 0 | none => .null
 /-- `state->codes`. -/
 def codesP (st : InflateStatePtr) : CodePtr := match st with | some (.tab i) => .ref (.istate_codes i) 0 | none => .null
 
 /-- `static const unsigned short order[19]` -/
-def order : Array UInt16 := #[16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+def order : CLocalConst (Array UInt16) := #[16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
 /-- `order[i]`: faults outside the array. -/
 def orderAt (i : UInt32) : M UInt16 :=
   match order[i.toNat]? with
@@ -150,7 +158,7 @@ def orderAt (i : UInt32) : M UInt16 :=
 /-! ## `inflateStateCheck` .. `inflatePrime` -/
 
 /-- `local int inflateStateCheck(z_streamp strm)` -/
-def inflateStateCheck (strm : ZStreamPtr) : M Int32 := do
+def inflateStateCheck (strm : ZStreamPtr) : M (CStatic Int32) := do
   -- if (strm == Z_NULL || strm->zalloc == (alloc_func)0 || strm->zfree == (free_func)0) return 1;
   if strm == none then return 1
   let z ← ldZStream strm
@@ -164,7 +172,7 @@ def inflateStateCheck (strm : ZStreamPtr) : M Int32 := do
   return 0
 
 /-- `int ZEXPORT inflateResetKeep(z_streamp strm)` -/
-def inflateResetKeep (strm : ZStreamPtr) : M Int32 := do
+def inflateResetKeep (strm : ZStreamPtr) : M (CExport Int32) := do
   if (← inflateStateCheck strm) != 0 then return Z_STREAM_ERROR
   let z ← ldZStream strm
   let state ← castInflateState z.state
@@ -180,11 +188,13 @@ def inflateResetKeep (strm : ZStreamPtr) : M Int32 := do
   -- state->sane = 1; state->back = -1;
   wrS state fun s => { s with
     mode := HEAD, last := 0, havedict := 0, flags := -1, dmax := 32768, head := none,
-    hold := 0, bits := 0, next := codesP state, distcode := codesP state, lencode := codesP state, sane := 1, back := -1 }
+    hold := 0, bits := 0, next := codesP state }
+  wrS state fun s => { s with distcode := codesP state }
+  wrS state fun s => { s with lencode := codesP state, sane := 1, back := -1 }
   return Z_OK
 
 /-- `int ZEXPORT inflateReset(z_streamp strm)` -/
-def inflateReset (strm : ZStreamPtr) : M Int32 := do
+def inflateReset (strm : ZStreamPtr) : M (CExport Int32) := do
   if (← inflateStateCheck strm) != 0 then return Z_STREAM_ERROR
   let z ← ldZStream strm
   let state ← castInflateState z.state
@@ -200,7 +210,7 @@ def inflateReset (strm : ZStreamPtr) : M Int32 := do
   return (← inflateResetKeep strm)
 
 /-- `int ZEXPORT inflateReset2(z_streamp strm, int windowBits)` -/
-def inflateReset2 (strm : ZStreamPtr) (windowBits : Int32) : M Int32 := do
+def inflateReset2 (strm : ZStreamPtr) (windowBits : Int32) : M (CExport Int32) := do
   -- if (inflateStateCheck(strm)) return Z_STREAM_ERROR;
   if (← inflateStateCheck strm) != 0 then return Z_STREAM_ERROR
   let z ← ldZStream strm
@@ -225,15 +235,16 @@ def inflateReset2 (strm : ZStreamPtr) (windowBits : Int32) : M Int32 := do
     ZFREEB strm s.window
     wrS state fun s => { s with window := .null }
   -- state->reqwrap = state->wrap = wrap; state->reqbits = state->wbits = (unsigned)windowBits;
-  wrS state fun s => { s with wrap := wrap, reqwrap := wrap, wbits := i2u windowBits, reqbits := i2u windowBits }
+  wrS state fun s => { s with wrap := wrap, reqwrap := wrap, wbits := i2u windowBits }
+  wrS state fun s => { s with reqbits := i2u windowBits }
   return (← inflateReset strm)
 
 /-- `int ZEXPORT inflateInit2_(z_streamp strm, int windowBits, const char *version, int stream_size)`
 (`version` is a pointer to a NUL-terminated string; `sizeof(z_stream)` is 112) -/
-def inflateInit2_ (strm : ZStreamPtr) (windowBits : Int32) (version : BPtr) (stream_size : Int32) : M Int32 := do
+def inflateInit2_ (strm : ZStreamPtr) (windowBits : Int32) (version : ConstCStr) (stream_size : Int32) : M (CExport Int32) := do
   -- if (version == Z_NULL || version[0] != ZLIB_VERSION[0] || stream_size != (int)(sizeof(z_stream))) return Z_VERSION_ERROR;
   if version == .null then return Z_VERSION_ERROR
-  if (← index8 version 0) != 49 then return Z_VERSION_ERROR
+  if (← index8 version 0) != literalFirstByte ZLIB_VERSION then return Z_VERSION_ERROR
   if stream_size != 112 then return Z_VERSION_ERROR
   -- if (strm == Z_NULL) return Z_STREAM_ERROR;
   if strm == none then return Z_STREAM_ERROR
@@ -268,7 +279,7 @@ def inflateInit_ (strm : ZStreamPtr) (version : ConstCStr) (stream_size : Int32)
   inflateInit2_ strm DEF_WBITS version stream_size
 
 /-- `int ZEXPORT inflatePrime(z_streamp strm, int bits, int value)` -/
-def inflatePrime (strm : ZStreamPtr) (bits : Int32) (value : Int32) : M Int32 := do
+def inflatePrime (strm : ZStreamPtr) (bits : Int32) (value : Int32) : M (CExport Int32) := do
   if (← inflateStateCheck strm) != 0 then return Z_STREAM_ERROR
   -- if (bits == 0) return Z_OK;
   if bits == 0 then return Z_OK
@@ -291,7 +302,7 @@ def inflatePrime (strm : ZStreamPtr) (bits : Int32) (value : Int32) : M Int32 :=
   return Z_OK
 
 /-- `local int updatewindow(z_streamp strm, const Bytef *end, unsigned copy)` -/
-def updatewindow (strm : ZStreamPtr) (end_ : BPtr) (copy : UInt32) : M Int32 := do
+def updatewindow (strm : ZStreamPtr) (end_ : ConstBPtr) (copy : UInt32) : M (CStatic Int32) := do
   let z ← ldZStream strm
   let state ← castInflateState z.state
   let s ← ldInflateState state
@@ -304,12 +315,17 @@ def updatewindow (strm : ZStreamPtr) (end_ : BPtr) (copy : UInt32) : M Int32 := 
   let s ← ldInflateState state
   if s.wsize == 0 then
     let ws ← shl32 1 s.wbits
-    wrS state fun s => { s with wsize := ws, wnext := 0, whave := 0 }
+    wrS state fun s =>
+      let s := { s with wsize := ws }
+      let s := { s with wnext := 0 }
+      { s with whave := 0 }
   let s ← ldInflateState state
   if copy >= s.wsize then
     -- zmemcpy(state->window, end - state->wsize, state->wsize); wnext = 0; whave = wsize;
     memcpyB s.window (← end_.add (-(s.wsize.toNat : Int))) s.wsize.toNat
-    wrS state fun s => { s with wnext := 0, whave := s.wsize }
+    wrS state fun s =>
+      let s := { s with wnext := 0 }
+      { s with whave := s.wsize }
   else
     -- dist = state->wsize - state->wnext; if (dist > copy) dist = copy;
     let mut dist := s.wsize - s.wnext
@@ -321,14 +337,16 @@ def updatewindow (strm : ZStreamPtr) (end_ : BPtr) (copy : UInt32) : M Int32 := 
     if copy != 0 then
       -- zmemcpy(state->window, end - copy, copy); state->wnext = copy; state->whave = state->wsize;
       memcpyB s.window (← end_.add (-(copy.toNat : Int))) copy.toNat
-      wrS state fun s => { s with wnext := copy, whave := s.wsize }
+      wrS state fun s =>
+        let s := { s with wnext := copy }
+        { s with whave := s.wsize }
     else
       -- state->wnext += dist; if (state->wnext == state->wsize) state->wnext = 0; if (state->whave < state->wsize) state->whave += dist;
-      let mut wnext := s.wnext + dist
-      if wnext == s.wsize then wnext := 0
-      let mut whave := s.whave
-      if whave < s.wsize then whave := whave + dist
-      wrS state fun s => { s with wnext := wnext, whave := whave }
+      wrS state fun s => { s with wnext := s.wnext + dist }
+      let s ← ldInflateState state
+      if s.wnext == s.wsize then wrS state fun s => { s with wnext := 0 }
+      let s ← ldInflateState state
+      if s.whave < s.wsize then wrS state fun s => { s with whave := s.whave + dist }
   return 0
 
 /-! ## The registers of `inflate()` and the monad of its modes -/
@@ -355,6 +373,8 @@ structure IL where
   last : Code
   len : UInt32
   ret : Int32
+  /-- Automatic pointer cells in scope when the callback decoder calls user code. -/
+  pointerLocals : PointerLocals := {}
 
 /-- The registers before the first assignment (the C leaves these uninitialised; see the file comment). -/
 def IL.init : IL where
@@ -416,6 +436,16 @@ def xdoWhile (body : X Unit) (cond : X Bool) : X Unit := do
 /-- `for (;;) body` where `body` returns `true` for `break`. -/
 def xloopBrk (body : X Bool) : X Unit := xwhileBrk (pure true) body
 
+/-- Repeat the decoded length at successive entries. The final failed test of
+    the unsigned post-decrement leaves the local count at UINT_MAX. -/
+@[reducible, inline] def repeatCodeLength (st : InflateStatePtr) : X Unit :=
+  xwhile
+    (do
+      let l ← get
+      set { l with copy := l.copy - 1 }
+      return l.copy != 0)
+    (do appendLength st (← get).len.toUInt16)
+
 /-- The information `inflate()` and its macros share. -/
 structure Ctx where
   strm : ZStreamPtr
@@ -436,23 +466,35 @@ def LOAD (strm : ZStreamPtr) (st : InflateStatePtr) : X Unit := do
 /-- `RESTORE()` -/
 def RESTORE (strm : ZStreamPtr) (st : InflateStatePtr) : X Unit := do
   let l ← get
-  wrZ strm fun z => { z with next_out := l.put, avail_out := l.left, next_in := l.next, avail_in := l.have_ }
+  wrZ strm fun z =>
+    let z := { z with next_out := l.put, avail_out := l.left }
+    { z with next_in := l.next, avail_in := l.have_ }
   wrS st fun s => { s with hold := l.hold, bits := l.bits }
 
 /-- `INITBITS()` -/
 def INITBITS : X Unit := modify fun l => { l with hold := 0, bits := 0 }
 
-/-- `PULLBYTE()`: `goto inf_leave` if there is no input. -/
-def PULLBYTE : X Unit := do
+/-- Common successful-input arm of both decoders' PULLBYTE macros. The
+count, pointer, accumulator and bit count are local to the current invocation. -/
+@[reducible, inline] def absorbInputByte : X Unit := do
   let l ← get
-  if l.have_ == 0 then throw Ex.leave
-  -- have--;
-  set { l with have_ := l.have_ - 1 }
-  -- hold += (unsigned long)(*next++) << bits; bits += 8;
   let b ← load8 l.next
   let nx ← l.next.add 1
   let sh ← shl64 b.toUInt64 l.bits
   set { l with have_ := l.have_ - 1, next := nx, hold := l.hold + sh, bits := l.bits + 8 }
+
+/-- `PULLBYTE()`: `goto inf_leave` if there is no input. -/
+def PULLBYTE : X Unit := do
+  let l ← get
+  if l.have_ == 0 then throw Ex.leave
+  absorbInputByte
+
+/-- Use the old value of `state->have++` to select a code-length destination. -/
+@[reducible, inline] def withLengthOrder {α : Type} (st : InflateStatePtr) (body : UInt16 → X α) : X α := do
+  let s ← ldInflateState st
+  wrS st fun s => { s with «have» := s.«have» + 1 }
+  let destination ← orderAt s.«have»
+  body destination
 
 /-- `NEEDBITS(n)`: `while (bits < (unsigned)(n)) PULLBYTE();` -/
 def NEEDBITS (n : UInt32) : X Unit :=
@@ -544,27 +586,31 @@ def inflate_LENGTH (c : Ctx) : X Unit := do
   setMode c.st DONE
   inflate_DONE c
 
+/-- Account for output produced since the previous checkpoint, then finish its checksum. -/
+@[reducible, inline] def accountCheckedOutput (strm : ZStreamPtr) (st : InflateStatePtr) : X Unit := do
+  -- out -= left;
+  modify fun l => { l with out_ := l.out_ - l.left }
+  let l ← get
+  -- strm->total_out += out; state->total += out;
+  wrZ strm fun z => { z with total_out := z.total_out + l.out_.toUInt64 }
+  wrS st fun s => { s with total := s.total + l.out_.toUInt64 }
+  -- if ((state->wrap & 4) && out) strm->adler = state->check = UPDATE_CHECK(state->check, put - out, out);
+  let s ← ldInflateState st
+  if (s.wrap &&& 4) != 0 && l.out_ != 0 then
+    let p ← l.put.add (-(l.out_.toNat : Int))
+    let v ← UPDATE_CHECK st s.check p l.out_
+    wrS st fun s => { s with check := v }
+    wrZ strm fun z => { z with adler := v }
+  -- out = left;
+  modify fun l => { l with out_ := l.left }
+
 /-- `case CHECK:` -/
 def inflate_CHECK (c : Ctx) : X Unit := do
   let s ← ldInflateState c.st
   -- if (state->wrap) {
   if s.wrap != 0 then
     NEEDBITS 32
-    -- out -= left;
-    modify fun l => { l with out_ := l.out_ - l.left }
-    let l ← get
-    -- strm->total_out += out; state->total += out;
-    wrZ c.strm fun z => { z with total_out := z.total_out + l.out_.toUInt64 }
-    wrS c.st fun s => { s with total := s.total + l.out_.toUInt64 }
-    -- if ((state->wrap & 4) && out) strm->adler = state->check = UPDATE_CHECK(state->check, put - out, out);
-    let s ← ldInflateState c.st
-    if (s.wrap &&& 4) != 0 && l.out_ != 0 then
-      let p ← l.put.add (-(l.out_.toNat : Int))
-      let v ← UPDATE_CHECK c.st s.check p l.out_
-      wrS c.st fun s => { s with check := v }
-      wrZ c.strm fun z => { z with adler := v }
-    -- out = left;
-    modify fun l => { l with out_ := l.left }
+    accountCheckedOutput c.strm c.st
     -- if ((state->wrap & 4) && ((state->flags ? hold : ZSWAP32(hold)) != state->check)) { ...BAD; break; }
     let s ← ldInflateState c.st
     let l ← get
@@ -576,28 +622,46 @@ def inflate_CHECK (c : Ctx) : X Unit := do
   setMode c.st LENGTH
   inflate_LENGTH c
 
+/-- Write a decoded literal and advance the output registers. -/
+@[reducible, inline] def emitLiteral (st : InflateStatePtr) : X Unit := do
+  let l ← get
+  store8 l.put (← ldInflateState st).length.toUInt8
+  let p ← l.put.add 1
+  set { l with put := p, left := l.left - 1 }
+
 /-- `case LIT:` -/
 def inflate_LIT (c : Ctx) : X Unit := do
   let l ← get
   -- if (left == 0) goto inf_leave;
   if l.left == 0 then throw Ex.leave
-  -- *put++ = (unsigned char)(state->length);
-  let s ← ldInflateState c.st
-  store8 l.put s.length.toUInt8
-  let p ← l.put.add 1
-  -- left--; state->mode = LEN;
-  set { l with put := p, left := l.left - 1 }
+  emitLiteral c.st
   setMode c.st LEN
 
-/-- `case MATCH:` -/
-def inflate_MATCH (c : Ctx) : X Unit := do
+/-- Copy a decoded match one byte at a time, including when the next source byte
+lies in the output just written. The C loop tests its count after the first store. -/
+@[reducible, inline] def copyMatchBytes : X Unit :=
+  xdoWhile
+    (do
+      let l ← get
+      let b ← load8 l.from_
+      store8 l.put b
+      let p ← l.put.add 1
+      let f ← l.from_.add 1
+      set { l with put := p, from_ := f })
+    (do
+      let l ← get
+      let n := l.copy - 1
+      set { l with copy := n }
+      return n != 0)
+
+/-- Select the output slice or sliding-window slice for a match, retaining the current
+    registers when the source distance is invalid. -/
+@[reducible, inline] def withMatchSource (st : InflateStatePtr) (invalid ready : X Unit) : X Unit := do
   let l ← get
-  -- if (left == 0) goto inf_leave;
-  if l.left == 0 then throw Ex.leave
   -- copy = out - left;
   let mut copy := l.out_ - l.left
   let mut from_ : BPtr := l.from_
-  let s ← ldInflateState c.st
+  let s ← ldInflateState st
   -- if (state->offset > copy) { /* copy from window */
   if s.offset > copy then
     -- copy = state->offset - copy;
@@ -605,8 +669,7 @@ def inflate_MATCH (c : Ctx) : X Unit := do
     -- if (copy > state->whave) { if (state->sane) { ...BAD; break; } }
     if copy > s.whave then
       if s.sane != 0 then
-        badMode c "invalid distance too far back"
-        return
+        return ← invalid
     -- if (copy > state->wnext) { copy -= state->wnext; from = state->window + (state->wsize - copy); }
     if copy > s.wnext then
       copy := copy - s.wnext
@@ -624,60 +687,56 @@ def inflate_MATCH (c : Ctx) : X Unit := do
   if copy > l.left then copy := l.left
   -- left -= copy; state->length -= copy;
   set { l with left := l.left - copy, copy := copy, from_ := from_ }
-  wrS c.st fun s => { s with length := s.length - copy }
-  -- do { *put++ = *from++; } while (--copy);
-  xdoWhile
-    (do
-      let l ← get
-      let b ← load8 l.from_
-      store8 l.put b
-      let p ← l.put.add 1
-      let f ← l.from_.add 1
-      set { l with put := p, from_ := f })
-    (do
-      let l ← get
-      let n := l.copy - 1
-      set { l with copy := n }
-      return n != 0)
-  -- if (state->length == 0) state->mode = LEN;
-  if (← rdS c.st (·.length)) == 0 then setMode c.st LEN
+  wrS st fun s => { s with length := s.length - copy }
+  ready
+
+/-- `case MATCH:` -/
+def inflate_MATCH (c : Ctx) : X Unit := do
+  if (← get).left == 0 then throw Ex.leave
+  withMatchSource c.st (badMode c "invalid distance too far back") (do
+    copyMatchBytes
+    let state ← ldInflateState c.st
+    if state.length == 0 then setMode c.st LEN)
+
+/-- Consume the extra bits of a length or distance code in the streaming decoder. -/
+@[reducible, inline] def addExtra (st : InflateStatePtr) (dist : Bool) : X Unit := do
+  let before ← ldInflateState st
+  if before.extra != 0 then
+    NEEDBITS before.extra
+    let value ← BITS before.extra
+    if dist then wrS st fun s => { s with offset := s.offset + value }
+    else wrS st fun s => { s with length := s.length + value }
+    DROPBITS before.extra
+    wrS st fun s => { s with back := u2i (i2u s.back + s.extra) }
 
 /-- The bit-extraction part shared in spirit by `LENEXT` and `DISTEXT`: `if (state->extra) { NEEDBITS(state->extra); ...}`.
 `case DISTEXT:` -/
 def inflate_DISTEXT (c : Ctx) : X Unit := do
-  let s ← ldInflateState c.st
-  -- if (state->extra) {
-  if s.extra != 0 then
-    NEEDBITS s.extra
-    -- state->offset += BITS(state->extra);
-    let b ← BITS s.extra
-    wrS c.st fun s => { s with offset := s.offset + b }
-    -- DROPBITS(state->extra);
-    DROPBITS s.extra
-    -- state->back += state->extra;   (`int += unsigned`: computed in unsigned, converted back)
-    wrS c.st fun s => { s with back := u2i (i2u s.back + s.extra) }
+  addExtra c.st true
   -- state->mode = MATCH; /* fallthrough */
   setMode c.st MATCH
   inflate_MATCH c
 
 /-- The two-level table lookup `for (;;) { here = TABLE[BITS(bitsOfTable)]; if ((unsigned)(here.bits) <= bits) break; PULLBYTE(); }`.
 `dist` selects `distcode`/`distbits`, else `lencode`/`lenbits`. -/
-def lookup1 (c : Ctx) (dist : Bool) : X Unit :=
+@[reducible, inline] def lookupRoot (st : InflateStatePtr) (dist : Bool) (refill : X Unit) : X Unit :=
   xloopBrk (do
-    let s ← ldInflateState c.st
+    let s ← ldInflateState st
     let tab := if dist then s.distcode else s.lencode
     let nb := if dist then s.distbits else s.lenbits
     let b ← BITS nb
     let here ← Ptr.index tab (b.toNat : Int)
     modify fun l => { l with here := here }
     if here.bits.toUInt32 <= (← get).bits then return true
-    PULLBYTE
+    refill
     return false)
 
+def lookup1 (c : Ctx) (dist : Bool) : X Unit := lookupRoot c.st dist PULLBYTE
+
 /-- `for (;;) { here = TABLE[last.val + (BITS(last.bits + last.op) >> last.bits)]; if ((unsigned)(last.bits + here.bits) <= bits) break; PULLBYTE(); }` -/
-def lookup2 (c : Ctx) (dist : Bool) : X Unit :=
+@[reducible, inline] def lookupLink (st : InflateStatePtr) (dist : Bool) (refill : X Unit) : X Unit :=
   xloopBrk (do
-    let s ← ldInflateState c.st
+    let s ← ldInflateState st
     let tab := if dist then s.distcode else s.lencode
     let last := (← get).last
     let b ← BITS (last.bits.toUInt32 + last.op.toUInt32)
@@ -685,8 +744,19 @@ def lookup2 (c : Ctx) (dist : Bool) : X Unit :=
     let here ← Ptr.index tab ((last.val.toUInt32 + sh).toNat : Int)
     modify fun l => { l with here := here }
     if (last.bits.toUInt32 + here.bits.toUInt32) <= (← get).bits then return true
-    PULLBYTE
+    refill
     return false)
+
+def lookup2 (c : Ctx) (dist : Bool) : X Unit := lookupLink c.st dist PULLBYTE
+
+/-- Consume the selected table entry's bits and account for them in the signed back count. -/
+@[reducible, inline] def consumeCodeWidth (st : InflateStatePtr) (last : Bool) : X Unit := do
+  let l ← get
+  let width := if last then l.last.bits else l.here.bits
+  DROPBITS width.toUInt32
+  let s ← ldInflateState st
+  let back ← chkI32 (s.back.toInt + width.toNat)
+  wrS st fun s => { s with back }
 
 /-- `case DIST:` -/
 def inflate_DIST (c : Ctx) : X Unit := do
@@ -696,38 +766,25 @@ def inflate_DIST (c : Ctx) : X Unit := do
   if (here.op &&& 0xf0) == 0 then
     modify fun l => { l with last := here }
     lookup2 c true
-    let last := (← get).last
-    DROPBITS last.bits.toUInt32
-    let s ← ldInflateState c.st
-    let bk ← chkI32 (s.back.toInt + last.bits.toNat)
-    wrS c.st fun s => { s with back := bk }
+    consumeCodeWidth c.st true
   -- DROPBITS(here.bits); state->back += here.bits;
+  consumeCodeWidth c.st false
   let here := (← get).here
-  DROPBITS here.bits.toUInt32
-  let s ← ldInflateState c.st
-  let bk ← chkI32 (s.back.toInt + here.bits.toNat)
-  wrS c.st fun s => { s with back := bk }
   -- if (here.op & 64) { ...BAD; break; }
   if (here.op &&& 64) != 0 then
     badMode c "invalid distance code"
     return
   -- state->offset = (unsigned)here.val; state->extra = (unsigned)(here.op) & 15; state->mode = DISTEXT;
-  wrS c.st fun s => { s with offset := here.val.toUInt32, extra := here.op.toUInt32 &&& 15 }
+  wrS c.st fun s => { s with offset := here.val.toUInt32 }
+  wrS c.st fun s => { s with extra := here.op.toUInt32 &&& 15 }
   setMode c.st DISTEXT
   inflate_DISTEXT c
 
 /-- `case LENEXT:` -/
 def inflate_LENEXT (c : Ctx) : X Unit := do
-  let s ← ldInflateState c.st
-  if s.extra != 0 then
-    NEEDBITS s.extra
-    -- state->length += BITS(state->extra);
-    let b ← BITS s.extra
-    wrS c.st fun s => { s with length := s.length + b }
-    DROPBITS s.extra
-    wrS c.st fun s => { s with back := u2i (i2u s.back + s.extra) }
-  -- state->was = state->length; state->mode = DIST; /* fallthrough */
-  wrS c.st fun s => { s with was := s.length, mode := DIST }
+  addExtra c.st false
+  wrS c.st fun s => { s with was := s.length }
+  setMode c.st DIST
   inflate_DIST c
 
 /-- `case LEN:` -/
@@ -736,7 +793,7 @@ def inflate_LEN (c : Ctx) : X Unit := do
   -- if (have >= 6 && left >= 258 && bits < 8) { RESTORE(); inflate_fast(strm, out); LOAD(); ...; break; }
   if l.have_ >= 6 && l.left >= 258 && l.bits < 8 then
     RESTORE c.strm c.st
-    inflate_fast c.strm l.out_
+    inflate_fast c.strm (← get).out_
     LOAD c.strm c.st
     -- if (state->mode == TYPE) state->back = -1;
     if (← rdS c.st (·.mode)) == TYPE then wrS c.st fun s => { s with back := -1 }
@@ -749,31 +806,27 @@ def inflate_LEN (c : Ctx) : X Unit := do
   if here.op != 0 && (here.op &&& 0xf0) == 0 then
     modify fun l => { l with last := here }
     lookup2 c false
-    let last := (← get).last
-    DROPBITS last.bits.toUInt32
-    let s ← ldInflateState c.st
-    let bk ← chkI32 (s.back.toInt + last.bits.toNat)
-    wrS c.st fun s => { s with back := bk }
+    consumeCodeWidth c.st true
   -- DROPBITS(here.bits); state->back += here.bits; state->length = (unsigned)here.val;
+  consumeCodeWidth c.st false
   let here := (← get).here
-  DROPBITS here.bits.toUInt32
-  let s ← ldInflateState c.st
-  let bk ← chkI32 (s.back.toInt + here.bits.toNat)
-  wrS c.st fun s => { s with back := bk, length := here.val.toUInt32 }
+  wrS c.st fun s => { s with length := here.val.toUInt32 }
   -- if ((int)(here.op) == 0) { state->mode = LIT; break; }
   if here.op.toNat == 0 then
     setMode c.st LIT
     return
   -- if (here.op & 32) { state->back = -1; state->mode = TYPE; break; }
   if (here.op &&& 32) != 0 then
-    wrS c.st fun s => { s with back := -1, mode := TYPE }
+    wrS c.st fun s => { s with back := -1 }
+    setMode c.st TYPE
     return
   -- if (here.op & 64) { ...BAD; break; }
   if (here.op &&& 64) != 0 then
     badMode c "invalid literal/length code"
     return
   -- state->extra = (unsigned)(here.op) & 15; state->mode = LENEXT; /* fallthrough */
-  wrS c.st fun s => { s with extra := here.op.toUInt32 &&& 15, mode := LENEXT }
+  wrS c.st fun s => { s with extra := here.op.toUInt32 &&& 15 }
+  setMode c.st LENEXT
   inflate_LENEXT c
 
 /-- `case LEN_:` -/
@@ -781,63 +834,67 @@ def inflate_LEN_ (c : Ctx) : X Unit := do
   setMode c.st LEN
   inflate_LEN c
 
+/-- Store the literal code length from the current decoder register. -/
+@[reducible, inline] def appendCurrentCode (st : InflateStatePtr) : X Unit := do
+  Zlib.Inflate.appendLength st (← get).here.val
+
+/-- The previous length in a nonempty code-length array. -/
+@[reducible, inline] def setPreviousLength (st : InflateStatePtr) : X Unit := do
+  let index ← rdS st (·.«have»)
+  let value ← Ptr.index (lensP st) ((index - 1).toNat : Int)
+  modify fun l => { l with len := value.toUInt32 }
+
+/-- Compute the repeat count from its base and the low bits of hold. -/
+@[reducible, inline] def setRepeatCount (base bits : UInt32) : X Unit := do
+  let value ← BITS bits
+  modify fun l => { l with copy := base + value }
+
+/-- Decode the literal, length, and distance code lengths with the input operations
+    supplied by the streaming or callback decoder. -/
+@[reducible, inline] def readCodeLengths (st : InflateStatePtr) (lookup : X Unit)
+    (need : UInt32 → X Unit) (reject : M Unit) : X Unit := do
+  xwhileBrk
+    (do let s ← ldInflateState st; return s.«have» < s.nlen + s.ndist)
+    (do
+      lookup
+      if (← get).here.val < 16 then
+        DROPBITS (← get).here.bits.toUInt32
+        appendCurrentCode st
+        return false
+      else
+        if (← get).here.val == 16 then
+          need ((← get).here.bits.toUInt32 + 2)
+          DROPBITS (← get).here.bits.toUInt32
+          if (← rdS st (·.«have»)) == 0 then
+            reject
+            return true
+          -- len = (unsigned)(state->lens[state->have - 1]); copy = 3 + BITS(2); DROPBITS(2);
+          setPreviousLength st
+          setRepeatCount 3 2
+          DROPBITS 2
+        else if (← get).here.val == 17 then
+          need ((← get).here.bits.toUInt32 + 3)
+          DROPBITS (← get).here.bits.toUInt32
+          modify fun l => { l with len := 0 }
+          setRepeatCount 3 3
+          DROPBITS 3
+        else
+          need ((← get).here.bits.toUInt32 + 7)
+          DROPBITS (← get).here.bits.toUInt32
+          modify fun l => { l with len := 0 }
+          setRepeatCount 11 7
+          DROPBITS 7
+        let s ← ldInflateState st
+        if s.«have» + (← get).copy > s.nlen + s.ndist then
+          reject
+          return true
+        Zlib.Inflate.repeatCodeLength st
+        return false)
+
 /-- `case CODELENS:` -/
 def inflate_CODELENS (c : Ctx) : X Unit := do
   -- while (state->have < state->nlen + state->ndist) {
-  xwhileBrk
-    (do let s ← ldInflateState c.st; return s.have < s.nlen + s.ndist)
-    (do
-      lookup1 c false
-      let here := (← get).here
-      -- if (here.val < 16) { DROPBITS(here.bits); state->lens[state->have++] = here.val; }
-      if here.val < 16 then
-        DROPBITS here.bits.toUInt32
-        let s ← ldInflateState c.st
-        Ptr.store (← (lensP c.st).add (s.have.toNat : Int)) here.val
-        wrS c.st fun s => { s with «have» := s.«have» + 1 }
-        return false
-      else
-        if here.val == 16 then
-          NEEDBITS (here.bits.toUInt32 + 2)
-          DROPBITS here.bits.toUInt32
-          -- if (state->have == 0) { "invalid bit length repeat"; BAD; break; }
-          let s ← ldInflateState c.st
-          if s.«have» == 0 then
-            badMode c "invalid bit length repeat"
-            return true
-          -- len = state->lens[state->have - 1]; copy = 3 + BITS(2); DROPBITS(2);
-          let v ← Ptr.index (lensP c.st) ((s.«have» - 1).toNat : Int)
-          let b ← BITS 2
-          modify fun l => { l with len := v.toUInt32, copy := 3 + b }
-          DROPBITS 2
-        else if here.val == 17 then
-          NEEDBITS (here.bits.toUInt32 + 3)
-          DROPBITS here.bits.toUInt32
-          let b ← BITS 3
-          modify fun l => { l with len := 0, copy := 3 + b }
-          DROPBITS 3
-        else
-          NEEDBITS (here.bits.toUInt32 + 7)
-          DROPBITS here.bits.toUInt32
-          let b ← BITS 7
-          modify fun l => { l with len := 0, copy := 11 + b }
-          DROPBITS 7
-        -- if (state->have + copy > state->nlen + state->ndist) { "invalid bit length repeat"; BAD; break; }
-        let s ← ldInflateState c.st
-        if s.«have» + (← get).copy > s.nlen + s.ndist then
-          badMode c "invalid bit length repeat"
-          return true
-        -- while (copy--) state->lens[state->have++] = (unsigned short)len;
-        xwhile
-          (do
-            let l ← get
-            set { l with copy := l.copy - 1 }
-            return l.copy != 0)
-          (do
-            let s ← ldInflateState c.st
-            Ptr.store (← (lensP c.st).add (s.«have».toNat : Int)) (← get).len.toUInt16
-            wrS c.st fun s => { s with «have» := s.«have» + 1 })
-        return false)
+  readCodeLengths c.st (lookup1 c false) NEEDBITS (badMode c "invalid bit length repeat")
   -- if (state->mode == BAD) break;
   if (← rdS c.st (·.mode)) == BAD then return
   -- if (state->lens[256] == 0) { "invalid code -- missing end-of-block"; BAD; break; }
@@ -845,7 +902,9 @@ def inflate_CODELENS (c : Ctx) : X Unit := do
     badMode c "invalid code -- missing end-of-block"
     return
   -- state->next = state->codes; state->lencode = (const code FAR *)(state->next); state->lenbits = LENBITS;
-  wrS c.st fun s => { s with next := codesP c.st, lencode := codesP c.st, lenbits := 10 }
+  wrS c.st fun s => { s with next := codesP c.st }
+  wrS c.st fun s => { s with lencode := s.next }
+  wrS c.st fun s => { s with lenbits := 10 }
   -- ret = inflate_table(LENS, state->lens, state->nlen, &(state->next), &(state->lenbits), state->work);
   let s ← ldInflateState c.st
   let (r, nx, lb) ← inflate_table LENS (lensP c.st) s.nlen s.next s.lenbits (workP c.st)
@@ -870,6 +929,18 @@ def inflate_CODELENS (c : Ctx) : X Unit := do
   if c.flush == Z_TREES then throw Ex.leave
   inflate_LEN_ c
 
+/-- Store the next length in the permutation used by the dynamic table header. -/
+def storeOrderedLength (st : InflateStatePtr) (length : X UInt16) : X Unit :=
+  Zlib.Inflate.withLengthOrder st fun index => do
+    let value ← length
+    Ptr.store (← (lensP st).add (index.toNat : Int)) value
+
+/-- Prepare the two code table pointers before decoding the length alphabet. -/
+@[reducible, inline] def startLengthTable (st : InflateStatePtr) : M Unit := do
+  wrS st fun s => { s with next := codesP st }
+  wrS st fun s => { s with distcode := s.next, lencode := s.next }
+  wrS st fun s => { s with lenbits := 7 }
+
 /-- `case LENLENS:` -/
 def inflate_LENLENS (c : Ctx) : X Unit := do
   -- while (state->have < state->ncode) { NEEDBITS(3); state->lens[order[state->have++]] = (unsigned short)BITS(3); DROPBITS(3); }
@@ -877,22 +948,14 @@ def inflate_LENLENS (c : Ctx) : X Unit := do
     (do let s ← ldInflateState c.st; return s.«have» < s.ncode)
     (do
       NEEDBITS 3
-      let s ← ldInflateState c.st
-      wrS c.st fun s => { s with «have» := s.«have» + 1 }
-      let o ← orderAt s.«have»
-      let b ← BITS 3
-      Ptr.store (← (lensP c.st).add (o.toNat : Int)) b.toUInt16
+      storeOrderedLength c.st (do return (← BITS 3).toUInt16)
       DROPBITS 3)
   -- while (state->have < 19) state->lens[order[state->have++]] = 0;
   xwhile
     (do let s ← ldInflateState c.st; return s.«have» < 19)
-    (do
-      let s ← ldInflateState c.st
-      wrS c.st fun s => { s with «have» := s.«have» + 1 }
-      let o ← orderAt s.«have»
-      Ptr.store (← (lensP c.st).add (o.toNat : Int)) (0 : UInt16))
+    (storeOrderedLength c.st (pure 0))
   -- state->next = state->codes; state->lencode = state->distcode = (const code FAR *)(state->next); state->lenbits = 7;
-  wrS c.st fun s => { s with next := codesP c.st, distcode := codesP c.st, lencode := codesP c.st, lenbits := 7 }
+  startLengthTable c.st
   -- ret = inflate_table(CODES, state->lens, 19, &(state->next), &(state->lenbits), state->work);
   let s ← ldInflateState c.st
   let (r, nx, lb) ← inflate_table CODES (lensP c.st) 19 s.next s.lenbits (workP c.st)
@@ -903,7 +966,8 @@ def inflate_LENLENS (c : Ctx) : X Unit := do
     badMode c "invalid code lengths set"
     return
   -- state->have = 0; state->mode = CODELENS; /* fallthrough */
-  wrS c.st fun s => { s with «have» := 0, mode := CODELENS }
+  wrS c.st fun s => { s with «have» := 0 }
+  setMode c.st CODELENS
   inflate_CODELENS c
 
 /-- `case TABLE:` -/
@@ -927,34 +991,31 @@ def inflate_TABLE (c : Ctx) : X Unit := do
     badMode c "too many length or distance symbols"
     return
   -- state->have = 0; state->mode = LENLENS; /* fallthrough */
-  wrS c.st fun s => { s with «have» := 0, mode := LENLENS }
+  wrS c.st fun s => { s with «have» := 0 }
+  setMode c.st LENLENS
   inflate_LENLENS c
+
+/-- Consume as much of a nonempty stored block as both caller buffers allow. -/
+@[reducible, inline] def copyStoredInput (st : InflateStatePtr) : X Unit := do
+  let l ← get
+  let mut copy := l.copy
+  if copy > l.have_ then copy := l.have_
+  if copy > l.left then copy := l.left
+  if copy == 0 then
+    set { l with copy := copy }
+    throw Ex.leave
+  memcpyB l.put l.next copy.toNat
+  let nx ← l.next.add (copy.toNat : Int)
+  let pt ← l.put.add (copy.toNat : Int)
+  set { l with copy := copy, have_ := l.have_ - copy, next := nx, left := l.left - copy, put := pt }
+  wrS st fun s => { s with length := s.length - copy }
 
 /-- `case COPY:` -/
 def inflate_COPY (c : Ctx) : X Unit := do
-  -- copy = state->length;
-  let s ← ldInflateState c.st
-  let mut copy := s.length
-  -- if (copy) {
-  if copy != 0 then
-    let l ← get
-    if copy > l.have_ then copy := l.have_
-    if copy > l.left then copy := l.left
-    -- if (copy == 0) goto inf_leave;
-    if copy == 0 then
-      set { l with copy := copy }
-      throw Ex.leave
-    -- zmemcpy(put, next, copy);
-    memcpyB l.put l.next copy.toNat
-    -- have -= copy; next += copy; left -= copy; put += copy; state->length -= copy;
-    let nx ← l.next.add (copy.toNat : Int)
-    let pt ← l.put.add (copy.toNat : Int)
-    set { l with copy := copy, have_ := l.have_ - copy, next := nx, left := l.left - copy, put := pt }
-    wrS c.st fun s => { s with length := s.length - copy }
-    return
-  modify fun l => { l with copy := copy }
-  -- state->mode = TYPE; break;
-  setMode c.st TYPE
+  let state ← ldInflateState c.st
+  modify fun l => { l with copy := state.length }
+  if (← get).copy != 0 then copyStoredInput c.st
+  else setMode c.st TYPE
 
 /-- `case COPY_:` -/
 def inflate_COPY_ (c : Ctx) : X Unit := do
@@ -981,7 +1042,8 @@ def inflate_STORED (c : Ctx) : X Unit := do
 /-- `case TYPEDO:` -/
 def inflate_TYPEDO (c : Ctx) : X Unit := do
   -- if (state->last) { BYTEBITS(); state->mode = CHECK; break; }
-  if (← rdS c.st (·.last)) != 0 then
+  let state ← ldInflateState c.st
+  if state.last != 0 then
     BYTEBITS
     setMode c.st CHECK
     return
@@ -1011,18 +1073,34 @@ def inflate_TYPE (c : Ctx) : X Unit := do
   if c.flush == Z_BLOCK || c.flush == Z_TREES then throw Ex.leave
   inflate_TYPEDO c
 
+/-- Store the same checksum in the two public decoder records. -/
+@[reducible, inline] def storeChecksum (strm : ZStreamPtr) (st : InflateStatePtr) (value : UInt64) : M Unit := do
+  wrS st fun s => { s with check := value }
+  wrZ strm fun z => { z with adler := value }
+
+/-- Record the preset dictionary identifier from the current bit register. -/
+@[reducible, inline] def storeDictId (strm : ZStreamPtr) (st : InflateStatePtr) : X Unit := do
+  storeChecksum strm st (ZSWAP32 (← get).hold)
+
+/-- Start the data checksum after parsing the wrapper header. -/
+@[reducible, inline] def startDataCheck (strm : ZStreamPtr) (st : InflateStatePtr) (gzip : Bool) : M Unit := do
+  let value ← if gzip then crc32 0 .null 0 else adler32 0 .null 0
+  storeChecksum strm st value
+
+/-- Add the number of input bytes consumed before requesting a dictionary. -/
+@[reducible, inline] def countDictionaryInput (strm : ZStreamPtr) : X Unit := do
+  let l ← get
+  wrZ strm fun z => { z with total_in := z.total_in + (l.in_ - z.avail_in).toUInt64 }
+
 /-- `case DICT:` -/
 def inflate_DICT (c : Ctx) : X Unit := do
   -- if (state->havedict == 0) { RESTORE(); strm->total_in += in - strm->avail_in; return Z_NEED_DICT; }
   if (← rdS c.st (·.havedict)) == 0 then
     RESTORE c.strm c.st
-    let l ← get
-    wrZ c.strm fun z => { z with total_in := z.total_in + (l.in_ - z.avail_in).toUInt64 }
+    countDictionaryInput c.strm
     throw (Ex.ret Z_NEED_DICT)
   -- strm->adler = state->check = adler32(0L, Z_NULL, 0);
-  let v ← adler32 0 .null 0
-  wrS c.st fun s => { s with check := v }
-  wrZ c.strm fun z => { z with adler := v }
+  startDataCheck c.strm c.st false
   -- state->mode = TYPE; /* fallthrough */
   setMode c.st TYPE
   inflate_TYPE c
@@ -1031,17 +1109,25 @@ def inflate_DICT (c : Ctx) : X Unit := do
 def inflate_DICTID (c : Ctx) : X Unit := do
   NEEDBITS 32
   -- strm->adler = state->check = ZSWAP32(hold);
-  let v := ZSWAP32 (← get).hold
-  wrS c.st fun s => { s with check := v }
-  wrZ c.strm fun z => { z with adler := v }
+  storeDictId c.strm c.st
   INITBITS
   setMode c.st DICT
   inflate_DICT c
 
+/-- Update an installed gzip header from the current decoder registers and state. -/
+@[reducible, inline] def updateHeader (st : InflateStatePtr)
+    (f : IL → InflateState → GzHeader → GzHeader) : X Unit := do
+  let l ← get
+  let s ← ldInflateState st
+  if s.head != none then
+    let g ← ldGzHeader s.head
+    stGzHeader s.head (f l s g)
+
 /-- `case HCRC:` -/
 def inflate_HCRC (c : Ctx) : X Unit := do
   -- if (state->flags & 0x0200) {
-  if ((← rdS c.st (·.flags)) &&& 0x0200) != 0 then
+  let flags ← ldInflateState c.st
+  if (flags.flags &&& 0x0200) != 0 then
     NEEDBITS 16
     let s ← ldInflateState c.st
     -- if ((state->wrap & 4) && hold != (state->check & 0xffff)) { "header crc mismatch"; BAD; break; }
@@ -1050,126 +1136,95 @@ def inflate_HCRC (c : Ctx) : X Unit := do
       return
     INITBITS
   -- if (state->head != Z_NULL) { state->head->hcrc = (int)((state->flags >> 9) & 1); state->head->done = 1; }
-  let s ← ldInflateState c.st
-  if s.head != none then
-    let g ← ldGzHeader s.head
-    stGzHeader s.head { g with hcrc := (s.flags >>> 9) &&& 1, done := 1 }
+  updateHeader c.st fun _ s g => { g with hcrc := (s.flags >>> 9) &&& 1, done := 1 }
   -- strm->adler = state->check = crc32(0L, Z_NULL, 0);
-  let v ← crc32 0 .null 0
-  wrS c.st fun s => { s with check := v }
-  wrZ c.strm fun z => { z with adler := v }
+  startDataCheck c.strm c.st true
   -- state->mode = TYPE; break;
   setMode c.st TYPE
+
+/-- Consume one NUL-terminated gzip name or comment, stopping at the caller's input boundary. -/
+@[reducible, inline] def readHeaderString (st : InflateStatePtr) (name : Bool) : X Unit := do
+  if (← get).have_ == 0 then throw Ex.leave
+  modify fun l => { l with copy := 0 }
+  xdoWhile
+    (do
+      let l ← get
+      let b ← index8 l.next l.copy.toNat
+      set { l with len := b.toUInt32, copy := l.copy + 1 }
+      let s ← ldInflateState st
+      if s.head != none then
+        let g ← ldGzHeader s.head
+        let field := if name then g.name else g.comment
+        let capacity := if name then g.name_max else g.comm_max
+        if field != .null && s.length < capacity then
+          store8 (← field.add (s.length.toNat : Int)) b
+          wrS st fun s => { s with length := s.length + 1 })
+    (do let l ← get; return l.len != 0 && l.copy < l.have_)
+  if ← hcrcOn st then
+    let l ← get
+    let v ← crc32 (← rdS st (·.check)) l.next l.copy
+    wrS st fun s => { s with check := v }
+  let l ← get
+  let nx ← l.next.add (l.copy.toNat : Int)
+  set { l with have_ := l.have_ - l.copy, next := nx }
+  if l.len != 0 then throw Ex.leave
 
 /-- `case COMMENT:` -/
 def inflate_COMMENT (c : Ctx) : X Unit := do
   -- if (state->flags & 0x1000) {
-  if ((← rdS c.st (·.flags)) &&& 0x1000) != 0 then
-    -- if (have == 0) goto inf_leave; copy = 0;
-    if (← get).have_ == 0 then throw Ex.leave
-    modify fun l => { l with copy := 0 }
-    -- do { len = (unsigned)(next[copy++]); if (head && head->comment && length < comm_max) head->comment[length++] = (Bytef)len; } while (len && copy < have);
-    xdoWhile
-      (do
-        let l ← get
-        let b ← index8 l.next l.copy.toNat
-        set { l with len := b.toUInt32, copy := l.copy + 1 }
-        let s ← ldInflateState c.st
-        if s.head != none then
-          let g ← ldGzHeader s.head
-          if g.comment != .null && s.length < g.comm_max then
-            store8 (← g.comment.add (s.length.toNat : Int)) b
-            wrS c.st fun s => { s with length := s.length + 1 })
-      (do let l ← get; return l.len != 0 && l.copy < l.have_)
-    -- if ((state->flags & 0x0200) && (state->wrap & 4)) state->check = crc32(state->check, next, copy);
-    if ← hcrcOn c.st then
-      let l ← get
-      let v ← crc32 (← rdS c.st (·.check)) l.next l.copy
-      wrS c.st fun s => { s with check := v }
-    -- have -= copy; next += copy; if (len) goto inf_leave;
-    let l ← get
-    let nx ← l.next.add (l.copy.toNat : Int)
-    set { l with have_ := l.have_ - l.copy, next := nx }
-    if l.len != 0 then throw Ex.leave
+  let state ← ldInflateState c.st
+  if (state.flags &&& 0x1000) != 0 then
+    readHeaderString c.st false
   else
-    -- else if (state->head != Z_NULL) state->head->comment = Z_NULL;
-    let s ← ldInflateState c.st
-    if s.head != none then
-      let g ← ldGzHeader s.head
-      stGzHeader s.head { g with comment := .null }
+    updateHeader c.st fun _ _ g => { g with comment := .null }
   -- state->mode = HCRC; /* fallthrough */
   setMode c.st HCRC
   inflate_HCRC c
 
 /-- `case NAME:` -/
 def inflate_NAME (c : Ctx) : X Unit := do
-  if ((← rdS c.st (·.flags)) &&& 0x0800) != 0 then
-    if (← get).have_ == 0 then throw Ex.leave
-    modify fun l => { l with copy := 0 }
-    xdoWhile
-      (do
-        let l ← get
-        let b ← index8 l.next l.copy.toNat
-        set { l with len := b.toUInt32, copy := l.copy + 1 }
-        let s ← ldInflateState c.st
-        if s.head != none then
-          let g ← ldGzHeader s.head
-          if g.name != .null && s.length < g.name_max then
-            store8 (← g.name.add (s.length.toNat : Int)) b
-            wrS c.st fun s => { s with length := s.length + 1 })
-      (do let l ← get; return l.len != 0 && l.copy < l.have_)
-    if ← hcrcOn c.st then
-      let l ← get
-      let v ← crc32 (← rdS c.st (·.check)) l.next l.copy
-      wrS c.st fun s => { s with check := v }
-    let l ← get
-    let nx ← l.next.add (l.copy.toNat : Int)
-    set { l with have_ := l.have_ - l.copy, next := nx }
-    if l.len != 0 then throw Ex.leave
+  let state ← ldInflateState c.st
+  if (state.flags &&& 0x0800) != 0 then
+    readHeaderString c.st true
   else
-    -- else if (state->head != Z_NULL) state->head->name = Z_NULL;
-    let s ← ldInflateState c.st
+    updateHeader c.st fun _ _ g => { g with name := .null }
+  -- state->length = 0; state->mode = COMMENT; /* fallthrough */
+  wrS c.st fun s => { s with length := 0 }
+  setMode c.st COMMENT
+  inflate_COMMENT c
+
+/-- Fill the part of the caller's gzip extra buffer that is available in this input chunk. -/
+@[reducible, inline] def copyHeaderExtra (st : InflateStatePtr) : X Unit := do
+  let s ← ldInflateState st
+  let l ← get
+  let copy := if s.length > l.have_ then l.have_ else s.length
+  set { l with copy }
+  if copy != 0 then
     if s.head != none then
       let g ← ldGzHeader s.head
-      stGzHeader s.head { g with name := .null }
-  -- state->length = 0; state->mode = COMMENT; /* fallthrough */
-  wrS c.st fun s => { s with length := 0, mode := COMMENT }
-  inflate_COMMENT c
+      if g.extra != .null then
+        let len := g.extra_len - s.length
+        modify fun l => { l with len }
+        if len < g.extra_max then
+          let n := if len + copy > g.extra_max then g.extra_max - len else copy
+          memcpyB (← g.extra.add (len.toNat : Int)) (← get).next n.toNat
+    if ← hcrcOn st then
+      let v ← crc32 (← rdS st (·.check)) (← get).next copy
+      wrS st fun s => { s with check := v }
+    let l ← get
+    let nx ← l.next.add (copy.toNat : Int)
+    set { l with have_ := l.have_ - copy, next := nx }
+    wrS st fun s => { s with length := s.length - copy }
 
 /-- `case EXTRA:` -/
 def inflate_EXTRA (c : Ctx) : X Unit := do
-  -- if (state->flags & 0x0400) {
-  if ((← rdS c.st (·.flags)) &&& 0x0400) != 0 then
-    -- copy = state->length; if (copy > have) copy = have;
-    let s ← ldInflateState c.st
-    let l ← get
-    let copy := if s.length > l.have_ then l.have_ else s.length
-    set { l with copy := copy }
-    -- if (copy) {
-    if copy != 0 then
-      -- if (state->head != Z_NULL && state->head->extra != Z_NULL && (len = state->head->extra_len - state->length) < state->head->extra_max) {
-      if s.head != none then
-        let g ← ldGzHeader s.head
-        if g.extra != .null then
-          let len := g.extra_len - s.length
-          modify fun l => { l with len := len }
-          if len < g.extra_max then
-            -- zmemcpy(state->head->extra + len, next, len + copy > extra_max ? extra_max - len : copy);
-            let n := if len + copy > g.extra_max then g.extra_max - len else copy
-            memcpyB (← g.extra.add (len.toNat : Int)) (← get).next n.toNat
-      -- if ((state->flags & 0x0200) && (state->wrap & 4)) state->check = crc32(state->check, next, copy);
-      if ← hcrcOn c.st then
-        let v ← crc32 (← rdS c.st (·.check)) (← get).next copy
-        wrS c.st fun s => { s with check := v }
-      -- have -= copy; next += copy; state->length -= copy;
-      let l ← get
-      let nx ← l.next.add (copy.toNat : Int)
-      set { l with have_ := l.have_ - copy, next := nx }
-      wrS c.st fun s => { s with length := s.length - copy }
-    -- if (state->length) goto inf_leave;
-    if (← rdS c.st (·.length)) != 0 then throw Ex.leave
-  -- state->length = 0; state->mode = NAME; /* fallthrough */
-  wrS c.st fun s => { s with length := 0, mode := NAME }
+  let state ← ldInflateState c.st
+  if (state.flags &&& 0x0400) != 0 then
+    copyHeaderExtra c.st
+    let state ← ldInflateState c.st
+    if state.length != 0 then throw Ex.leave
+  wrS c.st fun s => { s with length := 0 }
+  setMode c.st NAME
   inflate_NAME c
 
 /-- `case EXLEN:` -/
@@ -1182,31 +1237,31 @@ def inflate_EXLEN (c : Ctx) : X Unit := do
     -- state->length = (unsigned)(hold);
     wrS c.st fun s => { s with length := l.hold.toUInt32 }
     -- if (state->head != Z_NULL) state->head->extra_len = (unsigned)hold;
-    let s ← ldInflateState c.st
-    if s.head != none then
-      let g ← ldGzHeader s.head
-      stGzHeader s.head { g with extra_len := l.hold.toUInt32 }
+    updateHeader c.st fun l _ g => { g with extra_len := l.hold.toUInt32 }
     -- if ((state->flags & 0x0200) && (state->wrap & 4)) CRC2(state->check, hold);
     if ← hcrcOn c.st then CRC2 c
     INITBITS
   else
     -- else if (state->head != Z_NULL) state->head->extra = Z_NULL;
-    if s.head != none then
-      let g ← ldGzHeader s.head
-      stGzHeader s.head { g with extra := .null }
+    updateHeader c.st fun _ _ g => { g with extra := .null }
   -- state->mode = EXTRA; /* fallthrough */
   setMode c.st EXTRA
   inflate_EXTRA c
 
+/-- Store the time word or the two OS bytes in a caller-supplied gzip header. -/
+@[reducible, inline] def storeHeaderWord (st : InflateStatePtr) (os : Bool) : X Unit := do
+  let l ← get
+  let s ← ldInflateState st
+  if s.head != none then
+    let g ← ldGzHeader s.head
+    if os then
+      stGzHeader s.head { g with xflags := (l.hold &&& 0xff).toUInt32.toInt32, os := (l.hold >>> 8).toUInt32.toInt32 }
+    else stGzHeader s.head { g with time := l.hold }
+
 /-- `case OS:` -/
 def inflate_OS (c : Ctx) : X Unit := do
   NEEDBITS 16
-  let l ← get
-  let s ← ldInflateState c.st
-  -- if (state->head != Z_NULL) { state->head->xflags = (int)(hold & 0xff); state->head->os = (int)(hold >> 8); }
-  if s.head != none then
-    let g ← ldGzHeader s.head
-    stGzHeader s.head { g with xflags := (l.hold &&& 0xff).toUInt32.toInt32, os := (l.hold >>> 8).toUInt32.toInt32 }
+  storeHeaderWord c.st true
   if ← hcrcOn c.st then CRC2 c
   INITBITS
   setMode c.st EXLEN
@@ -1215,13 +1270,7 @@ def inflate_OS (c : Ctx) : X Unit := do
 /-- `case TIME:` -/
 def inflate_TIME (c : Ctx) : X Unit := do
   NEEDBITS 32
-  let l ← get
-  let s ← ldInflateState c.st
-  -- if (state->head != Z_NULL) state->head->time = hold;
-  if s.head != none then
-    let g ← ldGzHeader s.head
-    stGzHeader s.head { g with time := l.hold }
-  -- if ((state->flags & 0x0200) && (state->wrap & 4)) CRC4(state->check, hold);
+  storeHeaderWord c.st false
   if ← hcrcOn c.st then CRC4 c
   INITBITS
   setMode c.st OS
@@ -1243,14 +1292,35 @@ def inflate_FLAGS (c : Ctx) : X Unit := do
     badMode c "unknown header flags set"
     return
   -- if (state->head != Z_NULL) state->head->text = (int)((hold >> 8) & 1);
-  if s.head != none then
-    let g ← ldGzHeader s.head
-    stGzHeader s.head { g with text := ((l.hold >>> 8) &&& 1).toUInt32.toInt32 }
+  updateHeader c.st fun l _ g => { g with text := ((l.hold >>> 8) &&& 1).toUInt32.toInt32 }
   -- if ((state->flags & 0x0200) && (state->wrap & 4)) CRC2(state->check, hold);
   if ← hcrcOn c.st then CRC2 c
   INITBITS
   setMode c.st TIME
   inflate_TIME c
+
+/-- Test the two zlib wrapper bytes against FCHECK. -/
+@[reducible, inline] def invalidHeaderWord (st : InflateStatePtr) : X Bool := do
+  let state ← ldInflateState st
+  let l ← get
+  let low ← BITS 8
+  return (state.wrap &&& 1) == 0 || ((low <<< 8).toUInt64 + (l.hold >>> 8)) % 31 != 0
+
+/-- Window length encoded by CINFO, including the eight implicit bits. -/
+@[reducible, inline] def windowBitsFromHeader : X Unit := do
+  let low ← BITS 4
+  modify fun l => { l with len := low + 8 }
+
+/-- Install the maximum distance for the zlib wrapper's window. -/
+@[reducible, inline] def setWindowLimit (st : InflateStatePtr) : X Unit := do
+  let l ← get
+  let limit ← shl32 1 l.len
+  wrS st fun s => { s with dmax := limit }
+
+/-- Initialize the gzip wrapper's header checksum before its first two bytes. -/
+@[reducible, inline] def resetHeaderCheck (st : InflateStatePtr) : M Unit := do
+  let v ← crc32 0 .null 0
+  wrS st fun s => { s with check := v }
 
 /-- `case HEAD:` -/
 def inflate_HEAD (c : Ctx) : X Unit := do
@@ -1259,26 +1329,22 @@ def inflate_HEAD (c : Ctx) : X Unit := do
     setMode c.st TYPEDO
     return
   NEEDBITS 16
-  let l ← get
   let s ← ldInflateState c.st
   -- if ((state->wrap & 2) && hold == 0x8b1f) {  /* gzip header */
-  if (s.wrap &&& 2) != 0 && l.hold == 0x8b1f then
+  if (s.wrap &&& 2) != 0 && (← get).hold == 0x8b1f then
     -- if (state->wbits == 0) state->wbits = 15;
+    let s ← ldInflateState c.st
     if s.wbits == 0 then wrS c.st fun s => { s with wbits := 15 }
     -- state->check = crc32(0L, Z_NULL, 0); CRC2(state->check, hold); INITBITS(); state->mode = FLAGS; break;
-    let v ← crc32 0 .null 0
-    wrS c.st fun s => { s with check := v }
+    resetHeaderCheck c.st
     CRC2 c
     INITBITS
     setMode c.st FLAGS
     return
   -- if (state->head != Z_NULL) state->head->done = -1;
-  if s.head != none then
-    let g ← ldGzHeader s.head
-    stGzHeader s.head { g with done := -1 }
+  updateHeader c.st fun _ _ g => { g with done := -1 }
   -- if (!(state->wrap & 1) || ((BITS(8) << 8) + (hold >> 8)) % 31) { "incorrect header check"; BAD; break; }
-  let b8 ← BITS 8
-  if (s.wrap &&& 1) == 0 || ((b8 <<< 8).toUInt64 + (l.hold >>> 8)) % 31 != 0 then
+  if ← invalidHeaderWord c.st then
     badMode c "incorrect header check"
     return
   -- if (BITS(4) != Z_DEFLATED) { "unknown compression method"; BAD; break; }
@@ -1287,22 +1353,23 @@ def inflate_HEAD (c : Ctx) : X Unit := do
     return
   DROPBITS 4
   -- len = BITS(4) + 8;
-  let len := (← BITS 4) + 8
-  modify fun l => { l with len := len }
+  windowBitsFromHeader
   -- if (len > 15 || (state->wbits != 0 && len > state->wbits)) { "invalid window size"; BAD; break; }
   let s ← ldInflateState c.st
-  if len > 15 || (s.wbits != 0 && len > s.wbits) then
+  let l ← get
+  if l.len > 15 || (s.wbits != 0 && l.len > s.wbits) then
     badMode c "invalid window size"
     return
   -- if (state->wbits == 0) state->wbits = len;
-  if s.wbits == 0 then wrS c.st fun s => { s with wbits := len }
+  let s ← ldInflateState c.st
+  if s.wbits == 0 then
+    let l ← get
+    wrS c.st fun s => { s with wbits := l.len }
   -- state->dmax = 1U << len; state->flags = 0;
-  let dm ← shl32 1 len
-  wrS c.st fun s => { s with dmax := dm, flags := 0 }
+  setWindowLimit c.st
+  wrS c.st fun s => { s with flags := 0 }
   -- strm->adler = state->check = adler32(0L, Z_NULL, 0);
-  let v ← adler32 0 .null 0
-  wrS c.st fun s => { s with check := v }
-  wrZ c.strm fun z => { z with adler := v }
+  startDataCheck c.strm c.st false
   -- state->mode = hold & 0x200 ? DICTID : TYPE; INITBITS(); break;
   let l ← get
   setMode c.st (if (l.hold &&& 0x200) != 0 then DICTID else TYPE)
@@ -1354,14 +1421,18 @@ def inflate_run (c : Ctx) : X Unit := do
   if (← rdS c.st (·.mode)) == TYPE then setMode c.st TYPEDO
   LOAD c.strm c.st
   -- in = have; out = left; ret = Z_OK;
-  modify fun l => { l with in_ := l.have_, out_ := l.left, ret := Z_OK }
+  modify fun l => { l with in_ := l.have_ }
+  modify fun l => { l with out_ := l.left }
+  modify fun l => { l with ret := Z_OK }
   -- for (;;) switch (state->mode) { ... }
   xwhile (pure true) (inflate_dispatch c)
 
-/-- `inf_leave:` and what follows it (`RESTORE()` .. `return ret`), with the registers `l` at the `goto`. -/
-def inflate_leave (c : Ctx) (l : IL) : M Int32 := do
+/-- Restore the registers and, when required, update the sliding window. -/
+def leaveWindow (c : Ctx) (l : IL) (account : ZStream → M Int32) : M Int32 := do
   -- RESTORE();
-  wrZ c.strm fun z => { z with next_out := l.put, avail_out := l.left, next_in := l.next, avail_in := l.have_ }
+  wrZ c.strm fun z =>
+    let z := { z with next_out := l.put, avail_out := l.left }
+    { z with next_in := l.next, avail_in := l.have_ }
   wrS c.st fun s => { s with hold := l.hold, bits := l.bits }
   let z ← ldZStream c.strm
   let s ← ldInflateState c.st
@@ -1371,6 +1442,10 @@ def inflate_leave (c : Ctx) (l : IL) : M Int32 := do
     if (← updatewindow c.strm z.next_out (l.out_ - z.avail_out)) != 0 then
       setMode c.st MEM
       return Z_MEM_ERROR
+  account z
+
+/-- Account for the bytes consumed and produced, and publish the checksum on exit. -/
+def leaveAccounting (c : Ctx) (l : IL) (z : ZStream) (output : M BPtr) : M Int32 := do
   -- in -= strm->avail_in; out -= strm->avail_out;
   let in_ := l.in_ - z.avail_in
   let out_ := l.out_ - z.avail_out
@@ -1380,7 +1455,7 @@ def inflate_leave (c : Ctx) (l : IL) : M Int32 := do
   -- if ((state->wrap & 4) && out) strm->adler = state->check = UPDATE_CHECK(state->check, strm->next_out - out, out);
   let s ← ldInflateState c.st
   if (s.wrap &&& 4) != 0 && out_ != 0 then
-    let p ← z.next_out.add (-(out_.toNat : Int))
+    let p ← (← cinline output).add (-(out_.toNat : Int))
     let v ← UPDATE_CHECK c.st s.check p out_
     wrS c.st fun s => { s with check := v }
     wrZ c.strm fun z => { z with adler := v }
@@ -1395,15 +1470,28 @@ def inflate_leave (c : Ctx) (l : IL) : M Int32 := do
   if ((in_ == 0 && out_ == 0) || c.flush == Z_FINISH) && ret == Z_OK then ret := Z_BUF_ERROR
   return ret
 
+/-- Publish counts and status using the stream as it stands after the window update. -/
+@[reducible, inline] def publishCounts (c : Ctx) (l : IL) : M Int32 := do
+  leaveAccounting c l (← ldZStream c.strm) (rdZ c.strm (·.next_out))
+
+/-- `inf_leave:` reads the stream after a successful window update. -/
+def inflate_leave (c : Ctx) (l : IL) : M Int32 :=
+  leaveWindow c l fun _ => publishCounts c l
+
+/-- The short-circuit validation at the public streaming decoder entry. -/
+@[reducible, inline] def rejectsInput (strm : ZStreamPtr) : M Bool := do
+  if (← inflateStateCheck strm) != 0 then return true
+  let z ← ldZStream strm
+  return z.next_out == .null || (z.next_in == .null && z.avail_in != 0)
+
 /-- `int ZEXPORT inflate(z_streamp strm, int flush)` -/
 def inflate (strm : ZStreamPtr) (flush : Int32) : M (CExport Int32) := do
   -- unsigned char hbuf[4];
   let hbuf ← allocLocalB 4
   let r ← (do
     -- if (inflateStateCheck(strm) || strm->next_out == Z_NULL || (strm->next_in == Z_NULL && strm->avail_in != 0)) return Z_STREAM_ERROR;
-    if (← inflateStateCheck strm) != 0 then return Z_STREAM_ERROR
+    if ← rejectsInput strm then return Z_STREAM_ERROR
     let z ← ldZStream strm
-    if z.next_out == .null || (z.next_in == .null && z.avail_in != 0) then return Z_STREAM_ERROR
     -- state = (struct inflate_state FAR *)strm->state;
     let st ← castInflateState z.state
     let c : Ctx := { strm, st, hbuf, flush }
@@ -1423,15 +1511,15 @@ def inflateEnd (strm : ZStreamPtr) : M (CExport Int32) := do
   let s ← ldInflateState st
   if s.window != .null then ZFREEB strm s.window
   -- ZFREE(strm, strm->state); strm->state = Z_NULL;
-  ZFREES strm st
+  ZFREES strm (← castInflateState (← ldZStream strm).state)
   wrZ strm fun z => { z with state := none }
   return Z_OK
 
-/-- `int ZEXPORT inflateGetDictionary(z_streamp strm, Bytef *dictionary, uInt *dictLength)`.
-`dictLength` is the value of `*dictLength` (`none` for `NULL`); the second result is `*dictLength` afterwards. -/
-def inflateGetDictionary (strm : ZStreamPtr) (dictionary : BPtr) (dictLength : Option UInt32) :
-    M (Int32 × Option UInt32) := do
-  if (← inflateStateCheck strm) != 0 then return (Z_STREAM_ERROR, dictLength)
+/-- Copy the current dictionary. The two callers give the value-style result or
+    perform C's optional output store after the dictionary bytes are copied. -/
+def getDictionaryWith {α : Type} (strm : ZStreamPtr) (dictionary : BPtr)
+    (invalid : α) (finish : UInt32 → M α) : M α := do
+  if (← inflateStateCheck strm) != 0 then return invalid
   let z ← ldZStream strm
   let st ← castInflateState z.state
   let s ← ldInflateState st
@@ -1443,13 +1531,27 @@ def inflateGetDictionary (strm : ZStreamPtr) (dictionary : BPtr) (dictLength : O
     let d1 ← dictionary.add (s.whave.toNat : Int)
     let d2 ← d1.add (-(s.wnext.toNat : Int))
     memcpyB d2 s.window s.wnext.toNat
-  -- if (dictLength != Z_NULL) *dictLength = state->whave;
-  match dictLength with
-  | some _ => return (Z_OK, some s.whave)
-  | none => return (Z_OK, none)
+  finish s.whave
+
+/-- `int ZEXPORT inflateGetDictionary(z_streamp strm, Bytef *dictionary, uInt *dictLength)`.
+`dictLength` is the value of `*dictLength` (`none` for `NULL`); the second result is `*dictLength` afterwards. -/
+def inflateGetDictionary (strm : ZStreamPtr) (dictionary : BPtr) (dictLength : Option UInt32) :
+    M (Int32 × Option UInt32) :=
+  getDictionaryWith strm dictionary (Z_STREAM_ERROR, dictLength) fun n =>
+    match dictLength with
+    | some _ => pure (Z_OK, some n)
+    | none => pure (Z_OK, none)
+
+/-- Address-taking C entry point. The output is written only on success, and
+    only when the caller supplies a length pointer. -/
+def inflateGetDictionary_c (strm : ZStreamPtr) (dictionary : BPtr) (dictLength : PtrU32) :
+    M (CExportAs "inflateGetDictionary" Int32) :=
+  getDictionaryWith strm dictionary Z_STREAM_ERROR fun n => do
+    if dictLength != .null then storeU32 dictLength n
+    return Z_OK
 
 /-- `int ZEXPORT inflateSetDictionary(z_streamp strm, const Bytef *dictionary, uInt dictLength)` -/
-def inflateSetDictionary (strm : ZStreamPtr) (dictionary : BPtr) (dictLength : UInt32) : M Int32 := do
+def inflateSetDictionary (strm : ZStreamPtr) (dictionary : ConstBPtr) (dictLength : UInt32) : M (CExport Int32) := do
   -- if (inflateStateCheck(strm) || dictionary == Z_NULL) return Z_STREAM_ERROR;
   if (← inflateStateCheck strm) != 0 || dictionary == .null then return Z_STREAM_ERROR
   let z ← ldZStream strm
@@ -1473,7 +1575,7 @@ def inflateSetDictionary (strm : ZStreamPtr) (dictionary : BPtr) (dictLength : U
   return Z_OK
 
 /-- `int ZEXPORT inflateGetHeader(z_streamp strm, gz_headerp head)` -/
-def inflateGetHeader (strm : ZStreamPtr) (head : GzHeaderPtr) : M Int32 := do
+def inflateGetHeader (strm : ZStreamPtr) (head : GzHeaderPtr) : M (CExport Int32) := do
   if (← inflateStateCheck strm) != 0 then return Z_STREAM_ERROR
   let z ← ldZStream strm
   let st ← castInflateState z.state
@@ -1487,7 +1589,7 @@ def inflateGetHeader (strm : ZStreamPtr) (head : GzHeaderPtr) : M Int32 := do
 
 /-- `local unsigned syncsearch(unsigned FAR *have, const unsigned char FAR *buf, unsigned len)`.
 `have` is the value of `*have`; the result is (return value, `*have` afterwards). -/
-def syncsearch (have_ : UInt32) (buf : BPtr) (len : UInt32) : M (UInt32 × UInt32) := do
+def syncsearch (have_ : UInt32) (buf : ConstBPtr) (len : UInt32) : M (UInt32 × UInt32) := do
   -- got = *have; next = 0;
   let (next, got) ← cwhile (σ := UInt32 × UInt32)
     -- while (next < len && got < 4) {
@@ -1502,8 +1604,14 @@ def syncsearch (have_ : UInt32) (buf : BPtr) (len : UInt32) : M (UInt32 × UInt3
   -- *have = got; return next;
   return (next, got)
 
+/-- The C helper reads its count once on entry and writes it after the last input byte. -/
+def syncsearch_c (have_ : UInt32Cell) (buf : ConstBPtr) (len : UInt32) : M (CStaticAs "syncsearch" UInt32) := do
+  let (next, got) ← syncsearch (← have_.read) buf len
+  have_.write got
+  return next
+
 /-- `int ZEXPORT inflateSync(z_streamp strm)` -/
-def inflateSync (strm : ZStreamPtr) : M Int32 := do
+def inflateSync (strm : ZStreamPtr) : M (CExport Int32) := do
   -- unsigned char buf[4];
   let buf ← allocLocalB 4
   let r ← (do
@@ -1516,28 +1624,35 @@ def inflateSync (strm : ZStreamPtr) : M Int32 := do
     -- if (state->mode != SYNC) {
     if s.mode != SYNC then
       -- state->mode = SYNC; state->hold >>= state->bits & 7; state->bits -= state->bits & 7;
-      let h ← shr64 s.hold (s.bits &&& 7)
-      wrS st fun s => { s with mode := SYNC, hold := h, bits := s.bits - (s.bits &&& 7) }
+      wrS st fun s => { s with mode := SYNC }
+      let bits ← rdS st (·.bits)
+      let value ← rdS st (·.hold)
+      let h ← shr64 value (bits &&& 7)
+      wrS st fun s => { s with hold := h }
+      wrS st fun s => { s with bits := s.bits - (s.bits &&& 7) }
       -- len = 0; while (state->bits >= 8) { buf[len++] = (unsigned char)(state->hold); state->hold >>= 8; state->bits -= 8; }
       let len ← cwhile (σ := UInt32)
         (fun len => do return ((← rdS st (·.bits)) >= 8, len))
         (fun len => do
           let s ← ldInflateState st
           store8 (← buf.add (len.toNat : Int)) s.hold.toUInt8
-          wrS st fun s => { s with hold := s.hold >>> 8, bits := s.bits - 8 }
-          pure (len + 1))
+          let next ← cdecl (len + 1)
+          wrS st fun s => { s with hold := s.hold >>> 8 }
+          wrS st fun s => { s with bits := s.bits - 8 }
+          pure next)
         0
       -- state->have = 0; syncsearch(&(state->have), buf, len);
       wrS st fun s => { s with «have» := 0 }
-      let (_, hv) ← syncsearch 0 buf len
-      wrS st fun s => { s with «have» := hv }
+      let _ ← syncsearch_c (.inflateHave st) buf len
     -- len = syncsearch(&(state->have), strm->next_in, strm->avail_in);
     let z ← ldZStream strm
-    let (len, hv) ← syncsearch (← rdS st (·.«have»)) z.next_in z.avail_in
-    wrS st fun s => { s with «have» := hv }
+    let len ← syncsearch_c (.inflateHave st) z.next_in z.avail_in
     -- strm->avail_in -= len; strm->next_in += len; strm->total_in += len;
-    let ni ← z.next_in.add (len.toNat : Int)
-    wrZ strm fun z => { z with avail_in := z.avail_in - len, next_in := ni, total_in := z.total_in + len.toUInt64 }
+    wrZ strm fun z => { z with avail_in := z.avail_in - len }
+    let input ← rdZ strm (·.next_in)
+    let ni ← input.add (len.toNat : Int)
+    wrZ strm fun z => { z with next_in := ni }
+    wrZ strm fun z => { z with total_in := z.total_in + len.toUInt64 }
     -- if (state->have != 4) return Z_DATA_ERROR;
     if (← rdS st (·.«have»)) != 4 then return Z_DATA_ERROR
     -- flags = state->flags; in = strm->total_in; out = strm->total_out;
@@ -1567,7 +1682,7 @@ def inflateSync (strm : ZStreamPtr) : M Int32 := do
   return r
 
 /-- `int ZEXPORT inflateSyncPoint(z_streamp strm)` -/
-def inflateSyncPoint (strm : ZStreamPtr) : M Int32 := do
+def inflateSyncPoint (strm : ZStreamPtr) : M (CExport Int32) := do
   if (← inflateStateCheck strm) != 0 then return Z_STREAM_ERROR
   let z ← ldZStream strm
   let st ← castInflateState z.state
@@ -1576,7 +1691,7 @@ def inflateSyncPoint (strm : ZStreamPtr) : M Int32 := do
   return if s.mode == STORED && s.bits == 0 then 1 else 0
 
 /-- `int ZEXPORT inflateCopy(z_streamp dest, z_streamp source)` -/
-def inflateCopy (dest source : ZStreamPtr) : M Int32 := do
+def inflateCopy (dest source : ZStreamPtr) : M (CExport Int32) := do
   -- if (dest == Z_NULL) return Z_STREAM_ERROR;
   if dest == none then return Z_STREAM_ERROR
   -- if (inflateStateCheck(source)) { dest->state = Z_NULL; return Z_STREAM_ERROR; }
@@ -1616,22 +1731,26 @@ def inflateCopy (dest source : ZStreamPtr) : M Int32 := do
     -- copy->lencode = copy->codes;
     wrS copy fun s => { s with lencode := codesP copy }
     -- copy->distcode = copy->codes + (state->distcode - state->codes);
+    let s ← ldInflateState state
     let d2 ← Ptr.diff s.distcode (codesP state)
     let dc ← (codesP copy).add d2.toInt
     wrS copy fun s => { s with distcode := dc }
   -- copy->next = copy->codes + (state->next - state->codes);
+  let s ← ldInflateState state
   let d3 ← Ptr.diff s.next (codesP state)
   let nx ← (codesP copy).add d3.toInt
   wrS copy fun s => { s with next := nx }
   -- if (window != Z_NULL) zmemcpy(window, state->window, state->whave);
-  if window != .null then memcpyB window s.window s.whave.toNat
+  if window != .null then
+    let s ← ldInflateState state
+    memcpyB window s.window s.whave.toNat
   -- copy->window = window; dest->state = (struct internal_state FAR *)copy;
   wrS copy fun s => { s with window := window }
   wrZ dest fun z => { z with state := StateRef.ofInflateState copy }
   return Z_OK
 
 /-- `int ZEXPORT inflateUndermine(z_streamp strm, int subvert)` (`INFLATE_ALLOW_INVALID_DISTANCE_TOOFAR_ARRR` undefined) -/
-def inflateUndermine (strm : ZStreamPtr) (_subvert : Int32) : M Int32 := do
+def inflateUndermine (strm : ZStreamPtr) (_subvert : Int32) : M (CExport Int32) := do
   if (← inflateStateCheck strm) != 0 then return Z_STREAM_ERROR
   let z ← ldZStream strm
   let st ← castInflateState z.state
@@ -1640,7 +1759,7 @@ def inflateUndermine (strm : ZStreamPtr) (_subvert : Int32) : M Int32 := do
   return Z_DATA_ERROR
 
 /-- `int ZEXPORT inflateValidate(z_streamp strm, int check)` -/
-def inflateValidate (strm : ZStreamPtr) (check : Int32) : M Int32 := do
+def inflateValidate (strm : ZStreamPtr) (check : Int32) : M (CExport Int32) := do
   if (← inflateStateCheck strm) != 0 then return Z_STREAM_ERROR
   let z ← ldZStream strm
   let st ← castInflateState z.state
@@ -1652,8 +1771,25 @@ def inflateValidate (strm : ZStreamPtr) (check : Int32) : M Int32 := do
   wrS st fun s => { s with wrap := wrap, reqwrap := reqwrap }
   return Z_OK
 
+/-- C entry with the two conditional field writes in the original order. -/
+def inflateValidate_c (strm : ZStreamPtr) (check : Int32) : M (CExportAs "inflateValidate" Int32) := do
+  if (← inflateStateCheck strm) != 0 then return Z_STREAM_ERROR
+  let z ← ldZStream strm
+  let st ← castInflateState z.state
+  let s ← ldInflateState st
+  if check != 0 && s.wrap != 0 then
+    wrS st fun d => { d with wrap := d.wrap ||| 4 }
+  else
+    wrS st fun d => { d with wrap := d.wrap &&& ~~~4 }
+  let s ← ldInflateState st
+  if check != 0 && s.reqwrap != 0 then
+    wrS st fun d => { d with reqwrap := d.reqwrap ||| 4 }
+  else
+    wrS st fun d => { d with reqwrap := d.reqwrap &&& ~~~4 }
+  return Z_OK
+
 /-- `long ZEXPORT inflateMark(z_streamp strm)` -/
-def inflateMark (strm : ZStreamPtr) : M Int64 := do
+def inflateMark (strm : ZStreamPtr) : M (CExport Int64) := do
   -- if (inflateStateCheck(strm)) return -(1L << 16);
   if (← inflateStateCheck strm) != 0 then return -((1 : Int64) <<< 16)
   let z ← ldZStream strm
@@ -1666,7 +1802,7 @@ def inflateMark (strm : ZStreamPtr) : M Int64 := do
   chkI64 (hi.toInt + lo.toNat)
 
 /-- `unsigned long ZEXPORT inflateCodesUsed(z_streamp strm)` -/
-def inflateCodesUsed (strm : ZStreamPtr) : M UInt64 := do
+def inflateCodesUsed (strm : ZStreamPtr) : M (CExport UInt64) := do
   -- if (inflateStateCheck(strm)) return (unsigned long)-1;
   if (← inflateStateCheck strm) != 0 then return 0xffffffffffffffff
   let z ← ldZStream strm

@@ -1,4 +1,5 @@
 import ZlibF.Runtime.Alloc
+import ZlibF.Runtime.ControlFlow
 
 /-!
 # gzfs: the external world of the gz* files (trusted base)
@@ -347,6 +348,12 @@ def fsRead (fd : Int32) (n : UInt64) : G (Int64 × Array UInt8) := fun w0 =>
     let out := bs.extract 0 cap
     pure ((Int64.ofNat out.size, out), okErrW (w0.okErrno c) (debitW fd out.size w))
 
+/-- Read directly into the caller's C buffer. The oracle supplies the byte prefix and errno. -/
+def fsReadInto (fd : Int32) (buf : BPtr) (n : UInt64) : G Int64 := do
+  let (r, bytes) ← fsRead fd n
+  storeBytes buf bytes
+  return r
+
 /-- `write(fd, buf, n)` for the bytes `bs` of the buffer. M2: `-1` with a nonzero errno, or `k ∈ [1, n]` for a
 nonempty buffer, `0` for an empty one. -/
 def fsWrite (fd : Int32) (bs : Array UInt8) : G Int64 := fun w0 =>
@@ -358,6 +365,10 @@ def fsWrite (fd : Int32) (bs : Array UInt8) : G Int64 := fun w0 =>
     pure (r, if r = -1 then w' else okErrW (w0.okErrno c) w')
   | .fail e => pure (-1, { w with errno := failErrno e EIO })
   | .count k => pure ((if bs.isEmpty then 0 else Int64.ofNat (max 1 (min k bs.size))), okErrW (w0.okErrno c) w)
+
+/-- Write the bytes addressed by the C buffer, using the existing write oracle. -/
+def fsWriteFrom (fd : Int32) (buf : BPtr) (n : UInt64) : G Int64 := do
+  fsWrite fd (← loadBytes buf n.toNat)
 
 /-- `lseek(fd, off, whence)`. M3: `-1` with a nonzero errno, or any 64-bit value, possibly unrelated to later
 reads (`LseekChoice`). -/
@@ -442,6 +453,198 @@ where
       let (c, s) ← cond s
       if c then go n (← body s) else pure s
 
+/-- Ordered local-variable declaration anchor in `G`. -/
+def gdecl {σ : Type} (s : σ) : G σ := pure s
+
+@[simp] theorem gdecl_eq {σ : Type} (s : σ) : gdecl s = pure s := rfl
+
+/-- Inline expression marker in `G`. -/
+def ginline {α : Type} (m : G α) : G α := m
+
+@[simp] theorem ginline_eq {α : Type} (m : G α) : ginline m = m := rfl
+
+/-- `while (cond) body` in `G` supporting `break`, `continue`, and early `return`. -/
+def gwhileCtrl {σ ρ : Type} (cond : σ → G (Bool × σ)) (body : σ → G (C.LoopStep σ ρ))
+    (s : σ) : G (Except ρ σ) :=
+  go C.fuel s
+where
+  go : Nat → σ → G (Except ρ σ)
+    | 0, _ => fun _ => fun _ => .error .outOfFuel
+    | n + 1, s => do
+      let (c, s) ← cond s
+      if c then
+        match ← body s with
+        | .next s' | .cont s' => go n s'
+        | .brk s' => pure (.ok s')
+        | .ret r => pure (.error r)
+      else pure (.ok s)
+
+/-- `while (cond) body` in `G` with `break`, `continue`, and early `return`, in tail position
+with post-loop continuation `k`. -/
+def gwhileRet {σ ρ : Type} (cond : σ → G (Bool × σ)) (body : σ → G (C.LoopStep σ ρ))
+    (s : σ) (k : σ → G ρ) : G ρ := do
+  match ← gwhileCtrl cond body s with
+  | .error r => pure r
+  | .ok s' => k s'
+
+private theorem g_bind_app {α β : Type} (m : G α) (f : α → G β) (fs : Fs) (h : Heap) :
+    (m >>= f) fs h = match m fs h with | .ok ((a, fs'), h') => f a fs' h' | .error e => .error e := by
+  change bind m f fs h = _
+  simp [bind, StateT.bind]
+  cases m fs h <;> rfl
+
+private theorem gwhile_go_succ {σ : Type} (cond : σ → G (Bool × σ)) (body : σ → G σ)
+    (n : Nat) (s : σ) (fs : Fs) (h : Heap) :
+    gwhile.go cond body (n + 1) s fs h =
+      match cond s fs h with
+      | .error e => .error e
+      | .ok (((false, s1), fs1), h1) => .ok ((s1, fs1), h1)
+      | .ok (((true, s1), fs1), h1) =>
+        match body s1 fs1 h1 with
+        | .error e => .error e
+        | .ok ((s2, fs2), h2) => gwhile.go cond body n s2 fs2 h2 := by
+  rw [gwhile.go, g_bind_app]
+  rcases h1 : cond s fs h with e | ⟨⟨⟨c, s1⟩, fs1⟩, h1'⟩
+  · rfl
+  · cases c
+    · rfl
+    · simp only [ite_true]; rw [g_bind_app]
+      rcases h2 : body s1 fs1 h1' with e | ⟨⟨s2, fs2⟩, h2'⟩ <;> rfl
+
+private theorem gwhileCtrl_go_succ {σ ρ : Type} (cond : σ → G (Bool × σ))
+    (body : σ → G (C.LoopStep σ ρ)) (n : Nat) (s : σ) (fs : Fs) (h : Heap) :
+    gwhileCtrl.go cond body (n + 1) s fs h =
+      match cond s fs h with
+      | .error e => .error e
+      | .ok (((false, s1), fs1), h1) => .ok ((.ok s1, fs1), h1)
+      | .ok (((true, s1), fs1), h1) =>
+        match body s1 fs1 h1 with
+        | .error e => .error e
+        | .ok ((.next s2, fs2), h2) | .ok ((.cont s2, fs2), h2) =>
+            gwhileCtrl.go cond body n s2 fs2 h2
+        | .ok ((.brk s2, fs2), h2) => .ok ((.ok s2, fs2), h2)
+        | .ok ((.ret r, fs2), h2) => .ok ((.error r, fs2), h2) := by
+  rw [gwhileCtrl.go, g_bind_app]
+  rcases h1 : cond s fs h with e | ⟨⟨⟨c, s1⟩, fs1⟩, h1'⟩
+  · rfl
+  · cases c
+    · rfl
+    · simp only [ite_true]; rw [g_bind_app]
+      rcases h2 : body s1 fs1 h1' with e | ⟨⟨st, fs2⟩, h2'⟩
+      · rfl
+      · cases st <;> rfl
+
+theorem gwhileRet_go_eq_gwhile_go_of_nofuel {σ σ' ρ : Type}
+    (cond : σ → G (Bool × σ)) (body : σ → G (C.LoopStep σ ρ)) (k : σ → G ρ)
+    (cond' : σ' → G (Bool × σ')) (body' : σ' → G σ') (tail' : σ' → G ρ)
+    (proj : σ → σ') (IsBrk : σ' → σ → Prop) (IsRet : σ' → ρ → Prop)
+    (hcond : ∀ s fs h,
+      (cond s >>= fun (c, s1) => pure (c, proj s1)) fs h = cond' (proj s) fs h)
+    (hbody : ∀ s fs h,
+      match body s fs h with
+      | .error e => body' (proj s) fs h = .error e
+      | .ok ((.next s1, fs1), h1) | .ok ((.cont s1, fs1), h1) =>
+          body' (proj s) fs h = .ok ((proj s1, fs1), h1)
+      | .ok ((.brk s1, fs1), h1) =>
+          ∃ st, body' (proj s) fs h = .ok ((st, fs1), h1) ∧ IsBrk st s1
+      | .ok ((.ret r, fs1), h1) =>
+          ∃ st, body' (proj s) fs h = .ok ((st, fs1), h1) ∧ IsRet st r)
+    (hbrkCond : ∀ st s1 fs h, IsBrk st s1 → cond' st fs h = .ok (((false, st), fs), h))
+    (hretCond : ∀ st r fs h, IsRet st r → cond' st fs h = .ok (((false, st), fs), h))
+    (hdone : ∀ s fs h, tail' (proj s) fs h = k s fs h)
+    (hbrk : ∀ st s1 fs h, IsBrk st s1 → tail' st fs h = k s1 fs h)
+    (hret : ∀ st r fs h, IsRet st r → tail' st fs h = .ok ((r, fs), h)) :
+    ∀ n s fs h,
+      (gwhile.go cond' body' n (proj s) >>= tail') fs h ≠ .error .outOfFuel →
+      (gwhileCtrl.go cond body n s >>= fun | .error r => pure r | .ok s1 => k s1) fs h =
+      (gwhile.go cond' body' n (proj s) >>= tail') fs h := by
+  intro n
+  induction n with
+  | zero =>
+    intro s fs h hnf
+    rw [g_bind_app, gwhile.go] at hnf
+    exact absurd rfl hnf
+  | succ n ih =>
+    intro s fs h hnf
+    have hc := hcond s fs h
+    rw [g_bind_app] at hc
+    rw [g_bind_app, gwhile_go_succ] at hnf
+    rw [g_bind_app, gwhileCtrl_go_succ, g_bind_app, gwhile_go_succ]
+    rcases hco : cond s fs h with e | ⟨⟨⟨c, s1⟩, fs1⟩, h1⟩
+    · rw [hco] at hc; rw [← hc]
+    · rw [hco] at hc
+      have hc' : cond' (proj s) fs h = .ok (((c, proj s1), fs1), h1) := hc.symm
+      rw [hc'] at hnf ⊢
+      cases c with
+      | false => exact (hdone s1 fs1 h1).symm
+      | true =>
+        dsimp only at hnf ⊢
+        have hb := hbody s1 fs1 h1
+        rcases hbo : body s1 fs1 h1 with e | ⟨⟨step, fs2⟩, h2⟩
+        · rw [hbo] at hb; simp only [hb]
+        · rw [hbo] at hb
+          cases step with
+          | next s2 =>
+            rw [hb] at hnf ⊢
+            dsimp only at hnf ⊢
+            rw [← g_bind_app, ← g_bind_app]
+            exact ih s2 fs2 h2 (by rw [g_bind_app]; exact hnf)
+          | cont s2 =>
+            rw [hb] at hnf ⊢
+            dsimp only at hnf ⊢
+            rw [← g_bind_app, ← g_bind_app]
+            exact ih s2 fs2 h2 (by rw [g_bind_app]; exact hnf)
+          | brk s2 =>
+            rcases hb with ⟨st, hbe, his⟩
+            rw [hbe] at hnf ⊢
+            dsimp only at hnf ⊢
+            cases n with
+            | zero =>
+              rw [gwhile.go] at hnf
+              exact absurd rfl hnf
+            | succ m =>
+              rw [gwhile_go_succ, hbrkCond st s2 fs2 h2 his]
+              dsimp only
+              exact (hbrk st s2 fs2 h2 his).symm
+          | ret r =>
+            rcases hb with ⟨st, hbe, his⟩
+            rw [hbe] at hnf ⊢
+            dsimp only at hnf ⊢
+            cases n with
+            | zero =>
+              rw [gwhile.go] at hnf
+              exact absurd rfl hnf
+            | succ m =>
+              rw [gwhile_go_succ, hretCond st r fs2 h2 his]
+              dsimp only
+              exact (hret st r fs2 h2 his).symm
+
+theorem gwhileRet_eq_gwhile_of_nofuel {σ σ' ρ : Type}
+    (cond : σ → G (Bool × σ)) (body : σ → G (C.LoopStep σ ρ)) (s : σ) (k : σ → G ρ)
+    (cond' : σ' → G (Bool × σ')) (body' : σ' → G σ') (tail' : σ' → G ρ)
+    (proj : σ → σ') (IsBrk : σ' → σ → Prop) (IsRet : σ' → ρ → Prop)
+    (hcond : ∀ s fs h,
+      (cond s >>= fun (c, s1) => pure (c, proj s1)) fs h = cond' (proj s) fs h)
+    (hbody : ∀ s fs h,
+      match body s fs h with
+      | .error e => body' (proj s) fs h = .error e
+      | .ok ((.next s1, fs1), h1) | .ok ((.cont s1, fs1), h1) =>
+          body' (proj s) fs h = .ok ((proj s1, fs1), h1)
+      | .ok ((.brk s1, fs1), h1) =>
+          ∃ st, body' (proj s) fs h = .ok ((st, fs1), h1) ∧ IsBrk st s1
+      | .ok ((.ret r, fs1), h1) =>
+          ∃ st, body' (proj s) fs h = .ok ((st, fs1), h1) ∧ IsRet st r)
+    (hbrkCond : ∀ st s1 fs h, IsBrk st s1 → cond' st fs h = .ok (((false, st), fs), h))
+    (hretCond : ∀ st r fs h, IsRet st r → cond' st fs h = .ok (((false, st), fs), h))
+    (hdone : ∀ s fs h, tail' (proj s) fs h = k s fs h)
+    (hbrk : ∀ st s1 fs h, IsBrk st s1 → tail' st fs h = k s1 fs h)
+    (hret : ∀ st r fs h, IsRet st r → tail' st fs h = .ok ((r, fs), h))
+    (fs : Fs) (h : Heap)
+    (hnf : (gwhile cond' body' (proj s) >>= tail') fs h ≠ .error .outOfFuel) :
+    gwhileRet cond body s k fs h = (gwhile cond' body' (proj s) >>= tail') fs h :=
+  gwhileRet_go_eq_gwhile_go_of_nofuel cond body k cond' body' tail' proj IsBrk IsRet
+    hcond hbody hbrkCond hretCond hdone hbrk hret C.fuel s fs h hnf
+
 def gdoWhile {σ : Type} (body : σ → G σ) (cond : σ → G (Bool × σ)) (s : σ) : G σ :=
   go C.fuel s
 where
@@ -451,6 +654,38 @@ where
       let s ← body s
       let (c, s) ← cond s
       if c then go n s else pure s
+
+/-- A do-while loop whose break or return skips the condition and its effects. -/
+def gdoWhileCtrl {σ ρ : Type} (body : σ → G (C.LoopStep σ ρ))
+    (cond : σ → G (Bool × σ)) (s : σ) : G (Except ρ σ) := go C.fuel s
+where
+  go : Nat → σ → G (Except ρ σ)
+    | 0, _ => fun _ _ => .error .outOfFuel
+    | n + 1, s => do
+      match ← body s with
+      | .brk s' => pure (.ok s')
+      | .ret r => pure (.error r)
+      | .next s' | .cont s' =>
+        let (more, s'') ← cond s'
+        if more then go n s'' else pure (.ok s'')
+
+def gdoWhileRet {σ ρ : Type} (body : σ → G (C.LoopStep σ ρ)) (cond : σ → G (Bool × σ))
+    (s : σ) (k : σ → G ρ) : G ρ := do
+  match ← gdoWhileCtrl body cond s with
+  | .error r => pure r
+  | .ok s' => k s'
+
+def gdoWhileBrk {σ : Type} (body : σ → G (C.LoopStep σ Empty))
+    (cond : σ → G (Bool × σ)) (s : σ) : G σ := do
+  match ← gdoWhileCtrl body cond s with
+  | .error e => nomatch e
+  | .ok s' => pure s'
+
+def gwhileBrk {σ : Type} (cond : σ → G (Bool × σ)) (body : σ → G (C.LoopStep σ Empty))
+    (s : σ) : G σ := do
+  match ← gwhileCtrl cond body s with
+  | .error e => nomatch e
+  | .ok s' => pure s'
 
 /-! ## printf -/
 
@@ -463,6 +698,15 @@ inductive VaArg where
   | long (v : Int64)
   | ulong (v : UInt64)
   | str (p : BPtr)
+
+/-- A C va_list after va_start, modeled by the promoted arguments in call order. -/
+abbrev CVaList := List VaArg
+/-- The arguments represented by the trailing ellipsis in a variadic C definition. -/
+abbrev CVarArgs := List VaArg
+
+def vaStart (args : CVarArgs) : G CVaList := pure args
+def vaEnd (_args : CVaList) : G Unit := pure ()
+
 
 structure Spec where
   minus : Bool := false

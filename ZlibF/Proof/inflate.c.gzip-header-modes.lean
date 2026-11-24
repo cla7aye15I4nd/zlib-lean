@@ -186,7 +186,8 @@ theorem gz_HCRC {e : GzEntry} {l : IL} {h : Heap} {z : ZStream} {s : InflateStat
     (flags : s.flags ≠ -1 ∧ s.flags ≠ 0) :
     GzRuns e (inflate_HCRC e.c) l h := by
   have E := inv.env valid
-  unfold GzRuns inflate_HCRC
+  unfold GzRuns
+  rw [HCRC_previous]
   rw [runX_bind, runX_rdS E]
   simp only []
   split
@@ -623,7 +624,7 @@ theorem gz_COMMENT (valid : e.Valid) (inv : GzInv e l h z s used) (mode : s.mode
       GzRuns e (do setMode e.c.st HCRC; inflate_HCRC e.c) l' h' :=
     fun l' h' s' used' inv' m' f' => gz_toHCRC valid inv' (by rw [f']; exact flags)
       (by rw [m', mode]; decide) (by rw [m', mode]; decide)
-  unfold inflate_COMMENT
+  rw [COMMENT_previous]
   unfold GzRuns
   rw [runX_bind, runX_rdS E]
   simp only []
@@ -667,7 +668,7 @@ theorem gz_NAME (valid : e.Valid) (inv : GzInv e l h z s used) (mode : s.mode = 
       GzRuns e (do wrS e.c.st (fun s => { s with length := 0, mode := COMMENT }); inflate_COMMENT e.c) l' h' :=
     fun l' h' s' used' inv' m' f' => gz_toCOMMENT valid inv' (by rw [f']; exact flags)
       (by rw [m', mode]; decide) (by rw [m', mode]; decide)
-  unfold inflate_NAME
+  rw [NAME_previous]
   unfold GzRuns
   rw [runX_bind, runX_rdS E]
   simp only []
@@ -874,7 +875,9 @@ def extraTop (c : Ctx) : X Unit := do
     wrS c.st fun s => { s with length := 0, mode := NAME }
     inflate_NAME c
 
-theorem inflate_EXTRA_eq (c : Ctx) : inflate_EXTRA c = extraTop c := rfl
+theorem inflate_EXTRA_eq (c : Ctx) : inflate_EXTRA c = extraTop c := by
+  rw [EXTRA_previous]
+  rfl
 
 theorem gz_EXTRA (valid : e.Valid) (inv : GzInv e l h z s used) (mode : s.mode = EXTRA)
     (flags : s.flags ≠ -1 ∧ s.flags ≠ 0)
@@ -1217,7 +1220,9 @@ def exlenTop (c : Ctx) : X Unit := do
       setMode c.st EXTRA
       inflate_EXTRA c
 
-theorem inflate_EXLEN_eq (c : Ctx) : inflate_EXLEN c = exlenTop c := rfl
+theorem inflate_EXLEN_eq (c : Ctx) : inflate_EXLEN c = exlenTop c := by
+  rw [EXLEN_previous]
+  rfl
 
 /-- `case OS` with its join points written out. -/
 def osTop (c : Ctx) : X Unit := do
@@ -1230,7 +1235,9 @@ def osTop (c : Ctx) : X Unit := do
     crc2K c (do INITBITS; setMode c.st EXLEN; inflate_EXLEN c)
   else crc2K c (do INITBITS; setMode c.st EXLEN; inflate_EXLEN c)
 
-theorem inflate_OS_eq (c : Ctx) : inflate_OS c = osTop c := rfl
+theorem inflate_OS_eq (c : Ctx) : inflate_OS c = osTop c := by
+  rw [OS_previous]
+  rfl
 
 /-- `case TIME` with its join points written out. -/
 def timeTop (c : Ctx) : X Unit := do
@@ -1243,7 +1250,9 @@ def timeTop (c : Ctx) : X Unit := do
     crc4K c (do INITBITS; setMode c.st OS; inflate_OS c)
   else crc4K c (do INITBITS; setMode c.st OS; inflate_OS c)
 
-theorem inflate_TIME_eq (c : Ctx) : inflate_TIME c = timeTop c := rfl
+theorem inflate_TIME_eq (c : Ctx) : inflate_TIME c = timeTop c := by
+  rw [TIME_previous]
+  rfl
 
 /-- `case FLAGS` with its join points written out. -/
 def flagsTop (c : Ctx) : X Unit := do
@@ -1263,7 +1272,9 @@ def flagsTop (c : Ctx) : X Unit := do
     crc2K c (do INITBITS; setMode c.st TIME; inflate_TIME c)
   else crc2K c (do INITBITS; setMode c.st TIME; inflate_TIME c)
 
-theorem inflate_FLAGS_eq (c : Ctx) : inflate_FLAGS c = flagsTop c := rfl
+theorem inflate_FLAGS_eq (c : Ctx) : inflate_FLAGS c = flagsTop c := by
+  rw [FLAGS_previous]
+  rfl
 
 section chain
 variable {e : GzEntry} {l : IL} {h : Heap} {z : ZStream} {s : InflateState} {used : Nat}

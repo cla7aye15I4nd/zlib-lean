@@ -769,7 +769,7 @@ def lowerStmts? (env : Environment) (name : Name) (type body : Expr) (abi : Bool
   if abi && name == ``Zlib.Zutil.zError then
     let some (.defnInfo d) := env.find? name | none
     guard (d.value == body)
-    let .lam n _ index _ ← ErrorIndex.extract? body | none
+    let .lam n _ index _ ← ErrorIndex.extract? env body | none
     let paramName ← ident? n
     let i ← value? index (({ abi } : Locals).push (some (.var .i32 paramName))) (some .i32)
     -- ErrorIndex.inBounds checks precisely the index extracted above.

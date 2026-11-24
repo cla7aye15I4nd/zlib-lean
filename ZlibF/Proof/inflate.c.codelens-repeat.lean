@@ -17,6 +17,14 @@ def clRepeatBody (c : Ctx) : X Unit := do
 
 def clRepeat (c : Ctx) : X Unit := xwhile clRepeatCond (clRepeatBody c)
 
+theorem repeatCodeLength_eq_clRepeat (c : Ctx) : repeatCodeLength c.st = clRepeat c :=
+  repeatCodeLength_eq c.st
+
+/-- With zero entries to write, the decoder never touches the state pointer. -/
+theorem repeatCodeLength_zero (st : InflateStatePtr) (l : IL) (h : Heap) :
+    runX (repeatCodeLength st) { l with copy := 0 } h =
+      .ok ((.ok (), { l with copy := 0xffffffff }), h) := rfl
+
 def clWrite (s : InflateState) (value : UInt16) : InflateState :=
   { s with lens := s.lens.set! s.«have».toNat value, «have» := s.«have» + 1 }
 

@@ -4,6 +4,22 @@ namespace Zlib.Inflate.Proofs
 open C Zlib.Inflate Zlib.Inflate.Spec
 set_option autoImplicit false
 
+private theorem windowFrameM_resetHeaderCheck (r : ZStreamRef) (st : InflateStatePtr) :
+    WindowFrameM r st (resetHeaderCheck st) :=
+  windowFrameM_bind (windowFrameM_crc32 r st _ _ _)
+    (fun _ => windowFrameM_wrS r st _ (fun _ => rfl))
+
+private theorem windowFrameM_startDataCheck (r : ZStreamRef) (st : InflateStatePtr) (gzip : Bool) :
+    WindowFrameM r st (startDataCheck (some r) st gzip) := by
+  unfold startDataCheck storeChecksum
+  cases gzip
+  all_goals
+    apply windowFrameM_bind
+    · first | exact windowFrameM_adler32 r st _ _ _ | exact windowFrameM_crc32 r st _ _ _
+    · intro value
+      exact windowFrameM_bind (windowFrameM_wrS r st (fun s => {s with check := value}) (fun _ => rfl))
+        (fun _ => windowFrameM_wrZ r st (fun z => {z with adler := value}))
+
 /-- Compose proved source frames through the monadic mode syntax. Each
 mode supplies its actual continuation as a checked local theorem. -/
 macro "window_pointer_frame_mode " r:term:max "," owner:term:max "," root:term:max : tactic =>
@@ -30,6 +46,8 @@ macro "window_pointer_frame_mode " r:term:max "," owner:term:max "," root:term:m
     | with_reducible exact windowFrameM_inflate_table $r $owner _ _ _ _ _ _
     | with_reducible exact windowFrameM_inflate_fixed $r $owner
     | with_reducible exact windowFrameM_inflate_fast $r $owner _
+    | with_reducible exact windowFrameM_resetHeaderCheck $r $owner
+    | with_reducible exact windowFrameM_startDataCheck $r $owner _
     | with_reducible exact windowFrameM_UPDATE_CHECK $r $owner _ _ _ _
     | with_reducible exact windowFrameM_crc32 $r $owner _ _ _
     | with_reducible exact windowFrameM_adler32 $r $owner _ _ _
@@ -169,7 +187,7 @@ theorem windowFrameX_inflate_CODELENS (r : ZStreamRef) (context : Ctx) (root : c
 run, including its source fallthrough and explicit control exits. -/
 theorem windowFrameX_inflate_LENLENS (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     WindowFrameX r context.st (inflate_LENLENS context) := by
-  unfold inflate_LENLENS
+  rw [LENLENS_previous]
   try rw [root]
   have continuation0 := windowFrameX_inflate_CODELENS r context root
   window_pointer_frame_mode r, context.st, root
@@ -230,7 +248,7 @@ theorem windowFrameX_inflate_TYPE (r : ZStreamRef) (context : Ctx) (root : conte
 run, including its source fallthrough and explicit control exits. -/
 theorem windowFrameX_inflate_DICT (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     WindowFrameX r context.st (inflate_DICT context) := by
-  unfold inflate_DICT
+  rw [DICT_previous]
   try rw [root]
   have continuation0 := windowFrameX_inflate_TYPE r context root
   window_pointer_frame_mode r, context.st, root
@@ -239,7 +257,7 @@ theorem windowFrameX_inflate_DICT (r : ZStreamRef) (context : Ctx) (root : conte
 run, including its source fallthrough and explicit control exits. -/
 theorem windowFrameX_inflate_DICTID (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     WindowFrameX r context.st (inflate_DICTID context) := by
-  unfold inflate_DICTID
+  rw [DICTID_previous]
   try rw [root]
   have continuation0 := windowFrameX_inflate_DICT r context root
   window_pointer_frame_mode r, context.st, root
@@ -248,7 +266,7 @@ theorem windowFrameX_inflate_DICTID (r : ZStreamRef) (context : Ctx) (root : con
 run, including its source fallthrough and explicit control exits. -/
 theorem windowFrameX_inflate_HCRC (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     WindowFrameX r context.st (inflate_HCRC context) := by
-  unfold inflate_HCRC
+  rw [HCRC_previous]
   try rw [root]
   window_pointer_frame_mode r, context.st, root
 
@@ -256,7 +274,7 @@ theorem windowFrameX_inflate_HCRC (r : ZStreamRef) (context : Ctx) (root : conte
 run, including its source fallthrough and explicit control exits. -/
 theorem windowFrameX_inflate_COMMENT (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     WindowFrameX r context.st (inflate_COMMENT context) := by
-  unfold inflate_COMMENT
+  rw [COMMENT_previous]
   try rw [root]
   have continuation0 := windowFrameX_inflate_HCRC r context root
   window_pointer_frame_mode r, context.st, root
@@ -265,7 +283,7 @@ theorem windowFrameX_inflate_COMMENT (r : ZStreamRef) (context : Ctx) (root : co
 run, including its source fallthrough and explicit control exits. -/
 theorem windowFrameX_inflate_NAME (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     WindowFrameX r context.st (inflate_NAME context) := by
-  unfold inflate_NAME
+  rw [NAME_previous]
   try rw [root]
   have continuation0 := windowFrameX_inflate_COMMENT r context root
   window_pointer_frame_mode r, context.st, root
@@ -274,7 +292,7 @@ theorem windowFrameX_inflate_NAME (r : ZStreamRef) (context : Ctx) (root : conte
 run, including its source fallthrough and explicit control exits. -/
 theorem windowFrameX_inflate_EXTRA (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     WindowFrameX r context.st (inflate_EXTRA context) := by
-  unfold inflate_EXTRA
+  rw [EXTRA_previous]
   try rw [root]
   have continuation0 := windowFrameX_inflate_NAME r context root
   window_pointer_frame_mode r, context.st, root
@@ -283,7 +301,7 @@ theorem windowFrameX_inflate_EXTRA (r : ZStreamRef) (context : Ctx) (root : cont
 run, including its source fallthrough and explicit control exits. -/
 theorem windowFrameX_inflate_EXLEN (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     WindowFrameX r context.st (inflate_EXLEN context) := by
-  unfold inflate_EXLEN
+  rw [EXLEN_previous]
   try rw [root]
   have continuation0 := windowFrameX_inflate_EXTRA r context root
   window_pointer_frame_mode r, context.st, root
@@ -292,7 +310,7 @@ theorem windowFrameX_inflate_EXLEN (r : ZStreamRef) (context : Ctx) (root : cont
 run, including its source fallthrough and explicit control exits. -/
 theorem windowFrameX_inflate_OS (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     WindowFrameX r context.st (inflate_OS context) := by
-  unfold inflate_OS
+  rw [OS_previous]
   try rw [root]
   have continuation0 := windowFrameX_inflate_EXLEN r context root
   window_pointer_frame_mode r, context.st, root
@@ -301,7 +319,7 @@ theorem windowFrameX_inflate_OS (r : ZStreamRef) (context : Ctx) (root : context
 run, including its source fallthrough and explicit control exits. -/
 theorem windowFrameX_inflate_TIME (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     WindowFrameX r context.st (inflate_TIME context) := by
-  unfold inflate_TIME
+  rw [TIME_previous]
   try rw [root]
   have continuation0 := windowFrameX_inflate_OS r context root
   window_pointer_frame_mode r, context.st, root
@@ -310,7 +328,7 @@ theorem windowFrameX_inflate_TIME (r : ZStreamRef) (context : Ctx) (root : conte
 run, including its source fallthrough and explicit control exits. -/
 theorem windowFrameX_inflate_FLAGS (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     WindowFrameX r context.st (inflate_FLAGS context) := by
-  unfold inflate_FLAGS
+  rw [FLAGS_previous]
   try rw [root]
   have continuation0 := windowFrameX_inflate_TIME r context root
   window_pointer_frame_mode r, context.st, root

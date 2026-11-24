@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.mode-correspondence»
 import ZlibF.Proof.«inflate.c.stream-frame-macros»
 
 namespace Zlib.Inflate.Proofs
@@ -168,7 +169,7 @@ theorem streamFrameX_inflate_CODELENS (r : ZStreamRef) (context : Ctx) (root : c
 run, including its source fallthrough and explicit control exits. -/
 theorem streamFrameX_inflate_LENLENS (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     StreamFrameX r (inflate_LENLENS context) := by
-  unfold inflate_LENLENS
+  rw [Zlib.Inflate.Proofs.LENLENS_previous]
   try rw [root]
   have continuation0 := streamFrameX_inflate_CODELENS r context root
   stream_frame_mode r, root
@@ -229,7 +230,7 @@ theorem streamFrameX_inflate_TYPE (r : ZStreamRef) (context : Ctx) (root : conte
 run, including its source fallthrough and explicit control exits. -/
 theorem streamFrameX_inflate_DICT (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     StreamFrameX r (inflate_DICT context) := by
-  unfold inflate_DICT
+  rw [Zlib.Inflate.Proofs.DICT_previous]
   try rw [root]
   have continuation0 := streamFrameX_inflate_TYPE r context root
   stream_frame_mode r, root
@@ -238,7 +239,7 @@ theorem streamFrameX_inflate_DICT (r : ZStreamRef) (context : Ctx) (root : conte
 run, including its source fallthrough and explicit control exits. -/
 theorem streamFrameX_inflate_DICTID (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     StreamFrameX r (inflate_DICTID context) := by
-  unfold inflate_DICTID
+  rw [Zlib.Inflate.Proofs.DICTID_previous]
   try rw [root]
   refine streamFrameX_bind (streamFrameX_NEEDBITS r 32) (fun _ => ?_)
   refine streamFrameX_bind (streamFrameX_get r) (fun regs => ?_)
@@ -252,7 +253,7 @@ theorem streamFrameX_inflate_DICTID (r : ZStreamRef) (context : Ctx) (root : con
 run, including its source fallthrough and explicit control exits. -/
 theorem streamFrameX_inflate_HCRC (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     StreamFrameX r (inflate_HCRC context) := by
-  unfold inflate_HCRC
+  rw [Zlib.Inflate.Proofs.HCRC_previous]
   try rw [root]
   stream_frame_mode r, root
 
@@ -323,7 +324,8 @@ theorem streamFrameX_inflate_FLAGS (r : ZStreamRef) (context : Ctx) (root : cont
 run, including its source fallthrough and explicit control exits. -/
 theorem streamFrameX_inflate_HEAD (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     StreamFrameX r (inflate_HEAD context) := by
-  unfold inflate_HEAD
+  unfold inflate_HEAD startDataCheck storeChecksum resetHeaderCheck
+  simp only [Zlib.Inflate.Proofs.liftHeapBind, x_bind_assoc, Bool.false_eq_true, ↓reduceIte]
   try rw [root]
   stream_frame_mode r, root
 

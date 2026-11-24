@@ -46,7 +46,7 @@ theorem public_default_empty_data {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZS
     (good : DGood h r ds z d) (status : d.status = BUSY_STATE) (empty : z.avail_in = 0)
     (look : d.lookahead = 0) :
     publicDataTail (some r) (some (.tab ds)) Z_NO_FLUSH h = .ok (Z_OK, h) := by
-  unfold publicDataTail
+  unfold publicDataTail Phases.strategyPhase Phases.trailerPhase
   simp only [bind_app, pure_app, rdD_eq, good.live.hs, status,
     show (BUSY_STATE == GZIP_STATE) = false from by decide,
     show (BUSY_STATE == EXTRA_STATE) = false from by decide,

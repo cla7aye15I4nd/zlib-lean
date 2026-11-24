@@ -8,34 +8,6 @@ open C Zlib.Deflate Zlib.Deflate.Spec Zlib.Deflate.Proofs ZlibF.Spec.Public
 open Zlib.Trees.Proofs.Out (TreesInvAt)
 set_option autoImplicit false
 
-/-- The final source statements, retaining all wrapper and return branches. -/
-def publicFinishTail (strm : ZStreamPtr) (s : DeflateStatePtr) (flush : Int32) : M Int32 := do
-  -- if (flush != Z_FINISH) return Z_OK; if (s->wrap <= 0) return Z_STREAM_END;
-  if flush != Z_FINISH then return Z_OK
-  if (← rd s (·.wrap)) ≤ 0 then return Z_STREAM_END
-  -- Write the trailer
-  if (← rd s (·.wrap)) == 2 then
-    let a ← zrd strm (·.adler)
-    put_byte s (a &&& 0xff).toUInt8
-    put_byte s ((a >>> 8) &&& 0xff).toUInt8
-    put_byte s ((a >>> 16) &&& 0xff).toUInt8
-    put_byte s ((a >>> 24) &&& 0xff).toUInt8
-    let t ← zrd strm (·.total_in)
-    put_byte s (t &&& 0xff).toUInt8
-    put_byte s ((t >>> 8) &&& 0xff).toUInt8
-    put_byte s ((t >>> 16) &&& 0xff).toUInt8
-    put_byte s ((t >>> 24) &&& 0xff).toUInt8
-  else
-    zlibTrailer strm s
-  flush_pending strm
-  -- if (s->wrap > 0) s->wrap = -s->wrap; /* write the trailer only once! */
-  let w ← rd s (·.wrap)
-  if w > 0 then
-    let nw ← ineg w
-    wr s (fun d => { d with wrap := nw })
-  -- return s->pending != 0 ? Z_OK : Z_STREAM_END;
-  return if (← rd s (·.pending)) != 0 then Z_OK else Z_STREAM_END
-
 /-- The actual post-header source reaches its finish tail after the strategy
 has completed. No block-compressor contract is an assumption. -/
 theorem public_finish_source {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : DeflateState}
@@ -43,7 +15,8 @@ theorem public_finish_source {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream
     (status : d.status = FINISH_STATE) (empty : z.avail_in = 0) (look : d.lookahead = 0) :
     publicDataTail (some r) (some (.tab ds)) Z_FINISH h =
       publicFinishTail (some r) (some (.tab ds)) Z_FINISH h := by
-  unfold publicDataTail publicFinishTail zlibTrailer
+  unfold publicDataTail Phases.strategyPhase
+  rw [trailerPhase_eq_publicFinishTail]
   simp only [bind_app, rdD_eq, hd, status,
     show (FINISH_STATE == GZIP_STATE) = false from rfl,
     show (FINISH_STATE == EXTRA_STATE) = false from rfl,
@@ -53,8 +26,7 @@ theorem public_finish_source {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream
     Bool.false_eq_true, ite_false, ldDeflateState_tab hd, zrd_eq, hz,
     empty, look, show ((0 : UInt32) != 0) = false from rfl,
     show (FINISH_STATE != FINISH_STATE) = false from rfl,
-    show (Z_FINISH != Z_FINISH) = false from rfl, Bool.and_false, Bool.false_or]
-  simp only [M_bind_assoc]
+    Bool.and_false, Bool.false_or]
 
 /-- After the real trailer is queued, the wrapper changes from 1 to -1.
 Its record update retains every representation and caller-buffer fact. -/

@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.mode-correspondence»
 import ZlibF.Proof.«inflate.c.leave-cause-frame»
 import ZlibF.Proof.«inflate.c.main.common»
 
@@ -170,7 +171,7 @@ theorem leaveX_inflate_CODELENS (c : Ctx) : LeaveX c.flush (inflate_CODELENS c) 
 
 theorem leaveX_inflate_LENLENS (c : Ctx) : LeaveX c.flush (inflate_LENLENS c) := by
   intro l
-  unfold inflate_LENLENS
+  rw [LENLENS_previous]
   repeat' first
     | with_reducible exact leaveX_NEEDBITS _ _ _
     | with_reducible exact leaveX_BITS _ _ _
@@ -190,7 +191,7 @@ theorem leaveX_inflate_TABLE (c : Ctx) : LeaveX c.flush (inflate_TABLE c) := by
 
 theorem leaveX_inflate_COPY (c : Ctx) : LeaveX c.flush (inflate_COPY c) := by
   intro l
-  unfold inflate_COPY
+  rw [COPY_previous]
   dsimp only
   repeat' first
     | leave_cause_source

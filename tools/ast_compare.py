@@ -10,8 +10,9 @@ import subprocess
 import sys
 
 
-def clang(data, flags, cwd, *, name=None, listing=False):
-    cmd = [os.environ.get("CLANG", "clang"), *flags, "-x", "c", "-fsyntax-only",
+def clang(data, flags, cwd, *, name=None, listing=False, compiler=None):
+    cc = compiler if compiler is not None else [os.environ.get("CLANG", "clang")]
+    cmd = [*cc, *flags, "-x", "c", "-fsyntax-only",
            "-Werror=implicit-function-declaration", "-Xclang", "-ast-list" if listing else "-ast-dump=json"]
     if name:
         cmd += ["-Xclang", "-ast-dump-filter", "-Xclang", name]

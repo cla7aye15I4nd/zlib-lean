@@ -31,14 +31,14 @@ def mcCond : X Bool := do
   return n != 0
 
 /-- The match copy after the source pointer is chosen. -/
-def lcTail (c : BCtx) (s : InflateState) (l : IL) (from_ : BPtr) (copy : UInt32) : X Unit := do
+def lcTail (c : DecoderCtx) (s : InflateState) (l : IL) (from_ : BPtr) (copy : UInt32) : X Unit := do
   let copy := if copy > s.length then s.length else copy
   wrS c.st fun s => { s with length := s.length - copy }
   set { l with copy := copy, from_ := from_, left := l.left - copy }
   xdoWhile mcBody mcCond
 
 /-- One trip of the match copy loop. -/
-def lcBody (c : BCtx) : X Unit := do
+def lcBody (c : DecoderCtx) : X Unit := do
   ROOM c
   let s ← ldInflateState c.st
   let l ← get
@@ -50,9 +50,9 @@ def lcBody (c : BCtx) : X Unit := do
   lcTail c s l from_ copy
 
 /-- `while (state->length != 0)` -/
-def lcCond (c : BCtx) : X Bool := do return (← rdS c.st (·.length)) != 0
+def lcCond (c : DecoderCtx) : X Bool := do return (← rdS c.st (·.length)) != 0
 
-theorem lenCopy_eq (c : BCtx) : lenCopy c = (do
+theorem lenCopy_eq (c : DecoderCtx) : lenCopy c = (do
     let s ← ldInflateState c.st
     let l ← get
     if s.offset > s.wsize - (if s.whave < s.wsize then l.left else 0) then

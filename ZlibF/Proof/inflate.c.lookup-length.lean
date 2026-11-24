@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.code-width-correspondence»
 import ZlibF.Proof.«inflate.c.lookup-subtable»
 import ZlibF.Proof.«inflate.c.main.common»
 
@@ -250,7 +251,7 @@ private theorem bindX_assoc {α β γ : Type} (x : X α) (f : α → X β) (g : 
 theorem inflate_LEN_slow_cut {c : Ctx} {l : IL} {h : Heap}
     (slow : ¬ (l.have_ >= 6 && l.left >= 258 && l.bits < 8) = true) :
     runX (inflate_LEN c) l h = runX (lenSlow c) l h := by
-  unfold inflate_LEN
+  rw [LEN_previous]
   rw [runX_bind, runX_get]
   simp only [slow, Bool.false_eq_true, ite_false]
   rfl

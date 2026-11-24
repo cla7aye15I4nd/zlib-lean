@@ -140,7 +140,7 @@ theorem distext_run_zero {c : Ctx} {h : Heap} {r : ZStreamRef} {zs : Nat} {z : Z
     {s : InflateState} (E : Env c h r zs z s) (l : IL) (zero : s.extra = 0) :
     runX (inflate_DISTEXT c) l h = runX (inflate_MATCH c) l (setI h zs { s with mode := MATCH }) := by
   have load : ldInflateState c.st h = .ok (s, h) := by rw [E.st, ldI_eq, E.hs]
-  unfold inflate_DISTEXT
+  rw [DISTEXT_preserved]
   simp only [runX_bind, runX_lift_ok load, zero, bne_self_eq_false, Bool.false_eq_true, ite_false,
     runX_setMode E]
 
@@ -1480,7 +1480,7 @@ theorem lenext_run_zero {c : Ctx} {h : Heap} {r : ZStreamRef} {zs : Nat} {z : ZS
     runX (inflate_LENEXT c) l h =
       runX (inflate_DIST c) l (setI h zs { s with was := s.length, mode := DIST }) := by
   have load : ldInflateState c.st h = .ok (s, h) := by rw [E.st, ldI_eq, E.hs]
-  unfold inflate_LENEXT
+  rw [LENEXT_preserved]
   simp only [runX_bind, runX_lift_ok load, zero, bne_self_eq_false, Bool.false_eq_true, ite_false,
     runX_wrS E]
 

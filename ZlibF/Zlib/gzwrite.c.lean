@@ -23,7 +23,7 @@ open C Zlib.GzFs Zlib.Gzguts Zlib.Gzlib
 open Zlib.Deflate (deflateInit2_ deflateReset deflate deflateParams deflateEnd)
 
 /-- `local int gz_init(gz_statep state)` -/
-def gz_init (state : GzStatePtr) : G Int32 := do
+def initWith (setOutput : ZStreamPtr → GzState → M Unit) (state : GzStatePtr) : G Int32 := do
   let strm := strmOf state
   -- state->in = (unsigned char *)malloc(state->want << 1);
   let s ← ldS state
@@ -61,10 +61,18 @@ def gz_init (state : GzStatePtr) : G Int32 := do
   -- if (!state->direct) { strm->avail_out = state->size; strm->next_out = state->out; state->x.next = strm->next_out; }
   let s ← ldS state
   if s.direct == 0 then
-    updZ strm fun z => { z with avail_out := s.size, next_out := s.out }
+    setOutput strm s
     let z ← ldZ strm
     updX state fun x => { x with next := z.next_out }
   return 0
+
+def gz_init (state : GzStatePtr) : G (CStatic Int32) :=
+  initWith (fun strm s => updZ strm fun z => { z with avail_out := s.size, next_out := s.out }) state
+
+def gz_init_c (state : GzStatePtr) : G (CStaticAs "gz_init" Int32) :=
+  initWith (fun strm s => do
+    updZ strm fun z => { z with avail_out := s.size }
+    updZ strm fun z => { z with next_out := s.out }) state
 
 structure CompLoop where
   ret : Int32
@@ -73,7 +81,7 @@ structure CompLoop where
 
 /-- `local int gz_comp(gz_statep state, int flush)`. `max` is `((unsigned)-1 >> 2) + 1`; the `return -1` inside the
 loops is the tag `res`. -/
-def gz_comp (state : GzStatePtr) (flush : Int32) : G Int32 := do
+def gz_comp (state : GzStatePtr) (flush : Int32) : G (CStatic Int32) := do
   let strm := strmOf state
   let max : UInt32 := (((0 : UInt32) - 1) >>> 2) + 1
   -- if (state->size == 0 && gz_init(state) == -1) return -1;
@@ -163,12 +171,79 @@ def gz_comp (state : GzStatePtr) (flush : Int32) : G Int32 := do
   if flush == Z_FINISH then updS state fun s => { s with reset := 1 }
   return 0
 
+private def writeError (state : GzStatePtr) : G Unit := do
+  if BLOCKED (← getErrno) then updS state fun s => { s with again := 1 }
+  gz_error state Z_ERRNO (← zstrerror)
+
+structure CompRoundC where
+  ret : Int32
+  produced : UInt32
+
+def gz_comp_c (state : GzStatePtr) (flush : Int32) : G (CStaticAs "gz_comp" Int32) := do
+  let strm := strmOf state
+  let max : UInt32 := (((0 : UInt32) - 1) >>> 2) + 1
+  if (← ldS state).size == 0 then
+    if (← gz_init state) == -1 then return -1
+  if (← ldS state).direct != 0 then
+    return ← gwhileRet (fun (_ : Unit) => do return ((← ldZ strm).avail_in != 0, ())) (fun _ => do
+      setErrno 0
+      updS state fun s => { s with again := 0 }
+      let z ← ldZ strm
+      let put := if z.avail_in > max then max else z.avail_in
+      let w := (← fsWriteFrom (← ldS state).fd z.next_in put.toUInt64).toInt32
+      if w < 0 then
+        writeError state
+        return .ret (-1)
+      updZ strm fun z => { z with avail_in := z.avail_in - w.toUInt32 }
+      let next ← (← ldZ strm).next_in.add w.toInt
+      updZ strm fun z => { z with next_in := next }
+      return .next ()) () (fun _ => pure 0)
+  if (← ldS state).reset != 0 then
+    if (← ldZ strm).avail_in == 0 && flush == Z_NO_FLUSH then return 0
+    let _ ← deflateReset strm
+    updS state fun s => { s with reset := 0 }
+  gdoWhileRet (fun l => do
+    let z ← ldZ strm
+    if z.avail_out == 0 || (flush != Z_NO_FLUSH && (flush != Z_FINISH || l.ret == Z_STREAM_END)) then
+      let failed ← gwhileBrk (fun failed => do
+        let z ← ldZ strm
+        let s ← ldS state
+        return (← Ptr.gt z.next_out s.x.next, failed)) (fun _ => do
+          setErrno 0
+          updS state fun s => { s with again := 0 }
+          let z ← ldZ strm
+          let s ← ldS state
+          let diff ← Ptr.diff z.next_out s.x.next
+          let put := if diff > Int64.ofNat max.toNat then max else diff.toUInt64.toUInt32
+          let w := (← fsWriteFrom s.fd s.x.next put.toUInt64).toInt32
+          if w < 0 then
+            writeError state
+            return .brk true
+          let next ← (← ldS state).x.next.add w.toInt
+          updX state fun x => { x with next }
+          return .next false) false
+      if failed then return .ret (-1)
+      if (← ldZ strm).avail_out == 0 then
+        let s ← ldS state
+        updZ strm fun z => { z with avail_out := s.size }
+        updZ strm fun z => { z with next_out := s.out }
+        updX state fun x => { x with next := s.out }
+    let before := (← ldZ strm).avail_out
+    let ret ← deflate strm flush
+    if ret == Z_STREAM_ERROR then
+      gz_error state Z_STREAM_ERROR (← strLit "internal error: deflate stream corrupt")
+      return .ret (-1)
+    return .next { ret, produced := before - (← ldZ strm).avail_out })
+    (fun l => pure (l.produced != 0, l)) ({ ret := Z_OK, produced := 0 } : CompRoundC) (fun _ => do
+      if flush == Z_FINISH then updS state fun s => { s with reset := 1 }
+      return 0)
+
 structure ZeroLoop where
   first : Bool
   res : Option Int32
 
 /-- `local int gz_zero(gz_statep state)` -/
-def gz_zero (state : GzStatePtr) : G Int32 := do
+def gz_zero (state : GzStatePtr) : G (CStatic Int32) := do
   let strm := strmOf state
   -- if (state->size == 0 && gz_init(state) == -1) return -1;
   if (← ldS state).size == 0 then
@@ -209,6 +284,31 @@ def gz_zero (state : GzStatePtr) : G Int32 := do
     { first := true, res := none }
   return l.res.getD 0
 
+def gz_zero_c (state : GzStatePtr) : G (CStaticAs "gz_zero" Int32) := do
+  let strm := strmOf state
+  if (← ldS state).size == 0 then
+    if (← gz_init state) == -1 then return -1
+  if (← ldZ strm).avail_in != 0 then
+    if (← gz_comp_c state Z_NO_FLUSH) == -1 then return -1
+  gdoWhileRet (fun first => do
+    let s ← ldS state
+    let n := if (← GT_OFF s.size) || u32ToI64 s.size > s.skip then s.skip.toUInt64.toUInt32 else s.size
+    if first then memsetB s.«in» 0 n.toNat
+    updZ strm fun z => { z with avail_in := n }
+    updZ strm fun z => { z with next_in := s.«in» }
+    let rc ← gz_comp_c state Z_NO_FLUSH
+    let n := n - (← ldZ strm).avail_in
+    let pos ← i64add (← ldS state).x.pos (u32ToI64 n)
+    updX state fun x => { x with pos }
+    let skip ← i64sub (← ldS state).skip (u32ToI64 n)
+    updS state fun s => { s with skip }
+    if rc == -1 then
+      updZ strm fun z => { z with avail_in := 0 }
+      let current ← ldS state
+      updZ strm fun z => { z with next_in := current.«in» }
+      return .ret (-1)
+    return .next false) (fun first => do return ((← ldS state).skip != 0, first)) true (fun _ => pure 0)
+
 structure WriteLoop where
   len : UInt64
   buf : BPtr
@@ -216,7 +316,7 @@ structure WriteLoop where
   brk : Bool
 
 /-- `local z_size_t gz_write(gz_statep state, voidpc buf, z_size_t len)` -/
-def gz_write (state : GzStatePtr) (buf : BPtr) (len : UInt64) : G UInt64 := do
+def gz_write (state : GzStatePtr) (buf : ConstVoidPtr) (len : UInt64) : G (CStatic UInt64) := do
   let strm := strmOf state
   -- z_size_t put = len;
   let put := len
@@ -303,8 +403,66 @@ def gz_write (state : GzStatePtr) (buf : BPtr) (len : UInt64) : G UInt64 := do
   -- return put;
   return put
 
+structure WriteLocalsC where
+  len : UInt64
+  buf : ConstVoidPtr
+
+def gz_write_c (state : GzStatePtr) (buf : ConstVoidPtr) (len : UInt64) : G (CStaticAs "gz_write" UInt64) := do
+  let strm := strmOf state
+  let put ← gdecl len
+  if len == 0 then return 0
+  if (← ldS state).size == 0 then
+    if (← gz_init state) == -1 then return 0
+  if (← ldS state).skip != 0 then
+    if (← gz_zero_c state) == -1 then return 0
+  let room ← i64sub GZ_OFF_MAX (← ldS state).x.pos
+  if room.toUInt64.toInt64 == room && room.toUInt64 < len then
+    gz_error state Z_DATA_ERROR (← strLit "position overflow")
+    return 0
+  if len < (← ldS state).size.toUInt64 then
+    return ← gwhileRet (fun (l : WriteLocalsC) => pure (true, l)) (fun l => do
+      let z ← ldZ strm
+      let s ← ldS state
+      if z.avail_in == 0 then
+        updZ strm fun z => { z with next_in := s.«in» }
+      let z ← ldZ strm
+      let stop ← z.next_in.add z.avail_in.toNat
+      let used := (← Ptr.diff stop s.«in»).toUInt64.toUInt32
+      let space := s.size - used
+      let copy := if space.toUInt64 > l.len then l.len.toUInt32 else space
+      memcpyB (← s.«in».add used.toNat) l.buf copy.toNat
+      updZ strm fun z => { z with avail_in := z.avail_in + copy }
+      let pos ← i64add (← ldS state).x.pos (u32ToI64 copy)
+      updX state fun x => { x with pos }
+      let buf ← l.buf.add copy.toNat
+      let len := l.len - copy.toUInt64
+      if len == 0 then return .brk { len, buf }
+      if (← gz_comp_c state Z_NO_FLUSH) == -1 then
+        return .ret (if (← ldS state).again != 0 then put - len else 0)
+      return .next { len, buf }) { len, buf } (fun _ => pure put)
+  if (← ldZ strm).avail_in != 0 then
+    if (← gz_comp_c state Z_NO_FLUSH) == -1 then return 0
+  updZ strm fun z => { z with next_in := buf }
+  gdoWhileRet (fun len => do
+    let n : UInt32 := if (0xffffffff : UInt64) > len then len.toUInt32 else 0xffffffff
+    updZ strm fun z => { z with avail_in := n }
+    let rc ← gz_comp_c state Z_NO_FLUSH
+    let n := n - (← ldZ strm).avail_in
+    let pos ← i64add (← ldS state).x.pos (u32ToI64 n)
+    updX state fun x => { x with pos }
+    let len := len - n.toUInt64
+    if rc == -1 then
+      updZ strm fun z => { z with avail_in := 0 }
+      let s ← ldS state
+      updZ strm fun z => { z with next_in := s.«in» }
+      return .ret (if s.again != 0 then put - len else 0)
+    return .next len) (fun len => pure (len != 0, len)) len (fun _ => do
+      let s ← ldS state
+      updZ strm fun z => { z with next_in := s.«in» }
+      return put)
+
 /-- `int ZEXPORT gzwrite(gzFile file, voidpc buf, unsigned len)` -/
-def gzwrite (file : GzFilePtr) (buf : BPtr) (len : UInt32) : G Int32 := do
+def gzwrite (file : GzFilePtr) (buf : ConstVoidPtr) (len : UInt32) : G (CExport Int32) := do
   if file.isNone then return 0
   let state := castState file
   let s ← ldS state
@@ -319,7 +477,7 @@ def gzwrite (file : GzFilePtr) (buf : BPtr) (len : UInt32) : G Int32 := do
   return (← gz_write state buf len.toUInt64).toUInt32.toInt32
 
 /-- `z_size_t ZEXPORT gzfwrite(voidpc buf, z_size_t size, z_size_t nitems, gzFile file)` -/
-def gzfwrite (buf : BPtr) (size nitems : UInt64) (file : GzFilePtr) : G UInt64 := do
+def gzfwrite (buf : ConstVoidPtr) (size nitems : UInt64) (file : GzFilePtr) : G (CExport UInt64) := do
   if file.isNone then return 0
   let state := castState file
   let s ← ldS state
@@ -334,7 +492,7 @@ def gzfwrite (buf : BPtr) (size nitems : UInt64) (file : GzFilePtr) : G UInt64 :
   if len != 0 then return (← gz_write state buf len) / size else return 0
 
 /-- `int ZEXPORT gzputc(gzFile file, int c)` -/
-def gzputc (file : GzFilePtr) (c : Int32) : G Int32 := do
+def gzputc (file : GzFilePtr) (c : Int32) : G (CExport Int32) := do
   -- unsigned have; unsigned char buf[1];
   if file.isNone then return -1
   let state := castState file
@@ -362,7 +520,7 @@ def gzputc (file : GzFilePtr) (c : Int32) : G Int32 := do
       updX state fun x => { x with pos := np }
       return c &&& 0xff
   -- buf[0] = (unsigned char)c; if (gz_write(state, buf, 1) != 1) return -1; return c & 0xff;
-  let buf ← allocLocal 1
+  let buf ← allocLocalByte
   store8 buf c.toUInt32.toUInt8
   let w ← gz_write state buf 1
   freeB buf
@@ -370,7 +528,7 @@ def gzputc (file : GzFilePtr) (c : Int32) : G Int32 := do
   return c &&& 0xff
 
 /-- `int ZEXPORT gzputs(gzFile file, const char *s)` -/
-def gzputs (file : GzFilePtr) (str : BPtr) : G Int32 := do
+def gzputs (file : GzFilePtr) (str : ConstCStr) : G (CExport Int32) := do
   if file.isNone then return -1
   let state := castState file
   let s ← ldS state
@@ -386,7 +544,7 @@ def gzputs (file : GzFilePtr) (str : BPtr) : G Int32 := do
   return if len != 0 && put == 0 then -1 else put.toUInt32.toInt32
 
 /-- `local int gz_vacate(gz_statep state)` -/
-def gz_vacate (state : GzStatePtr) : G Int32 := do
+def gz_vacate (state : GzStatePtr) : G (CStatic Int32) := do
   let strm := strmOf state
   -- if (strm->next_in == NULL || strm->next_in + strm->avail_in <= state->in + state->size) return 0;
   let z ← ldZ strm
@@ -411,7 +569,7 @@ def gz_vacate (state : GzStatePtr) : G Int32 := do
   return if (← ldZ strm).avail_in > s.size then 1 else 0
 
 /-- `int ZEXPORTVA gzvprintf(gzFile file, const char *format, va_list va)` -/
-def gzvprintf (file : GzFilePtr) (format : BPtr) (va : List VaArg) : G Int32 := do
+def gzvprintf (file : GzFilePtr) (format : ConstCStr) (va : CVaList) : G (CExport Int32) := do
   if file.isNone then return Z_STREAM_ERROR
   let state := castState file
   let strm := strmOf state
@@ -474,11 +632,18 @@ def gzvprintf (file : GzFilePtr) (format : BPtr) (va : List VaArg) : G Int32 := 
   return len
 
 /-- `int ZEXPORTVA gzprintf(gzFile file, const char *format, ...)`: `va_start` / `gzvprintf` / `va_end`. -/
-def gzprintf (file : GzFilePtr) (format : BPtr) (va : List VaArg) : G Int32 :=
+def gzprintf (file : GzFilePtr) (format : ConstCStr) (va : CVarArgs) : G (CExport Int32) :=
   gzvprintf file format va
 
+/-- C variadic entry. The original caller's promoted arguments form the va_list. -/
+def gzprintf_c (file : GzFilePtr) (format : ConstCStr) (args : CVarArgs) : G (CExportAs "gzprintf" Int32) := do
+  let va ← vaStart args
+  let ret ← gzvprintf file format va
+  vaEnd va
+  return ret
+
 /-- `int ZEXPORT gzflush(gzFile file, int flush)` -/
-def gzflush (file : GzFilePtr) (flush : Int32) : G Int32 := do
+def gzflush (file : GzFilePtr) (flush : Int32) : G (CExport Int32) := do
   if file.isNone then return Z_STREAM_ERROR
   let state := castState file
   let s ← ldS state
@@ -496,7 +661,7 @@ def gzflush (file : GzFilePtr) (flush : Int32) : G Int32 := do
 /-- `int ZEXPORT gzsetparams(gzFile file, int level, int strategy)`. Candidate finding (unconfirmed): the result
 (`Z_BUF_ERROR`) of `deflateParams` is ignored and the new level and strategy are stored anyway; see
 `docs/en/design/external-io.md`. -/
-def gzsetparams (file : GzFilePtr) (level strategy : Int32) : G Int32 := do
+def gzsetparams (file : GzFilePtr) (level strategy : Int32) : G (CExport Int32) := do
   if file.isNone then return Z_STREAM_ERROR
   let state := castState file
   let strm := strmOf state

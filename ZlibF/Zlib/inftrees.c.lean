@@ -244,7 +244,7 @@ unsigned FAR *bits, unsigned short FAR *work)`
 
 `table` and `bits` are passed as the values `*table`, `*bits`; the result is `(return value, *table, *bits)` after
 the call. -/
-def inflate_table (type : CodeType) (lens : ConstWPtr) (codes : UInt32) (table : OutCodePtr)
+def inflate_table (type : CodeType) (lens : WPtr) (codes : UInt32) (table : OutCodePtr)
     (bits : OutUInt32) (work : WPtr) : M (CHidden (Int32 × CodePtr × UInt32)) := do
   -- unsigned short count[MAXBITS+1]; unsigned short offs[MAXBITS+1];   (uninitialised in C; count is cleared below)
   let count : Array UInt16 := Array.replicate 16 0
@@ -364,5 +364,215 @@ def inflate_fixed (state : InflateStatePtr) : M (CHidden Unit) := do
   -- state->distbits = 5;
   let st ← ldInflateState state
   stInflateState state { st with distbits := 5 }
+
+/-! ### Exact-shape C-ABI companion (`inflate_table_c`) -/
+
+/-- Locals of `inflate_table` in exact upstream C declaration order. -/
+structure InflateTableLocals where
+  len : UInt32
+  sym : UInt32
+  min : UInt32
+  max : UInt32
+  root : UInt32
+  curr : UInt32
+  drop : UInt32
+  left : Int32
+  used : UInt32
+  huff : UInt32
+  incr : UInt32
+  fill : UInt32
+  low : UInt32
+  mask : UInt32
+  here : Code
+  next : CodePtr
+  base : ConstWTable
+  extra : ConstWTable
+  match_ : UInt32
+
+/-- Exact C-shaped `inflate_table`: preserves declaration order, `for (;;)` / `break` / early
+`return`, `*(*table)++ = here`, and `work[offs[lens[sym]]++] = (unsigned short)sym`. -/
+def inflate_table_c (type : CodeType) (lens : WPtr) (codes : UInt32) (table : OutCodePtr)
+    (bits : OutUInt32) (work : WPtr) : M (CHiddenAs "inflate_table" (Int32 × CodePtr × UInt32)) := do
+  let mut l ← cdecl ({
+    len := default, sym := default, min := default, max := default,
+    root := default, curr := default, drop := default, left := default,
+    used := default, huff := default, incr := default, fill := default,
+    low := default, mask := default, here := default, next := default,
+    base := (#[] : ConstWTable), extra := (#[] : ConstWTable), match_ := 0
+  } : InflateTableLocals)
+  let mut count : Array UInt16 := Array.replicate 16 0
+  let mut offs : Array UInt16 := Array.replicate 16 0
+  (l, count) ← cwhile (fun (l, count) => pure (l.len ≤ MAXBITS, (l, count)))
+    (fun (l, count) => do
+      pure ({ l with len := l.len + 1 }, ← seta count l.len.toNat 0))
+    ({ l with len := 0 }, count)
+  (l, count) ← cwhile (fun (l, count) => pure (l.sym < codes, (l, count)))
+    (fun (l, count) => do
+      let lv ← cinline (lens.index l.sym.toNat)
+      let c ← cinline (geta count lv.toNat)
+      let lv2 ← cinline (lens.index l.sym.toNat)
+      pure ({ l with sym := l.sym + 1 }, ← seta count lv2.toNat (c + 1)))
+    ({ l with sym := 0 }, count)
+  l := { l with root := bits }
+  l ← cwhileBrk
+    (fun (l : InflateTableLocals) => pure (l.max ≥ 1, l))
+    (fun (l : InflateTableLocals) => do
+      let cm ← cinline (geta count l.max.toNat)
+      if cm != 0 then return .brk l
+      else return .next { l with max := l.max - 1 })
+    { l with max := MAXBITS }
+  if l.root > l.max then l := { l with root := l.max }
+  if l.max == 0 then
+    l := { l with here := ⟨64, 1, 0⟩ }
+    let table ← storePostIncCode table l.here
+    let table ← storePostIncCode table l.here
+    return (0, table, 1)
+  l ← cwhileBrk
+    (fun (l : InflateTableLocals) => pure (l.min < l.max, l))
+    (fun (l : InflateTableLocals) => do
+      let cm ← cinline (geta count l.min.toNat)
+      if cm != 0 then return .brk l
+      else return .next { l with min := l.min + 1 })
+    { l with min := 1 }
+  if l.root < l.min then l := { l with root := l.min }
+  cwhileRet
+    (fun (l : InflateTableLocals) => pure (l.len ≤ MAXBITS, l))
+    (fun (l : InflateTableLocals) => do
+      if l.left < (0 : Int32) then ub "left shift of a negative value" else
+      let left1 ← cinline (chk32 (l.left.toInt * 2))
+      let mut s := { l with left := left1 }
+      let cc ← cinline (geta count s.len.toNat)
+      let left2 ← cinline (chk32 (s.left.toInt - cc.toNat))
+      s := { s with left := left2 }
+      if s.left < (0 : Int32) then return .ret (-1, table, bits)
+      return .next { s with len := s.len + 1 })
+    { l with left := 1, len := 1 }
+    (fun (l0 : InflateTableLocals) => do
+      let mut s := l0
+      let mut count := count
+      let mut offs := offs
+      if s.left > (0 : Int32) && (type == CODES || s.max != 1) then return (-1, table, bits)
+      offs ← seta offs 1 0
+      (s, offs) ← cwhile (fun (s, offs) => pure (s.len < MAXBITS, (s, offs)))
+        (fun (s, offs) => do
+          let a ← cinline (geta offs s.len.toNat)
+          let b ← cinline (geta count s.len.toNat)
+          pure ({ s with len := s.len + 1 }, ← seta offs (s.len + 1).toNat (a + b)))
+        ({ s with len := 1 }, offs)
+      (s, offs) ← cwhile (fun (s, offs) => pure (s.sym < codes, (s, offs)))
+        (fun (s, offs) => do
+          let lv ← cinline (lens.index s.sym.toNat)
+          let offs' ← if lv != 0 then
+              let lv2 ← cinline (lens.index s.sym.toNat)
+              storeAtPostInc work offs lv2.toNat s.sym.toUInt16
+            else pure offs
+          pure ({ s with sym := s.sym + 1 }, offs'))
+        ({ s with sym := 0 }, offs)
+      if type == CODES then
+        s := { s with match_ := 20 }
+      else if type == LENS then
+        s := { s with base := lbase, extra := lext, match_ := 257 }
+      else if type == DISTS then
+        s := { s with base := dbase, extra := dext }
+      let used1 ← cinline (shl32 1 s.root)
+      s := { s with huff := 0, sym := 0, len := s.min, next := table, curr := s.root, drop := 0,
+                    low := 0xffffffff, used := used1 }
+      s := { s with mask := s.used - 1 }
+      if tooBig type s.used then return (1, table, bits)
+      cforEverRet
+        (fun ((s0, count0) : InflateTableLocals × Array UInt16) => do
+          let mut s := s0
+          let mut count := count0
+          s := { s with here := { s.here with bits := (s.len - s.drop).toUInt8 } }
+          let w0 ← cinline (work.index s.sym.toNat)
+          if w0.toUInt32 + 1 < s.match_ then
+            let w1 ← cinline (work.index s.sym.toNat)
+            s := { s with here := { s.here with op := 0, val := w1 } }
+          else
+            let w1 ← cinline (work.index s.sym.toNat)
+            if w1.toUInt32 ≥ s.match_ then
+              let w2 ← cinline (work.index s.sym.toNat)
+              let ev ← cinline (geta s.extra (w2.toUInt32 - s.match_).toNat)
+              let w3 ← cinline (work.index s.sym.toNat)
+              let bv ← cinline (geta s.base (w3.toUInt32 - s.match_).toNat)
+              s := { s with here := { s.here with op := ev.toUInt8, val := bv } }
+            else
+              s := { s with here := { s.here with op := 96, val := 0 } }
+          let incr1 ← cinline (shl32 1 (s.len - s.drop))
+          let fill1 ← cinline (shl32 1 s.curr)
+          s := { s with incr := incr1, fill := fill1, min := fill1 }
+          s ← cdoWhile
+            (fun (s : InflateTableLocals) => do
+              let s := { s with fill := s.fill - s.incr }
+              let hd ← cinline (shr32 s.huff s.drop)
+              let q ← cinline (s.next.add (hd + s.fill).toNat)
+              Ptr.store q s.here
+              pure s)
+            (fun (s : InflateTableLocals) => pure (s.fill != 0, s))
+            s
+          let incr2 ← cinline (shl32 1 (s.len - 1))
+          s := { s with incr := incr2 }
+          s ← cwhile
+            (fun (s : InflateTableLocals) => pure (s.huff &&& s.incr != 0, s))
+            (fun (s : InflateTableLocals) => pure { s with incr := s.incr >>> 1 })
+            s
+          if s.incr != 0 then
+            s := { s with huff := s.huff &&& (s.incr - 1) }
+            s := { s with huff := s.huff + s.incr }
+          else
+            s := { s with huff := 0 }
+          s := { s with sym := s.sym + 1 }
+          let cl ← cinline (geta count s.len.toNat)
+          count ← seta count s.len.toNat (cl - 1)
+          let clCheck ← cinline (geta count s.len.toNat)
+          if clCheck == 0 then
+            if s.len == s.max then
+              return .brk (s, count)
+            let w ← cinline (work.index s.sym.toNat)
+            let lv ← cinline (lens.index w.toNat)
+            s := { s with len := lv.toUInt32 }
+          if s.len > s.root && (s.huff &&& s.mask) != s.low then
+            if s.drop == 0 then s := { s with drop := s.root }
+            let next1 ← cinline (s.next.add s.min.toNat)
+            s := { s with next := next1 }
+            s := { s with curr := s.len - s.drop }
+            let left1 ← cinline (shl1i32 s.curr)
+            s := { s with left := left1 }
+            s ← cwhileBrk
+              (fun (s : InflateTableLocals) => pure (s.curr + s.drop < s.max, s))
+              (fun (s : InflateTableLocals) => do
+                let cc ← cinline (geta count (s.curr + s.drop).toNat)
+                let left1 ← cinline (chk32 (s.left.toInt - cc.toNat))
+                let s := { s with left := left1 }
+                if s.left ≤ 0 then return .brk s
+                let s := { s with curr := s.curr + 1 }
+                let left2 ← cinline (chk32 (s.left.toInt * 2))
+                return .next { s with left := left2 })
+              s
+            let u ← cinline (shl32 1 s.curr)
+            s := { s with used := s.used + u }
+            if tooBig type s.used then
+              return .ret (1, table, bits)
+            s := { s with low := s.huff &&& s.mask }
+            let q1 ← cinline (table.add s.low.toNat)
+            let e1 ← cinline q1.load
+            q1.store { e1 with op := s.curr.toUInt8 }
+            let q2 ← cinline (table.add s.low.toNat)
+            let e2 ← cinline q2.load
+            q2.store { e2 with bits := s.root.toUInt8 }
+            let d ← cinline (s.next.diff table)
+            let q3 ← cinline (table.add s.low.toNat)
+            let e3 ← cinline q3.load
+            q3.store { e3 with val := d.toUInt64.toUInt16 }
+          return .next (s, count))
+        (s, count)
+        (fun ((s, _count) : InflateTableLocals × Array UInt16) => do
+          let mut s := s
+          if s.huff != 0 then
+            s := { s with here := ⟨64, (s.len - s.drop).toUInt8, 0⟩ }
+            let q ← cinline (s.next.add s.huff.toNat)
+            Ptr.store q s.here
+          let table ← cinline (table.add s.used.toNat)
+          return (0, table, s.root)))
 
 end Zlib.Inftrees

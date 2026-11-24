@@ -94,7 +94,7 @@ theorem inflate_refused_run {h : Heap} {r : ZStreamRef} {i : Nat} {z : ZStream} 
     have env : Env c (syncAlloc h) r i z s :=
       ⟨rfl, rfl, allocated.good.live.hz, allocated.good.live.hs⟩
     obtain ⟨regs, loop⟩ := inflate_run_SYNC env sync
-    simp only [bind_app, stateCheck_live allocated.good.live,
+    simp only [bind_app, pure_app, stateCheck_live allocated.good.live,
       bne_self_eq_false, Bool.false_eq_true, ite_false,
       ldZStream_ok allocated.good.live.hz, accepted, allocated.good.live.zst, castI]
     unfold runX at loop

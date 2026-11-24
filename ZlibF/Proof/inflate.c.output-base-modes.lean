@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.mode-correspondence»
 import ZlibF.Proof.«inflate.c.output-base-macros»
 
 namespace Zlib.Inflate.Proofs
@@ -84,7 +85,7 @@ theorem outputBaseX_inflate_CODELENS (base : UInt32) (c : Ctx) : OutputBaseX bas
     | output_base_source
 
 theorem outputBaseX_inflate_LENLENS (base : UInt32) (c : Ctx) : OutputBaseX base (inflate_LENLENS c) := by
-  unfold inflate_LENLENS
+  rw [LENLENS_previous]
   repeat' first
     | with_reducible exact outputBaseX_NEEDBITS base _
     | with_reducible exact outputBaseX_BITS base _

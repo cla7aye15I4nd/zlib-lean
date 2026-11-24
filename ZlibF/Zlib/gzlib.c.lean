@@ -397,4 +397,218 @@ def gzclearerr (file : GzFilePtr) : M (CExport Unit) := do
     updS state fun s => { s with eof := 0, past := 0 }
   gz_error state Z_OK .null
 
+/-! ### Exact-shape C-ABI companions -/
+
+/-- Exact C-shaped `gz_reset`: emits `eof = 0; how = LOOK; junk = -1;` in C statement order. -/
+def gz_reset_c (state : GzStatePtr) : M (CStaticAs "gz_reset" Unit) := do
+  updX state fun x => { x with «have» := 0 }
+  updS state fun s => { s with past := 0 }
+  let s ← ldS state
+  if s.mode == GZ_READ then
+    updS state fun s => { s with eof := 0 }
+    updS state fun s => { s with how := LOOK }
+    updS state fun s => { s with junk := -1 }
+  else
+    updS state fun s => { s with reset := 0 }
+  updS state fun s => { s with again := 0 }
+  updS state fun s => { s with skip := 0 }
+  gz_error state Z_OK .null
+  updX state fun x => { x with pos := 0 }
+  updZ (strmOf state) fun z => { z with avail_in := 0 }
+
+/-- Locals of `gz_open` in exact upstream C declaration order (`mode` reuses the parameter). -/
+structure GzOpenLocals where
+  state : GzStatePtr
+  len : UInt64
+  oflag : Int32
+  exclusive : Int32
+  mode : ConstCStr
+
+/-- Exact C-shaped `gz_open`: preserves entry declaration order, `while (*mode)` with direct early
+`return NULL`, and inline expressions without single-use `alloca` temporaries. -/
+def gz_open_c (path : ConstVoidPtr) (fd : Int32) (mode : ConstCStr) :
+    G (CStaticAs "gz_open" GzFilePtr) := do
+  let mut l ← gdecl ({ state := default, len := default, oflag := 0, exclusive := 0, mode } : GzOpenLocals)
+  if path == .null || mode == .null then return none
+  let state_ ← ginline (allocGzState : G GzStatePtr)
+  l := { l with state := state_ }
+  if l.state.isNone then return none
+  updS l.state fun s => { s with size := 0 }
+  updS l.state fun s => { s with want := GZBUFSIZE.toUInt32 }
+  updS l.state fun s => { s with err := Z_OK }
+  updS l.state fun s => { s with msg := .null }
+  updS l.state fun s => { s with mode := GZ_NONE }
+  updS l.state fun s => { s with level := Z_DEFAULT_COMPRESSION }
+  updS l.state fun s => { s with strategy := Z_DEFAULT_STRATEGY }
+  updS l.state fun s => { s with direct := 0 }
+  gwhileRet
+    (fun (l : GzOpenLocals) => do
+      let c ← ginline (load8 l.mode : G UInt8)
+      return (c != 0, l))
+    (fun (l : GzOpenLocals) => do
+      let mut l := l
+      let c ← ginline (do let b ← (load8 l.mode : G UInt8); pure b.toInt8.toInt32)
+      if c ≥ 48 && c ≤ 57 then
+        updS l.state fun s => { s with level := c - 48 }
+      else if c == 114 then
+        updS l.state fun s => { s with mode := GZ_READ }
+      else if c == 119 then
+        updS l.state fun s => { s with mode := GZ_WRITE }
+      else if c == 97 then
+        updS l.state fun s => { s with mode := GZ_APPEND }
+      else if c == 43 then
+        freeGzState l.state
+        return .ret none
+      else if c == 98 then
+        pure ()
+      else if c == 101 then
+        l := { l with oflag := l.oflag ||| O_CLOEXEC }
+      else if c == 120 then
+        l := { l with exclusive := 1 }
+      else if c == 102 then
+        updS l.state fun s => { s with strategy := Z_FILTERED }
+      else if c == 104 then
+        updS l.state fun s => { s with strategy := Z_HUFFMAN_ONLY }
+      else if c == 82 then
+        updS l.state fun s => { s with strategy := Z_RLE }
+      else if c == 70 then
+        updS l.state fun s => { s with strategy := Z_FIXED }
+      else if c == 71 then
+        updS l.state fun s => { s with direct := -1 }
+      else if c == 78 then
+        l := { l with oflag := l.oflag ||| O_NONBLOCK }
+      else if c == 84 then
+        updS l.state fun s => { s with direct := 1 }
+      else pure ()
+      let mode' ← ginline (l.mode.add 1 : G BPtr)
+      return .next { l with mode := mode' })
+    l
+    (fun l => do
+      let s ← ldS l.state
+      if s.mode == GZ_NONE then
+        freeGzState l.state
+        return none
+      if s.mode == GZ_READ then
+        if s.direct == 1 then
+          freeGzState l.state
+          return none
+        if s.direct == 0 then
+          updS l.state fun s => { s with direct := 1 }
+      else if s.direct == -1 then
+        freeGzState l.state
+        return none
+      let len_ ← ginline (strlenB path : G UInt64)
+      let mut l := { l with len := len_ }
+      let p ← ginline (allocB (l.len + 1).toNat : G BPtr)
+      updS l.state fun s => { s with path := p }
+      let s ← ldS l.state
+      if s.path == .null then
+        freeGzState l.state
+        return none
+      let fmt ← strLit "%s"
+      let _ ← snprintf s.path (l.len + 1) fmt [.str path]
+      let s ← ldS l.state
+      l := { l with oflag := l.oflag ||| (O_LARGEFILE |||
+        (if s.mode == GZ_READ then 0
+         else (O_WRONLY ||| O_CREAT ||| (if l.exclusive != 0 then O_EXCL else 0) |||
+               (if s.mode == GZ_WRITE then O_TRUNC else O_APPEND)))) }
+      if fd == -1 then
+        let r ← ginline (do let name ← cstring path; fsOpen name l.oflag)
+        updS l.state fun s => { s with fd := r }
+      else
+        if l.oflag &&& O_NONBLOCK != 0 then fsFcntl fd
+        if l.oflag &&& O_CLOEXEC != 0 then fsFcntl fd
+        updS l.state fun s => { s with fd := fd }
+      let s ← ldS l.state
+      if s.fd == -1 then
+        freeB s.path
+        freeGzState l.state
+        return none
+      if s.mode == GZ_APPEND then
+        let _ ← fsLseek s.fd 0 SEEK_END
+        updS l.state fun s => { s with mode := GZ_WRITE }
+      let s ← ldS l.state
+      if s.mode == GZ_READ then
+        let st ← ginline (fsLseek s.fd 0 SEEK_CUR)
+        updS l.state fun s => { s with start := st }
+        let s ← ldS l.state
+        if s.start == -1 then updS l.state fun s => { s with start := 0 }
+      gz_reset l.state
+      return castFile l.state)
+
+/-- Wrapper matching `gzopen` using `gz_open_c` for formal safety proofs. -/
+def gzopen_c (path mode : ConstCStr) : G GzFilePtr := gz_open_c path (-1) mode
+
+/-- Locals of `gzseek64` in exact upstream C declaration order (`offset` reuses the parameter). -/
+structure GzSeekLocals where
+  n : UInt32
+  ret : ZOff64T
+  pos : ZOff64T
+  state : GzStatePtr
+  offset : ZOff64T
+
+/-- Exact C-shaped `gzseek64`: preserves upstream entry local order and inline `LSEEK` offset
+calculation. -/
+def gzseek64_c (file : GzFilePtr) (offset : ZOff64T) (whence : Int32) :
+    G (CExportAs "gzseek64" ZOff64T) := do
+  let mut l ← gdecl ({ n := default, ret := default, pos := default, state := default, offset } : GzSeekLocals)
+  if file.isNone then return -1
+  l := { l with state := castState file }
+  let s ← ldS l.state
+  if s.mode != GZ_READ && s.mode != GZ_WRITE then return -1
+  if s.err != Z_OK && s.err != Z_BUF_ERROR then return -1
+  if whence != SEEK_SET && whence != SEEK_CUR then return -1
+  let p0 ← ginline (if whence == SEEK_SET then pure 0
+    else i64add s.x.pos (if s.past != 0 then 0 else s.skip))
+  l := { l with pos := p0 }
+  if l.pos > 0 then
+    let bound ← ginline (i64sub GZ_OFF_MAX l.pos)
+    if l.offset > bound then return -1
+  let negPos ← ginline (i64neg l.pos)
+  if l.offset < negPos then return -1
+  let p1 ← ginline (i64add l.pos l.offset)
+  l := { l with pos := p1 }
+  if s.x.pos < 0 then
+    let bound2 ← ginline (i64add GZ_OFF_MAX s.x.pos)
+    if l.pos > bound2 then return -1
+  if s.mode == GZ_READ && s.how == GZ_COPY then
+    let r ← ginline (do
+      let d ← i64sub (← i64sub l.pos s.x.pos) (u32ToI64 s.x.«have»)
+      fsLseek s.fd d SEEK_CUR)
+    l := { l with ret := r }
+    if l.ret == -1 then return -1
+    updX l.state fun x => { x with «have» := 0 }
+    updS l.state fun s => { s with eof := 0 }
+    updS l.state fun s => { s with past := 0 }
+    updS l.state fun s => { s with skip := 0 }
+    gz_error l.state Z_OK .null
+    updZ (strmOf l.state) fun z => { z with avail_in := 0 }
+    updX l.state fun x => { x with pos := l.pos }
+    return l.pos
+  let s ← ldS l.state
+  if l.pos < s.x.pos then
+    if s.mode != GZ_READ then return -1
+    if (← gzrewind file) == -1 then return -1
+  let s ← ldS l.state
+  let off1 ← ginline (i64sub l.pos s.x.pos)
+  l := { l with offset := off1 }
+  let s ← ldS l.state
+  if s.mode == GZ_READ then
+    let n0 : UInt32 ← ginline (do
+      if (← GT_OFF s.x.«have») || u32ToI64 s.x.«have» > l.offset then
+        pure l.offset.toUInt64.toUInt32
+      else pure s.x.«have»)
+    l := { l with n := n0 }
+    updX l.state fun x => { x with «have» := x.«have» - l.n }
+    let s ← ldS l.state
+    let nx ← ginline (s.x.next.add l.n.toNat : G BPtr)
+    updX l.state fun x => { x with next := nx }
+    let s ← ldS l.state
+    let np ← ginline (i64add s.x.pos (u32ToI64 l.n))
+    updX l.state fun x => { x with pos := np }
+    let off2 ← ginline (i64sub l.offset (u32ToI64 l.n))
+    l := { l with offset := off2 }
+  updS l.state fun s => { s with skip := l.offset }
+  return l.pos
+
 end Zlib.Gzlib

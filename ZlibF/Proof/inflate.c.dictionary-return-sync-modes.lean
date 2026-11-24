@@ -93,7 +93,7 @@ theorem needDictSyncX_inflate_CODELENS (r : ZStreamRef) (context : Ctx) :
 run, including its source fallthrough and explicit control exits. -/
 theorem needDictSyncX_inflate_LENLENS (r : ZStreamRef) (context : Ctx) :
     NeedDictSyncX r (inflate_LENLENS context) := by
-  unfold inflate_LENLENS
+  rw [Zlib.Inflate.Proofs.LENLENS_previous]
   have continuation0 := needDictSyncX_inflate_CODELENS r context
   need_dict_sync_source r
 

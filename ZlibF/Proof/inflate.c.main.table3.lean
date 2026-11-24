@@ -80,7 +80,9 @@ def llTail (c : Ctx) : X Unit := do
 
 /-- The translation of `case LENLENS:` is the two loops and the tail. -/
 theorem inflate_LENLENS_eq (c : Ctx) :
-    inflate_LENLENS c = (do xwhile (llCond c) (llBody c); xwhile (lzCond c) (lzBody c); llTail c) := rfl
+    inflate_LENLENS c = (do xwhile (llCond c) (llBody c); xwhile (lzCond c) (lzBody c); llTail c) := by
+  rw [LENLENS_previous]
+  rfl
 
 theorem tcBITS3_run (l : IL) (h : Heap) : runX (BITS 3) l h = .ok ((.ok (l.hold.toUInt32 &&& 7), l), h) := by
   rw [BITS_run l h 3 (by decide)]; rfl

@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.slow.source»
 import ZlibF.Proof.«deflate.c.engine.loop-full-storage»
 import ZlibF.Proof.«deflate.c.engine.finish-call-counters»
 import ZlibF.Proof.«deflate.c.engine.no-flush-call-counters»
@@ -121,10 +122,7 @@ theorem deflate_slow_no_flush_full_storage_execution {h : Heap} {r : ZStreamRef}
   have storage := slow_ordinary_loop_run_full_storage (Or.inl rfl) boundary frontier buffers positive pointer memory wrap publish inputValid loop
   refine ⟨used, produced, after, z', result, base', ys, extended, nextOrigin,
     ?_, stateA, endA, controlsA, buffersA, accountA, agreesA, endpointA, baseA, stopA returned, ?_, inputA, outputA, storage⟩
-  · unfold deflate_slow
-    rw [bind_app, loop]
-    simp only [returned]
-    rfl
+  · simp only [SlowProofs.after_loop loop, returned, pure_app]
   · intro space
     rcases stopA returned with ⟨empty, _⟩ | empty
     · have count := accountA.2.2.1

@@ -1,5 +1,6 @@
 import Lean2C.C
 import ZlibF.Runtime.CAbi
+import ZlibF.Runtime.LibcCString
 
 /-!
 # Operational semantics for `Lean2C.CSource`
@@ -27,8 +28,19 @@ inductive CVal where
   | i32 (v : Int32)
   | i64 (v : Int64)
   | ptr (v : C.BPtr)
+  | functionPtr (v : FnPtr)
+  /-- Identity of an automatic z_stream object in the local environment. -/
+  | streamLocal (ref : ZStreamRef)
+  /-- An addressable automatic stream, with the byte address of its reserved member. -/
+  | streamWithReserved (ref : ZStreamRef) (address : BPtr)
+  /-- Array-to-pointer decay of a static array of pointers to string literals. -/
+  | stringTable (entries : Array String)
   | void
   deriving DecidableEq, Inhabited
+
+@[simp] def CVal.streamRef? : CVal → Option ZStreamRef
+  | .streamLocal r | .streamWithReserved r _ => some r
+  | _ => none
 
 /-- Association-list environment for C variables and macro constants. -/
 abbrev CEnv := List (String × CVal)
@@ -89,6 +101,9 @@ def CVal.toBool? : CVal → Option Bool
   | .i32 x => some (x != 0)
   | .i64 x => some (x != 0)
   | .ptr p => some (p != .null)
+  | .functionPtr p => some (p != .null)
+  | .stringTable _ => some true
+  | .streamLocal _ | .streamWithReserved .. => none
   | .void => none
 
 /-- Exact mathematical integer value of a scalar C value. -/
@@ -149,6 +164,8 @@ def evalCast (ty : Ty) (v : CVal) : Except Fault CVal :=
   | .ptr _, .u64 0 => .ok (.ptr .null)
   | .ptr _, .i32 0 => .ok (.ptr .null)
   | .ptr _, .i64 0 => .ok (.ptr .null)
+  | .named "alloc_func", .i32 0 | .named "free_func", .i32 0 => .ok (.functionPtr .null)
+  | .named "alloc_func", .functionPtr p | .named "free_func", .functionPtr p => .ok (.functionPtr p)
   | .bool, _ =>
     match v.toBool? with
     | some b => .ok (.bool b)
@@ -252,8 +269,47 @@ def evalShiftOp (ty : Ty) (op : String) (lv rv : CVal) : Except Fault CVal := do
         return .i64 (Int64.ofInt (x.toInt / Int.ofNat (2 ^ k)))
     | _ => .error (.ub s!"shift result type {ty.render} not promoted")
 
+/-- Element size in bytes for the pinned LP64 scalar types. -/
+def elementBytes : Ty → Option Nat
+  | .bool | .u8 | .named "char" => some 1
+  | .u16 => some 2
+  | .u32 | .i32 => some 4
+  | .u64 | .i64 | .ptr _ => some 8
+  | _ => none
+
+/-- C subscripts count elements while addresses in the byte heap count bytes. -/
+def indexAddress (ty : Ty) (p : BPtr) (index : Int) : M BPtr := fun h => do
+  let some width := elementBytes ty | .error (.ub s!"unsupported element size for {ty.render}")
+  let .ref r start := p | .error (.ub "arithmetic on a null pointer")
+  let some bytes := Space.get h r | .error (.ub "arithmetic on a dangling pointer")
+  if start > bytes.size then .error (.ub "pointer outside its object")
+  p.add (index * (width : Int)) h
+
+/-- Pointer subtraction is measured in elements of the common array. Check the
+range of the element count before converting it to the target's ptrdiff_t. -/
+def elementDifference (ty : Ty) (p q : BPtr) : M Int64 := fun h => do
+  let some width := elementBytes ty | .error (.ub s!"unsupported element size for {ty.render}")
+  let .ref r i := p | .error (.ub (if q == .null then "subtraction of a null pointer"
+                                   else "difference of a null pointer and another pointer"))
+  let .ref other j := q | .error (.ub "difference of a null pointer and another pointer")
+  if r != other then .error (.ub "difference of pointers into different objects")
+  let some bytes := Space.get h r | .error (.ub "difference of dangling pointers")
+  if i > bytes.size || j > bytes.size then .error (.ub "pointer outside its object")
+  let distance := (i : Int) - (j : Int)
+  if distance % (width : Int) != 0 then .error (.ub "difference is not a whole number of elements")
+  let count := distance / (width : Int)
+  if inSignedRange 64 count then return (Int64.ofInt count, h)
+  else .error (.ub "pointer difference is not a ptrdiff_t")
+
+/-- The typed operand determines the unit of pointer arithmetic, including subtraction
+whose result type is a signed integer. -/
+def pointerElement (left right : Value) : Ty :=
+  match left.type, right.type with
+  | .ptr ty, _ | _, .ptr ty => ty
+  | _, _ => .u8
+
 /-- Pointer binary operations (`+`, `-`, `==`, `!=`) against the live `Heap`. -/
-def evalPtrOp (op : String) (lv rv : CVal) (h : C.Heap) : Except Fault CVal := do
+def evalPtrOp (op : String) (lv rv : CVal) (h : C.Heap) (element : Ty := .u8) : Except Fault CVal := do
   match lv, op, rv with
   | .ptr p, "==", .ptr q => return .bool (p == q)
   | .ptr p, "!=", .ptr q => return .bool (p != q)
@@ -263,20 +319,25 @@ def evalPtrOp (op : String) (lv rv : CVal) (h : C.Heap) : Except Fault CVal := d
   | .ptr p, "!=", .u64 0 | .ptr p, "!=", .i32 0 | .ptr p, "!=", .i64 0
   | .u64 0, "!=", .ptr p | .i32 0, "!=", .ptr p | .i64 0, "!=", .ptr p =>
     return .bool (p != .null)
-  | .ptr p, "+", _ =>
-    let some off := rv.toInt? | .error (.ub "pointer addition with non-integer")
-    let (p', _) ← C.Ptr.add p off h
-    return .ptr p'
   | .ptr p, "-", .ptr q =>
-    let (d, _) ← C.Ptr.diff p q h
+    let (d, _) ← elementDifference element p q h
     return .i64 d
+  | .ptr p, "+", v | v, "+", .ptr p =>
+    let some off := v.toInt? | .error (.ub "pointer addition with non-integer")
+    let (p', _) ← indexAddress element p off h
+    return .ptr p'
+  | .ptr p, "-", v =>
+    let some off := v.toInt? | .error (.ub "pointer subtraction with non-integer")
+    let (p', _) ← indexAddress element p (-off) h
+    return .ptr p'
   | _, _, _ => .error (.ub s!"unsupported pointer operator {op}")
 
 /-- C99 LP64 binary operator semantics on already-evaluated operands. -/
-def evalBinOp (ty : Ty) (op : String) (lv rv : CVal) (h : C.Heap := C.Heap.empty) :
+def evalBinOp (ty : Ty) (op : String) (lv rv : CVal) (h : C.Heap := C.Heap.empty)
+    (element : Ty := .u8) :
     Except Fault CVal := do
   if lv matches .ptr _ || rv matches .ptr _ then
-    return ← evalPtrOp op lv rv h
+    return ← evalPtrOp op lv rv h element
   if ["<", "<=", ">", ">=", "==", "!="].contains op then
     return ← evalRelOp op lv rv
   if op == "<<" || op == ">>" then
@@ -310,6 +371,9 @@ def evalBinOp (ty : Ty) (op : String) (lv rv : CVal) (h : C.Heap := C.Heap.empty
     let xi := x.toInt
     let yi := y.toInt
     match op with
+    | "&" => return .i32 (x &&& y)
+    | "|" => return .i32 (x ||| y)
+    | "^" => return .i32 (x ^^^ y)
     | "+" => return ← checkedSigned .i32 (xi + yi)
     | "-" => return ← checkedSigned .i32 (xi - yi)
     | "*" => return ← checkedSigned .i32 (xi * yi)
@@ -325,6 +389,9 @@ def evalBinOp (ty : Ty) (op : String) (lv rv : CVal) (h : C.Heap := C.Heap.empty
     let xi := x.toInt
     let yi := y.toInt
     match op with
+    | "&" => return .i64 (x &&& y)
+    | "|" => return .i64 (x ||| y)
+    | "^" => return .i64 (x ^^^ y)
     | "+" => return ← checkedSigned .i64 (xi + yi)
     | "-" => return ← checkedSigned .i64 (xi - yi)
     | "*" => return ← checkedSigned .i64 (xi * yi)
@@ -355,6 +422,7 @@ def readHeap (ty : Ty) (p : C.BPtr) (h : C.Heap) : Except Fault CVal := do
     let (v, _) ← C.load8 p h
     return .u8 v
   | .u64 =>
+    if ByteAddress.value h p % 8 != 0 then .error (.ub "misaligned unsigned long load")
     let (v, _) ← C.load64 p h
     return .u64 v
   | _ => .error (.ub s!"unsupported heap load type {ty.render}")
@@ -367,10 +435,49 @@ def writeHeap (ty : Ty) (p : C.BPtr) (v : CVal) (h : C.Heap) : Except Fault C.He
     let (_, h') ← C.store8 p b h
     return h'
   | .u64 =>
+    if ByteAddress.value h p % 8 != 0 then .error (.ub "misaligned unsigned long store")
     let .u64 w ← evalCast .u64 v | .error (.ub "expected u64 value")
     let (_, h') ← C.store64 p w h
     return h'
   | _ => .error (.ub s!"unsupported heap store type {ty.render}")
+
+/-- Subscript a static pointer table in elements. The literals have the addresses
+assigned by the model's read-only string pool. -/
+def readStringSlot (entries : Array String) (index : Int) : M CVal := do
+  if index < 0 then ub "string table index below zero"
+  let some text := entries[index.toNat]? | ub "string table index past the end"
+  return .ptr (← strLitRef text)
+
+def readStreamCount (ref : ZStreamRef) (field : String) : M UInt32 := do
+  let z ← ldZStream (some ref)
+  match field with
+  | "avail_in" => return z.avail_in
+  | "avail_out" => return z.avail_out
+  | _ => ub "unsupported unsigned z_stream field"
+
+def writeStreamCount (ref : ZStreamRef) (field : String) (n : UInt32) : M Unit := do
+  let z ← ldZStream (some ref)
+  match field with
+  | "avail_in" => stZStream (some ref) {z with avail_in := n}
+  | "avail_out" => stZStream (some ref) {z with avail_out := n}
+  | _ => ub "unsupported unsigned z_stream field"
+
+/-- Typed assignments to the fields of a local stream in the buffer utilities. -/
+def writeStreamField (ref : ZStreamRef) (field : String) (v : CVal) : M Unit :=
+  match v with
+  | .u32 n => writeStreamCount ref field n
+  | _ => do
+    let z ← ldZStream (some ref)
+    match field, v with
+    | "next_in", .ptr p => stZStream (some ref) {z with next_in := p}
+    | "next_out", .ptr p => stZStream (some ref) {z with next_out := p}
+    | "opaque", .ptr p => stZStream (some ref) {z with «opaque» := p}
+    | "zalloc", .functionPtr p => stZStream (some ref) {z with zalloc := p}
+    | "zfree", .functionPtr p => stZStream (some ref) {z with zfree := p}
+    | _, _ => ub "unsupported z_stream assignment"
+
+@[simp] theorem writeStreamField_u32 (ref : ZStreamRef) (field : String) (v : UInt32) :
+    writeStreamField ref field (.u32 v) = writeStreamCount ref field v := rfl
 
 /-- Table of C functions lowered to `Lean2C.CSource` (`(params, stmts)`). -/
 abbrev FnTable := String → Option (List (String × Ty) × List Stmt)
@@ -452,7 +559,7 @@ def evalValue (fns : FnTable) (globals : CEnv) (fuel : Nat) (env : CEnv) (h : C.
     else
       let (lv, env1, h1) ← evalValue fns globals fuel env h lhs
       let (rv, env2, h2) ← evalValue fns globals fuel env1 h1 rhs
-      let res ← evalBinOp ty op lv rv h2
+      let res ← evalBinOp ty op lv rv h2 (pointerElement lhs rhs)
       return (res, env2, h2)
   | .choose cond yes no => do
     let (cv, env1, h1) ← evalValue fns globals fuel env h cond
@@ -471,11 +578,29 @@ def evalValue (fns : FnTable) (globals : CEnv) (fuel : Nat) (env : CEnv) (h : C.
     let (pv, env1, h1) ← evalValue fns globals fuel env h ptrExpr
     let (ov, env2, h2) ← evalValue fns globals fuel env1 h1 offExpr
     match pv, ov.toInt? with
+    | .stringTable entries, some off =>
+      if ty != .ptr .u8 && ty != .ptr (.named "char") then
+        .error (.ub "string table element has incompatible type")
+      else
+        let (val, h3) ← readStringSlot entries off h2
+        return (val, env2, h3)
     | .ptr p, some off =>
-      let (p', h3) ← C.Ptr.add p off h2
+      let (p', h3) ← indexAddress ty p off h2
       let val ← readHeap ty p' h3
       return (val, env2, h3)
     | _, _ => .error (.ub "invalid pointer index")
+  | .addr (.field .u64 (.var (.named "z_stream") name) "reserved") =>
+    match env.lookup name with
+    | some (.streamWithReserved _ address) => .ok (.ptr address, env, h)
+    | _ => .error (.ub "missing address for z_stream.reserved")
+  | .field (.ptr .u8) (.var (.named "z_stream") name) "next_out" => do
+    let some ref := (env.lookup name).bind CVal.streamRef? | .error (.ub "expected local z_stream object")
+    let (stream, h') ← ldZStream (some ref) h
+    return (.ptr stream.next_out, env, h')
+  | .field .u32 (.var (.named "z_stream") name) member => do
+    let some ref := (env.lookup name).bind CVal.streamRef? | .error (.ub "expected local z_stream object")
+    let (n, h') ← readStreamCount ref member h
+    return (.u32 n, env, h')
   | .postDec (.var ty name) => do
     let some cur := env.lookup name | .error (.ub s!"unbound variable {name}")
     let dec ← evalBinOp ty "-" cur (.i32 1) h
@@ -533,6 +658,19 @@ def execStmt (fns : FnTable) (globals : CEnv) (fuel : Nat) (env : CEnv) (h : C.H
       match evalCast ty rv with
       | .error f => .fault f
       | .ok cv => .next (env1.set name cv) h1
+  | .assign (.field ty (.var (.named "z_stream") name) member) rhs =>
+    match (env.lookup name).bind CVal.streamRef? with
+    | some ref =>
+      match evalValue fns globals fuel env h rhs with
+      | .error fault => .fault fault
+      | .ok (value, env1, h1) =>
+        match evalCast ty value with
+        | .ok converted =>
+          match writeStreamField ref member converted h1 with
+          | .ok (_, h2) => .next env1 h2
+          | .error fault => .fault fault
+        | .error fault => .fault fault
+    | _ => .fault (.ub "expected local z_stream object")
   | .assign (.load ty ptrExpr) rhs =>
     match evalValue fns globals fuel env h ptrExpr with
     | .error f => .fault f
@@ -558,7 +696,7 @@ def execStmt (fns : FnTable) (globals : CEnv) (fuel : Nat) (env : CEnv) (h : C.H
         | .ok (rv, env3, h3) =>
           match pv, ov.toInt? with
           | .ptr p, some off =>
-            match C.Ptr.add p off h3 with
+            match indexAddress ty p off h3 with
             | .error f => .fault f
             | .ok (p', h4) =>
               match writeHeap ty p' rv h4 with

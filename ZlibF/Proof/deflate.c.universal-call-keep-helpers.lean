@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.hash-order»
 import ZlibF.Proof.«deflate.c.universal-call-keep-steps»
 import ZlibF.Proof.«trees.c.monad»
 
@@ -84,9 +85,11 @@ theorem keep_store_at (p : BPtr) (i : Nat) (v : UInt8) : KeepM (store_at p i v) 
   unfold store_at; k_steps
 
 theorem keep_put_byte (s : DeflateStatePtr) (c : UInt8) : KeepM (put_byte s c) := by
-  unfold put_byte
-  exact keep_ld_st0 s (fun d => store_at d.pending_buf d.pending.toNat c)
-    (fun d _ => { d with pending := d.pending + 1 }) (fun _ _ => ⟨rfl, rfl⟩) (fun _ => keep_store_at _ _ _)
+  unfold put_byte Zlib.Trees.put_byte
+  simp only [cdecl_eq, M_pure_bind]
+  exact KeepM.bind (keep_ldDeflateState s) (fun _ =>
+    KeepM.bind (keep_ptr_add _ _) (fun _ =>
+      KeepM.bind (keep_wr _ _ (fun _ => ⟨rfl, rfl⟩)) (fun _ => keep_store8 _ _)))
 
 theorem keep_putShortMSB (s : DeflateStatePtr) (b : UInt32) : KeepM (putShortMSB s b) := by
   unfold putShortMSB
@@ -101,6 +104,17 @@ theorem keep_INSERT_STRING (s : DeflateStatePtr) (str : UInt32) : KeepM (INSERT_
   unfold INSERT_STRING
   repeat' first | exact keep_UPDATE_HASH _ _ | k_step
 
+theorem keep_updateHashAt (s : DeflateStatePtr) (window : BPtr) (i : UInt32) :
+    KeepM (updateHashAt s window i) := by
+  intro h u after run
+  have old := (Zlib.Deflate.Proofs.HashOrder.updateHashAt_ok_iff s window i h after u).mp run
+  exact KeepM.bind (keep_index8 _ _) (fun byte => keep_UPDATE_HASH s byte) h u after old
+
+theorem keep_insertStringAt (s : DeflateStatePtr) (str : UInt32) : KeepM (insertStringAt s str) := by
+  intro h v after run
+  exact keep_INSERT_STRING s str h v after
+    ((Zlib.Deflate.Proofs.HashOrder.insertStringAt_ok_iff s str h after v).mp run)
+
 theorem keep_CLEAR_HASH (s : DeflateStatePtr) : KeepM (CLEAR_HASH s) := by
   unfold CLEAR_HASH; k_steps
 
@@ -110,39 +124,27 @@ theorem keep_d_code (dist : UInt16) : KeepM (d_code dist) := by
 theorem keep_freq_inc (r : CtDataRef) (i : Nat) : KeepM (freq_inc r i) := by
   unfold freq_inc; k_steps
 
+theorem keep_put_symbol_byte (p : DeflateStatePtr) (v : UInt8) :
+    KeepM (Zlib.Trees.put_symbol_byte p v) := by
+  unfold Zlib.Trees.put_symbol_byte
+  exact KeepM.bind (keep_ldDeflateState p) (fun _ =>
+    KeepM.bind (keep_ptr_add _ _) (fun _ =>
+      KeepM.bind (keep_wr _ _ (fun _ => ⟨rfl, rfl⟩)) (fun _ => keep_store8 _ _)))
+
 theorem keep_tally_lit (s : DeflateStatePtr) (c : UInt8) : KeepM (tally_lit s c) := by
-  let rest : M Bool := match s with
-    | none => ub "null deflate_state"
-    | some (.tab id) => do
-      freq_inc (.dstate_dyn_ltree id) c.toNat
-      let d ← ldDeflateState s
-      return d.sym_next == d.sym_end
-  have grouped : tally_lit s c = (do
-      let d ← ldDeflateState s
-      let x ← (do
-        store_at d.sym_buf d.sym_next.toNat 0
-        store_at d.sym_buf (d.sym_next + 1).toNat 0
-        store_at d.sym_buf (d.sym_next + 2).toNat c)
-      stDeflateState s { d with sym_next := d.sym_next + 3 }
-      rest) := by
+  cases s with
+  | none =>
     unfold tally_lit
-    simp only [M_bind_assoc, rest]
-    cases s with
-    | none => rfl
-    | some r => cases r; rfl
-  rw [grouped]
-  refine keep_ld_st s _ (fun d (_ : Unit) => { d with sym_next := d.sym_next + 3 }) (fun _ _ => rest)
-    (fun _ _ => ⟨rfl, rfl⟩) ?_ ?_
-  · intro d
-    exact KeepM.bind (keep_store_at _ _ _) (fun _ =>
-      KeepM.bind (keep_store_at _ _ _) (fun _ => keep_store_at _ _ _))
-  · intro d x
-    cases s with
-    | none => exact KeepM.ub _
-    | some r =>
-      cases r
-      exact KeepM.bind (keep_freq_inc _ _) (fun _ =>
-        KeepM.bind (keep_ldDeflateState _) (fun _ => KeepM.pure _))
+    repeat' first
+      | exact keep_put_symbol_byte _ _
+      | k_step
+  | some ref =>
+    cases ref
+    unfold tally_lit
+    repeat' first
+      | exact keep_put_symbol_byte _ _
+      | exact keep_freq_inc _ _
+      | k_step
 
 theorem keep_slide_hash (s : DeflateStatePtr) : KeepM (slide_hash s) := by
   unfold slide_hash; k_steps
@@ -151,8 +153,10 @@ theorem keep_read_buf (p : ZStreamPtr) (buf : BPtr) (n : UInt32) : KeepM (read_b
   unfold read_buf; k_steps
 
 theorem keep_fill_window (s : DeflateStatePtr) : KeepM (fill_window s) := by
-  unfold fill_window
+  unfold fill_window fillWindowBody slideWindowForFill fillFromStream primeWindowHash fillWindowInsert
+    fillWindowCondition clearWindowTail
   repeat' first
+    | with_reducible exact keep_updateHashAt _ _ _
     | with_reducible exact keep_slide_hash _
     | with_reducible exact keep_read_buf _ _ _
     | with_reducible exact keep_UPDATE_HASH _ _

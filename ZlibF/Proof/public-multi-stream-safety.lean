@@ -740,7 +740,7 @@ private theorem inflate_op_owned_within
     by_cases empty : dest = .null ∨ s₁.whave = 0
     · have actual : C.run (Zlib.Inflate.inflateGetDictionary (some r₁) dest dl) h =
           .ok ((Z_OK, dl.map (fun _ => s₁.whave)), h) := by
-        unfold C.run Zlib.Inflate.inflateGetDictionary
+        unfold C.run Zlib.Inflate.inflateGetDictionary Zlib.Inflate.getDictionaryWith
         rcases empty with null | zero
         · cases dl <;> simp [Zlib.Inflate.Proofs.stateCheck_live good₁.live,
             Zlib.Inflate.Proofs.ldZ_eq, Zlib.Inflate.Proofs.ldI_eq,
@@ -1076,8 +1076,8 @@ private theorem deflate_op_owned_within
         have tailRun : Zlib.Deflate.Universal.paramsTail (some (.tab ds)) lv strategy h =
             .ok (Z_OK, Zlib.Deflate.Spec.setD h ds d2) := by
           unfold Zlib.Deflate.Universal.paramsTail
-          simp only [bind_app, ldRun, levelB, ite_true, zeroB, Bool.false_eq_true, ite_false, cfgL,
-            Zlib.Deflate.Proofs.wrD_eq, good₁.live.hs, Zlib.Deflate.Proofs.setD_dstates_same,
+          simp only [bind_app, ldRun, levelB, ite_true, zeroB, Bool.false_eq_true, ite_false,
+            Zlib.Deflate.Proofs.config_at_run _ lo hi, Zlib.Deflate.Proofs.wrD_eq, good₁.live.hs, Zlib.Deflate.Proofs.setD_dstates_same,
             Zlib.Deflate.Proofs.setD_setD]
           rfl
         have inv2 : Zlib.Deflate.Spec.DStInv h ds d2 :=

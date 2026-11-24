@@ -1,4 +1,7 @@
 import ZlibF
+import ZlibF.Proof.StandaloneCAbi
+import ZlibF.Proof.«inftrees.c.abi»
+import ZlibF.Proof.«infback.c.adapted-call»
 import ZlibF.ResultsCheck
 import ZlibF.Spec.Safety.WholeLibrary
 
@@ -8,8 +11,8 @@ import ZlibF.Spec.Safety.WholeLibrary
 The safety-only registry of results, checked by Lean when the library is built.
 
 `proved` pairs each proved safety goal with the theorem that proves it. `notDone` is empty (`[]`).
-`required` lists the 109 required safety goals: the safety goal of every documented function of
-`zlib.h`, the four C-ABI companion `compress*_c` wrappers, the safety goals of sequences and
+`required` lists the required safety goals: the safety goal of every documented function of
+`zlib.h`, the C-ABI companions, the safety goals of sequences and
 refusals, disjoint multi-stream interleaving compositionality, the non-vacuity goals,
 `whole_library_safety`, and `extended_library_safety`. Functional and round-trip goals outside
 the maintained safety scope have been excluded from the registry.
@@ -79,6 +82,11 @@ private def componentProofs : List (Name × Name) := [
   (``ZlibF.Spec.Public.Goal.compress2_z_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress2_z_safety),
   (``ZlibF.Spec.Public.Goal.compress_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress_safety),
   (``ZlibF.Spec.Public.Goal.compress_z_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress_z_safety),
+  (``ZlibF.Spec.Public.Goal.adler32_z_c_safety, ``ZlibF.Proof.StandaloneCAbi.adler32_z_c_safety),
+  (``ZlibF.Spec.Public.Goal.gzopen_c_safety, ``ZlibF.Proof.StandaloneCAbi.gzopen_c_safety),
+  (``ZlibF.Spec.Public.Goal.gzseek64_c_safety, ``ZlibF.Proof.StandaloneCAbi.gzseek64_c_safety),
+  (``Zlib.Inffast.Spec.Goal.fast_c_safe, ``ZlibF.Proof.StandaloneCAbi.fast_c_safe),
+  (``Zlib.Inftrees.Spec.Goal.inflate_table_c_decoder_safe, ``Zlib.Inftrees.TableABI.inflate_table_c_decoder_safe),
   (``ZlibF.Spec.Public.Goal.compress2_z_c_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress2_z_c_safety_pub),
   (``ZlibF.Spec.Public.Goal.compress2_c_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress2_c_safety_pub),
   (``ZlibF.Spec.Public.Goal.compress_z_c_safety, ``ZlibF.Spec.Public.Proofs.Compress.compress_z_c_safety_pub),
@@ -315,6 +323,11 @@ def required : List Name := [
   ``ZlibF.Spec.Public.Goal.inflate_back_initialisation_domain,
   ``ZlibF.Spec.Public.Goal.inflateBack_call_domain,
   ``ZlibF.Spec.Public.Goal.gz_sequence_nonvacuity,
+  ``ZlibF.Spec.Public.Goal.adler32_z_c_safety,
+  ``ZlibF.Spec.Public.Goal.gzopen_c_safety,
+  ``ZlibF.Spec.Public.Goal.gzseek64_c_safety,
+  ``Zlib.Inffast.Spec.Goal.fast_c_safe,
+  ``Zlib.Inftrees.Spec.Goal.inflate_table_c_decoder_safe,
   ``ZlibF.Spec.Public.Goal.compress2_z_c_safety,
   ``ZlibF.Spec.Public.Goal.compress2_c_safety,
   ``ZlibF.Spec.Public.Goal.compress_z_c_safety,

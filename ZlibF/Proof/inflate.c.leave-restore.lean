@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.window-stream»
 import ZlibF.Proof.«inflate.c.pending-dispatch»
 import ZlibF.Proof.«inflate.c.dispatch-entry»
 import ZlibF.Proof.«inflate.c.checksum-view»
@@ -59,7 +60,9 @@ def leaveRestore (c : Ctx) (l : IL) : M Unit := do
 theorem inflate_leave_split (c : Ctx) (l : IL) :
     inflate_leave c l = (do leaveRestore c l; leaveAfterRestore c l) := by
   funext h
-  unfold inflate_leave leaveRestore leaveAfterRestore
+  rw [Zlib.Inflate.Proofs.WindowStream.inflate_leave_eq_saved]
+  unfold leaveWindow leaveAccounting leaveRestore leaveAfterRestore
+  simp only [Zlib.Inflate.Proofs.WindowStream.savedOutput_bind]
   simp only [bind_app]
   cases first : wrZ c.strm (fun z => { z with next_out := l.put, avail_out := l.left, next_in := l.next, avail_in := l.have_ }) h with
   | error fault => simp only

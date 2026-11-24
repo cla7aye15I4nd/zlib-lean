@@ -92,13 +92,67 @@ theorem put_byte_ok {h : Heap} {sr b off : Nat} {d : DeflateState} {a : Array UI
   have e1 : ldDeflateState (some (.tab sr)) h = .ok (d, h) := ldDeflateState_tab hd
   have e2 : padd d.pending_buf d.pending.toNat h = .ok (.ref (.blk b) (off + d.pending.toNat), h) := by
     rw [hp]; exact padd_ok' (by simpa using ha) (by omega)
-  have e3 : store8 (.ref (.blk b) (off + d.pending.toNat)) c h =
-      .ok ((), { h with bytes := upd h.bytes b (some (a.set! (off + d.pending.toNat) c)) }) := by
-    have := Ptr.store_ok (r := BRef.blk b) (T := UInt8) (a := a) (off := off + d.pending.toNat) (v := c)
-      (by simpa using ha) (by simpa using hro) hlt
-    simpa using this
-  simp only [put_byte, store_at, bind_app, e1, e2, e3]
-  rw [stDeflateState_tab (by simpa using hd)]
+  let advanced := {h with dstates := upd h.dstates sr (some {d with pending := d.pending + 1})}
+  have advance : stDeflateState (some (.tab sr)) {d with pending := d.pending + 1} h =
+      .ok ((), advanced) := stDeflateState_tab hd
+  have write := Ptr.store_ok (h := advanced) (r := BRef.blk b) (T := UInt8) (a := a)
+    (off := off + d.pending.toNat) (v := c) (by simpa [advanced] using ha)
+    (by simpa [advanced] using hro) hlt
+  change Ptr.add d.pending_buf (d.pending.toNat : Int) h = _ at e2
+  simp only [put_byte, Zlib.Trees.put_byte, cdecl_eq, Zlib.Trees.rd, Zlib.Trees.md, bind_app,
+    pure_app, e1, e2, advance, store8]
+  simpa [advanced] using write
+
+
+/-- Agreement with the former store-then-increment definition for a live state whose
+pending buffer points into a byte block. Includes bounds, read-only and dangling-block faults. -/
+theorem put_byte_legacy_eq {h : Heap} {sr b off : Nat} {d : DeflateState} (c : UInt8)
+    (state : h.dstates sr = some d) (buffer : d.pending_buf = .ref (.blk b) off) :
+    put_byte (some (.tab sr)) c h =
+      (do let d ← ldDeflateState (some (.tab sr))
+          store_at d.pending_buf d.pending.toNat c
+          stDeflateState (some (.tab sr)) {d with pending := d.pending + 1}) h := by
+  have load := ldDeflateState_tab state
+  have advance := stDeflateState_tab (v' := {d with pending := d.pending + 1}) state
+  let p := Ptr.ref (BRef.blk b) off
+  have store (offset : Nat) :
+      (do Zlib.Trees.md (some (.tab sr)) (fun st => {st with pending := st.pending + 1})
+          store8 (.ref (.blk b) offset) c) h =
+      (do store8 (.ref (.blk b) offset) c
+          stDeflateState (some (.tab sr)) {d with pending := d.pending + 1}) h := by
+    simp only [Zlib.Trees.md, bind_app, load, advance, store8, Ptr.store, Space.get, Space.ro]
+    cases hb : h.bytes b with
+    | none => rfl
+    | some bytes =>
+      by_cases ro : h.ro b = true
+      · simp [ro]
+      · by_cases room : offset < bytes.size
+        · simp [ro, room, Space.modify, stDeflateState,
+            DeflateStateRef.get, DeflateStateRef.put, DeflateStateRef.isRo, state]
+        · simp [ro, room]
+  simp only [put_byte, Zlib.Trees.put_byte, Zlib.Trees.rd, cdecl_eq, store_at,
+    padd, bind_app, pure_app, load, buffer]
+  cases run : (p.add (d.pending.toNat : Int)) h with
+  | error _ => rfl
+  | ok result =>
+    obtain ⟨ptr, h'⟩ := result
+    have shape : ∃ offset, ptr = .ref (.blk b) offset ∧ h' = h := by
+      by_cases zero : (d.pending.toNat : Int) = 0
+      · simp only [p, Ptr.add, ite_eq_left zero] at run
+        cases run; exact ⟨_, rfl, rfl⟩
+      · simp only [p, Ptr.add, ite_eq_right zero, Space.get] at run
+        cases hb : h.bytes b with
+        | none => rw [hb] at run; cases run
+        | some arr =>
+          by_cases fit : 0 ≤ (off : Int) + d.pending.toNat ∧ (off : Int) + d.pending.toNat ≤ arr.size
+          · simp only [hb, fit] at run
+            cases run; exact ⟨_, rfl, rfl⟩
+          · simp only [hb, fit, ite_false] at run
+            contradiction
+    obtain ⟨offset, rfl, rfl⟩ := shape
+    simpa only [bind_app, Zlib.Trees.md, load, buffer] using store offset
+
+#print axioms put_byte_legacy_eq
 
 theorem u64_succ_toNat (p : UInt64) (h : p.toNat + 1 < 2 ^ 64) : (p + 1).toNat = p.toNat + 1 := by
   rw [UInt64.toNat_add]; simp; omega

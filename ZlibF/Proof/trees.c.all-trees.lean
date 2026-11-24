@@ -48,7 +48,7 @@ theorem send_all_trees_eq (s : DeflateStatePtr) (lcodes dcodes blcodes : Int32) 
       atCounts s lcodes dcodes blcodes
       let _ ← atLengthLoop s blcodes
       atTrees s lcodes dcodes) := by
-  unfold send_all_trees atCounts atField atLengthLoop atLengthBody atTrees atTree atSourcePtr
+  unfold send_all_trees cinline atCounts atField atLengthLoop atLengthBody atTrees atTree atSourcePtr
   simp only [M_bind_assoc]
 
 /-- A count field emits its exact low-to-high bits; no arithmetic fault

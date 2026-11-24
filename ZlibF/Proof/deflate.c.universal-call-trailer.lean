@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.trailer-source»
 import ZlibF.Proof.«deflate.c.universal-call-hcrc»
 
 /-!
@@ -49,8 +50,8 @@ def trailerPhase' (strm : ZStreamPtr) (s : DeflateStatePtr) (flush : Int32) : M 
 
 theorem trailer_phase_split (strm : ZStreamPtr) (s : DeflateStatePtr) (flush : Int32) :
     trailerPhase strm s flush = trailerPhase' strm s flush := by
-  delta trailerPhase trailerPhase' trailerBytes trailerEnd
-  exact rfl
+  rw [trailerPhase_eq_publicFinishTail]
+  simp only [publicFinishTail, trailerPhase', trailerBytes, trailerEnd, zlibTrailer, C.M_bind_assoc]
 
 /-- **The gzip trailer bytes**: eight bytes, with room. -/
 theorem trailer_gzip {h : Heap} {r : ZStreamRef} {ds pb : Nat} {z : ZStream} {d : DeflateState}

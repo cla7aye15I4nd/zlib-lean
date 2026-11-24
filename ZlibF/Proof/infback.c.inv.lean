@@ -81,15 +81,29 @@ theorem LInv.putMsg {c : BCtx} {win : Nat} {ownI : Nat → Prop} {R : Heap → P
     @BIn.congr ownI h (r.put h { z with msg := m }) l bs (fun _ _ => by simp) B, hR', hb⟩
 
 /-- `strm->msg = "..."; state->mode = BAD;` for a message that is a string literal. -/
-theorem badMode_run (c : BCtx) {r : ZStreamRef} {zs : Nat} {h : Heap} {z : ZStream} {s : InflateState}
+theorem badMode_ctx_literal (c : DecoderCtx) {r : ZStreamRef} {zs : Nat} {h : Heap} {z : ZStream} {s : InflateState}
     (hcs : c.strm = some r) (hct : c.st = some (.tab zs)) (hz : r.get h = some z) (hs : h.istates zs = some s)
     (msg : String) (hm : msg ∈ strTable) :
-    ∃ i, badMode c msg h = .ok ((), setI (r.put h { z with msg := .ref (.str i) 0 }) zs { s with mode := BAD }) := by
-  obtain ⟨i, hi, -⟩ := strLitRef_of_mem (h := h) hm
-  refine ⟨i, ?_⟩
+    ∃ i, strTable[i]? = some msg ∧
+      badMode c msg h = .ok ((), setI (r.put h { z with msg := .ref (.str i) 0 }) zs { s with mode := BAD }) := by
+  obtain ⟨i, hi, text⟩ := strLitRef_of_mem (h := h) hm
+  refine ⟨i, text, ?_⟩
   have hs' : (r.put h { z with msg := .ref (.str i) 0 }).istates zs = some s := by simpa using hs
   have hz' : r.get (r.put h { z with msg := .ref (.str i) 0 }) = some { z with msg := .ref (.str i) 0 } := by simp [hz]
   unfold badMode setMsg Zlib.Zutil.strLit
-  simp [bind_app, hi, hcs, ldZ_eq, hz, stZ_eq, setMode_ok hct hs']
+  simp [bind_app, hi, hcs, hct, ldZ_eq, hz, stZ_eq, setMode_tab hs']
+
+theorem badMode_ctx_run (c : DecoderCtx) {r : ZStreamRef} {zs : Nat} {h : Heap} {z : ZStream} {s : InflateState}
+    (hcs : c.strm = some r) (hct : c.st = some (.tab zs)) (hz : r.get h = some z) (hs : h.istates zs = some s)
+    (msg : String) (hm : msg ∈ strTable) :
+    ∃ i, badMode c msg h = .ok ((), setI (r.put h {z with msg := .ref (.str i) 0}) zs {s with mode := BAD}) := by
+  obtain ⟨i, _, run⟩ := badMode_ctx_literal c hcs hct hz hs msg hm
+  exact ⟨i, run⟩
+
+theorem badMode_run (c : BCtx) {r : ZStreamRef} {zs : Nat} {h : Heap} {z : ZStream} {s : InflateState}
+    (hcs : c.strm = some r) (hct : c.st = some (.tab zs)) (hz : r.get h = some z) (hs : h.istates zs = some s)
+    (msg : String) (hm : msg ∈ strTable) :
+    ∃ i, badMode c msg h = .ok ((), setI (r.put h { z with msg := .ref (.str i) 0 }) zs { s with mode := BAD }) :=
+  badMode_ctx_run c hcs hct hz hs msg hm
 
 end Zlib.Infback.Proofs

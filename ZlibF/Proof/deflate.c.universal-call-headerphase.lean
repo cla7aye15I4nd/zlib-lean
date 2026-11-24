@@ -22,19 +22,21 @@ theorem wrap_stage_skip (no : ¬ (d.status = INIT_STATE ∧ d.wrap = 0)) :
   unfold wrapStage
   by_cases st : d.status = INIT_STATE
   · have w : d.wrap ≠ 0 := fun e => no ⟨st, e⟩
-    simp [bind_app, rdD_eq, state, st, w]
-  · simp [bind_app, rdD_eq, state, st]
+    simp [bind_app, ldDeflateState_tab state, st, w]
+  · simp [bind_app, ldDeflateState_tab state, st]
 
 theorem wrap_stage_busy (st : d.status = INIT_STATE) (w : d.wrap = 0) :
     wrapStage (some r) (some (.tab ds)) k h = k (setD h ds { d with status := BUSY_STATE }) := by
   unfold wrapStage
-  simp [bind_app, rdD_eq, state, st, w, wrD_eq]
+  simp [bind_app, ldDeflateState_tab state, state, st, w, wrD_eq]
 
 theorem init_stage_skip (no : d.status ≠ INIT_STATE) : initStage (some r) (some (.tab ds)) k h = k h := by
   unfold initStage; simp [bind_app, rdD_eq, state, no]
 
 theorem gzip_stage_skip (no : d.status ≠ GZIP_STATE) : gzipStage (some r) (some (.tab ds)) k h = k h := by
-  unfold gzipStage; simp [bind_app, rdD_eq, state, no]
+  rw [gzip_stage_split]
+  unfold gzipStage'
+  simp [bind_app, rdD_eq, state, no]
 
 theorem extra_stage_skip (no : d.status ≠ EXTRA_STATE) : extraStage (some r) (some (.tab ds)) k h = k h := by
   unfold extraStage; simp [bind_app, rdD_eq, state, no]

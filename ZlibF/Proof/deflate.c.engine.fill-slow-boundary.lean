@@ -22,12 +22,11 @@ theorem fill_window_empty_slow_boundary {h : Heap} {r : ZStreamRef} {ds origin :
   let after := paddedHeap h ds w d wa
   have goodA := padded_good boundary.good win get boundary.range
   have chainsA := padded_chains boundary.good boundary.chains win get boundary.range
-  have loop := do_once (fill_body_no_input boundary.good empty noSlide) (fill_cond_break (some (.tab ds)) h)
   have pad := fill_high_water_complete boundary.good win get (window_writable boundary.good win) boundary.range
   have run : fill_window (some (.tab ds)) h = .ok ((), after) := by
-    rw [fill_window_source]
-    simp only [bind_app, rdD_eq, boundary.good.live.hs, loop]
-    exact pad
+    apply (fill_window_no_input (ldDeflateState_tab boundary.good.live.hs) _ noSlide empty).trans pad
+    rw [boundary.good.live.back]
+    exact ldZStream_ok boundary.good.live.hz
   have distinct := window_pending_separate boundary.good win trees.base.pbuf
   have pendingA : (paddedState d).pending_buf = .ref (.blk b) 0 := trees.base.pbuf
   have dataA : after.bytes b = some buf := by

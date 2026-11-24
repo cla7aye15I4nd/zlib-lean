@@ -4,6 +4,7 @@ import ZlibF.Runtime.CAbi
 import ZlibF.Runtime.Monad
 import ZlibF.Runtime.Ptr
 import ZlibF.Runtime.Alloc
+import ZlibF.Runtime.ControlFlow
 import ZlibF.Runtime.Libc
 import ZlibF.Proof.LibcMemory
 import ZlibF.Runtime.LibcTables
@@ -68,6 +69,10 @@ import ZlibF.Proof.«trees.c.heap.gbdef»
 import ZlibF.Proof.«infback.c.init»
 import ZlibF.Proof.«infback.c.end»
 import ZlibF.Proof.«infback.c.back»
+import ZlibF.Proof.«infback.c.addressed-dynamic»
+import ZlibF.Proof.«infback.c.addressed-type»
+import ZlibF.Proof.«infback.c.addressed-huffman»
+import ZlibF.Proof.«inftrees.c.abi»
 import ZlibF.Proof.«inftrees.c.fixed»
 import ZlibF.Proof.«inffast.c.len»
 import ZlibF.Proof.«deflate.c.base»

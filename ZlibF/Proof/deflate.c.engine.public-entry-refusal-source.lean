@@ -1,9 +1,9 @@
-import ZlibF.Proof.«deflate.c.engine.public-source»
+import ZlibF.Proof.«deflate.c.base»
 
 /-! # Pure source proofs of public entry refusals -/
 
 namespace Zlib.Deflate.Engine.Proofs
-open C Zlib.Deflate Zlib.Deflate.Spec Zlib.Deflate.Proofs ZlibF.Spec.Public
+open C Zlib.Deflate Zlib.Deflate.Spec Zlib.Deflate.Proofs
 set_option autoImplicit false
 
 /-- The actual public pre-store stream guard returns STREAM_ERROR. -/
@@ -28,7 +28,7 @@ theorem public_stream_guard_refusal {h : Heap} {r : ZStreamRef} {ds : Nat} {z : 
     · simp [nonempty, input]
     · simp [status, flag]
   have checked := stateCheck_live good.live
-  rw [public_deflate_source]
+  unfold deflate Phases.entryPhase
   simp only [bind_app, checked, show ((0 : Int32) != 0) = false from rfl,
     flagUpper, flagLower, decide_false, Bool.false_or, Bool.false_eq_true, ite_false,
     zrd_eq, good.live.hz, good.live.zst, castDeflateState,
@@ -58,7 +58,7 @@ theorem public_zero_output_refusal {h : Heap} {r : ZStreamRef} {ds : Nat} {z : Z
     · simp [status, finish status]
     · simp [status]
   have checked := stateCheck_live good.live
-  rw [public_deflate_source]
+  unfold deflate Phases.entryPhase
   simp only [bind_app, checked, show ((0 : Int32) != 0) = false from rfl,
     flagUpper, flagLower, decide_false, Bool.false_or, Bool.false_eq_true, ite_false,
     zrd_eq, good.live.hz, good.live.zst, castDeflateState,
@@ -71,7 +71,7 @@ theorem public_bad_flush_refusal {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZSt
     (good : DGood h r ds z d) (flush : Int32) (bad : flush > Z_BLOCK ∨ flush < 0) :
     deflate (some r) flush h = .ok (Z_STREAM_ERROR, h) := by
   have checked := stateCheck_live good.live
-  rw [public_deflate_source]
+  unfold deflate Phases.entryPhase
   rcases bad with high | low
   · simp [bind_app, pure_app, checked, high]
   · simp [bind_app, pure_app, checked, low]

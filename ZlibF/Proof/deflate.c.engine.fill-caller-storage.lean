@@ -16,12 +16,11 @@ theorem fill_window_empty_storage {h : Heap} {r : ZStreamRef} {ds w : Nat}
     (noSlide : ¬ d.strstart ≥ d.w_size + (d.w_size - MIN_LOOKAHEAD_u)) :
     fill_window (some (.tab ds)) h = .ok ((), paddedHeap h ds w d wa) ∧
       ByteFrame h (paddedHeap h ds w d wa) (DeflateOwned ds d) := by
-  have loop := do_once (fill_body_no_input good empty noSlide) (fill_cond_break (some (.tab ds)) h)
   have pad := fill_high_water_complete good win get (window_writable good win) range
   refine ⟨?_, padded_storage_frame h ds w d wa _ (Or.inl rfl) (Or.inr (Or.inl win))⟩
-  rw [fill_window_source]
-  simp only [bind_app, rdD_eq, good.live.hs, loop]
-  exact pad
+  apply (fill_window_no_input (ldDeflateState_tab good.live.hs) _ noSlide empty).trans pad
+  rw [good.live.back]
+  exact ldZStream_ok good.live.hz
 
 set_option maxHeartbeats 2500000 in
 /-- Every real refill branch writes byte-addressable storage only in its

@@ -163,7 +163,7 @@ private theorem cenv_lookup_set_ne (env : CEnv) {k name : String} (hne : (k == n
       · have hknf : (k' == name) = false := beq_false_of_ne hkn
         simp [CEnv.set, hkf, CEnv.lookup, hknf, ih]
 
-private theorem evalValue_var (fns : FnTable) (globals : CEnv) (fuel : Nat) (env : CEnv)
+theorem evalValue_var (fns : FnTable) (globals : CEnv) (fuel : Nat) (env : CEnv)
     (h : C.Heap) (ty : Ty) (x : String) (v : CVal) (hx : env.lookup x = some v) :
     evalValue fns globals fuel env h (.var ty x) = .ok (v, env, h) := by
   rw [evalValue]; simp [hx]
@@ -174,25 +174,25 @@ private theorem evalValue_global (fns : FnTable) (globals : CEnv) (fuel : Nat) (
     evalValue fns globals fuel env h (.var ty x) = .ok (v, env, h) := by
   rw [evalValue]; simp [hx, hg]
 
-private theorem evalValue_num (fns : FnTable) (globals : CEnv) (fuel : Nat) (env : CEnv)
+theorem evalValue_num (fns : FnTable) (globals : CEnv) (fuel : Nat) (env : CEnv)
     (h : C.Heap) (ty : Ty) (n : Nat) (v : CVal) (hn : evalNum ty n = .ok v) :
     evalValue fns globals fuel env h (.num ty n) = .ok (v, env, h) := by
   rw [evalValue]; simp [hn, Bind.bind, Except.bind, Pure.pure, Except.pure]
 
-private theorem evalValue_cast (fns : FnTable) (globals : CEnv) (fuel : Nat) (env env1 : CEnv)
+theorem evalValue_cast (fns : FnTable) (globals : CEnv) (fuel : Nat) (env env1 : CEnv)
     (h h1 : C.Heap) (ty : Ty) (a : Value) (va v : CVal)
     (ha : evalValue fns globals fuel env h a = .ok (va, env1, h1))
     (hc : evalCast ty va = .ok v) :
     evalValue fns globals fuel env h (.cast ty a) = .ok (v, env1, h1) := by
   rw [evalValue]; simp [ha, hc, Bind.bind, Except.bind, Pure.pure, Except.pure]
 
-private theorem evalValue_op (fns : FnTable) (globals : CEnv) (fuel : Nat)
+theorem evalValue_op (fns : FnTable) (globals : CEnv) (fuel : Nat)
     (env env1 env2 : CEnv) (h h1 h2 : C.Heap) (ty : Ty) (op : String) (l r : Value)
     (lv rv res : CVal)
     (hnot1 : (op == "&&") = false) (hnot2 : (op == "||") = false)
     (hl : evalValue fns globals fuel env h l = .ok (lv, env1, h1))
     (hr : evalValue fns globals fuel env1 h1 r = .ok (rv, env2, h2))
-    (hb : evalBinOp ty op lv rv h2 = .ok res) :
+    (hb : evalBinOp ty op lv rv h2 (pointerElement l r) = .ok res) :
     evalValue fns globals fuel env h (.op ty op l r) = .ok (res, env2, h2) := by
   rw [evalValue]; simp [hnot1, hnot2, hl, hr, hb, Bind.bind, Except.bind, Pure.pure, Except.pure]
 
@@ -270,7 +270,7 @@ private theorem execStmts_branch_f (fns : FnTable) (globals : CEnv) (fuel : Nat)
       | .fault f => .fault f := by
   rw [execStmts, execStmt]; simp only [hc, htb]; rfl
 
-private theorem execStmts_ret (fns : FnTable) (globals : CEnv) (fuel : Nat)
+theorem execStmts_ret (fns : FnTable) (globals : CEnv) (fuel : Nat)
     (env env1 : CEnv) (h h1 : C.Heap) (e : Value) (rv : CVal) (rest : List Stmt)
     (he : evalValue fns globals fuel env h e = .ok (rv, env1, h1)) :
     execStmts fns globals fuel env h (Stmt.ret e :: rest) = .ret rv h1 := by
@@ -318,15 +318,15 @@ private theorem evalBinOp_u64_or (x y : UInt64) (h : C.Heap) :
     evalBinOp .u64 "|" (.u64 x) (.u64 y) h = .ok (.u64 (x ||| y)) := by
   unfold evalBinOp; simp [Bind.bind, Except.bind, Pure.pure, Except.pure]
 
-private theorem evalBinOp_u32_or (x y : UInt32) (h : C.Heap) :
+theorem evalBinOp_u32_or (x y : UInt32) (h : C.Heap) :
     evalBinOp .u32 "|" (.u32 x) (.u32 y) h = .ok (.u32 (x ||| y)) := by
   unfold evalBinOp; simp [Bind.bind, Except.bind, Pure.pure, Except.pure]
 
-private theorem evalBinOp_u32_and (x y : UInt32) (h : C.Heap) :
+theorem evalBinOp_u32_and (x y : UInt32) (h : C.Heap) :
     evalBinOp .u32 "&" (.u32 x) (.u32 y) h = .ok (.u32 (x &&& y)) := by
   unfold evalBinOp; simp [Bind.bind, Except.bind, Pure.pure, Except.pure]
 
-private theorem evalBinOp_u32_shl (x : UInt32) (k : Nat) (hk : k < 32) (h : C.Heap) :
+theorem evalBinOp_u32_shl (x : UInt32) (k : Nat) (hk : k < 32) (h : C.Heap) :
     evalBinOp .u32 "<<" (.u32 x) (.i32 (Int32.ofNat k)) h = .ok (.u32 (x <<< UInt32.ofNat k)) := by
   have hi := int32_toInt_ofNat_lt k (by omega)
   have hb : (decide ((k : Int) < 0) || decide (Int.ofNat (if (32 : Nat) < 32 then 32 else 32) ≤ (k : Int))) = false := by
@@ -339,7 +339,7 @@ private theorem evalBinOp_u32_shl (x : UInt32) (k : Nat) (hk : k < 32) (h : C.He
     Bind.bind, Except.bind, Pure.pure, Except.pure, Int.toNat_natCast]
   rfl
 
-private theorem evalBinOp_u32_shr (x : UInt32) (k : Nat) (hk : k < 32) (h : C.Heap) :
+theorem evalBinOp_u32_shr (x : UInt32) (k : Nat) (hk : k < 32) (h : C.Heap) :
     evalBinOp .u32 ">>" (.u32 x) (.i32 (Int32.ofNat k)) h = .ok (.u32 (x >>> UInt32.ofNat k)) := by
   have hi := int32_toInt_ofNat_lt k (by omega)
   have hb : (decide ((k : Int) < 0) || decide (Int.ofNat (if (32 : Nat) < 32 then 32 else 32) ≤ (k : Int))) = false := by
@@ -673,10 +673,11 @@ theorem evalValue_load_u8 (fns : FnTable) (globals : CEnv) (fuel : Nat)
 theorem evalValue_load_u64 (fns : FnTable) (globals : CEnv) (fuel : Nat)
     (env env1 : CEnv) (h h1 : C.Heap) (ptrExpr : Value) (p : C.BPtr) (v : UInt64)
     (hp : evalValue fns globals fuel env h ptrExpr = .ok (.ptr p, env1, h1))
+    (aligned : ByteAddress.value h1 p % 8 = 0)
     (hload : C.load64 p h1 = .ok (v, h1)) :
     evalValue fns globals fuel env h (.load .u64 ptrExpr) = .ok (.u64 v, env1, h1) := by
   unfold evalValue
-  simp only [hp, readHeap, hload, Bind.bind, Except.bind, Pure.pure, Except.pure]
+  simp only [hp, readHeap, aligned, bne_self_eq_false, Bool.false_eq_true, ite_false, hload, Bind.bind, Except.bind, Pure.pure, Except.pure]
 
 theorem execStmt_store_u8 (fns : FnTable) (globals : CEnv) (fuel : Nat)
     (env env1 env2 : CEnv) (h h1 h2 h3 : C.Heap) (ptrExpr rhs : Value) (p : C.BPtr) (v : UInt8)
@@ -692,10 +693,11 @@ theorem execStmt_store_u64 (fns : FnTable) (globals : CEnv) (fuel : Nat)
     (env env1 env2 : CEnv) (h h1 h2 h3 : C.Heap) (ptrExpr rhs : Value) (p : C.BPtr) (v : UInt64)
     (hp : evalValue fns globals fuel env h ptrExpr = .ok (.ptr p, env1, h1))
     (hr : evalValue fns globals fuel env1 h1 rhs = .ok (.u64 v, env2, h2))
+    (aligned : ByteAddress.value h2 p % 8 = 0)
     (hstore : C.store64 p v h2 = .ok ((), h3)) :
     execStmt fns globals fuel env h (.assign (.load .u64 ptrExpr) rhs) = .next env2 h3 := by
   unfold execStmt
-  simp only [hp, hr, writeHeap, evalCast, CVal.toInt?, ofIntForTy, Int.ofNat_eq_natCast,
+  simp only [hp, hr, writeHeap, aligned, bne_self_eq_false, Bool.false_eq_true, ite_false, evalCast, CVal.toInt?, ofIntForTy, Int.ofNat_eq_natCast,
     uint64_ofInt_toNat, hstore, Bind.bind, Except.bind, Pure.pure, Except.pure]
 
 theorem execStmt_while_sim {σ : Type} (fns : FnTable) (globals : CEnv)

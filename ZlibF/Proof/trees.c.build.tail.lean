@@ -40,7 +40,7 @@ theorem build_tree_eq_heap_codes (s : DeflateStatePtr) (desc : TreeDescPtr) :
     build_tree s desc = (do
       let (tree, max_code) ← btHeap s desc
       btCodes s desc tree max_code) := by
-  simp only [build_tree, btHeap, btMergedStart, btSortedStart, btLeavesStart, btScanStart, btScan, btForce, btOrder, btHeapify, btCodes, M_bind_assoc, M_pure_bind]
+  simp only [build_tree, withScopedLocals, nextCodeBelow, cforIntLt, cforIntGe, heapPush, heapSave, btHeap, btMergedStart, btSortedStart, btLeavesStart, btScanStart, btScan, btForce, btOrder, btHeapify, btCodes, M_bind_assoc, M_pure_bind]
   unfold btSaveRoot btMergeLoop btMergeBody btMergeOpen btPick2 btKeepChildren btMakeParent btSetFreq btSetDepth btSetParents btMergeClose
   simp only [M_bind_assoc, M_pure_bind, merge_ite_bind]
   rfl

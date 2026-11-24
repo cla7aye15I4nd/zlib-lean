@@ -32,11 +32,9 @@ def matchTallyTail (s : DeflateStatePtr) (dist : UInt16) (len : UInt8) : M Bool 
 
 theorem tally_distance_source (s : DeflateStatePtr) (distance length : UInt32) :
     tally_dist s distance length = (do
-      let d ← ldDeflateState s
-      store_at d.sym_buf d.sym_next.toNat distance.toUInt16.toUInt8
-      store_at d.sym_buf (d.sym_next + 1).toNat (distance.toUInt16 >>> 8).toUInt8
-      store_at d.sym_buf (d.sym_next + 2).toNat length.toUInt8
-      stDeflateState s { d with sym_next := d.sym_next + 3 }
+      Zlib.Trees.put_symbol_byte s distance.toUInt16.toUInt8
+      Zlib.Trees.put_symbol_byte s (distance.toUInt16 >>> 8).toUInt8
+      Zlib.Trees.put_symbol_byte s length.toUInt8
       matchTallyTail s distance.toUInt16 length.toUInt8) := by
   rfl
 
@@ -96,68 +94,20 @@ theorem tally_match_run {h : Heap} {ds b : Nat} {d : DeflateState} {buf : Array 
           (matchFrequencies { d with sym_next := d.sym_next + 3 } distance.toUInt16 length.toUInt8)) := by
   let dist := distance.toUInt16
   let len := length.toUInt8
-  let h0 := Zlib.Trees.Proofs.Out.setB h b (buf.set! (d.lit_bufsize.toNat + d.sym_next.toNat) dist.toUInt8)
-  let h1 := Zlib.Trees.Proofs.Out.setB h b ((buf.set! (d.lit_bufsize.toNat + d.sym_next.toNat) dist.toUInt8).set!
-    (d.lit_bufsize.toNat + (d.sym_next.toNat + 1)) (dist >>> 8).toUInt8)
   let hb := Zlib.Trees.Proofs.Out.setB h b (matchBytes buf d dist len)
   let dn := { d with sym_next := d.sym_next + 3 }
   let hn := setD hb ds dn
-  have cap := base.size
-  have end_ := base.sym_end
-  have litMax := base.lit_hi
-  have one : (d.sym_next + 1).toNat = d.sym_next.toNat + 1 := by
-    rw [UInt32.toNat_add]
-    simp only [show (1 : UInt32).toNat = 1 from rfl]
-    exact Nat.mod_eq_of_lt (by omega)
-  have two : (d.sym_next + 2).toNat = d.sym_next.toNat + 2 := by
-    rw [UInt32.toNat_add]
-    simp only [show (2 : UInt32).toNat = 2 from rfl]
-    exact Nat.mod_eq_of_lt (by omega)
-  have first := store_symbol_byte (h := h) (off := d.lit_bufsize.toNat) (i := d.sym_next.toNat)
-    dist.toUInt8 base.bytes base.rw (by omega)
-  have second := store_symbol_byte (h := h0) (b := b)
-    (buf := buf.set! (d.lit_bufsize.toNat + d.sym_next.toNat) dist.toUInt8)
-    (off := d.lit_bufsize.toNat) (i := d.sym_next.toNat + 1)
-    (dist >>> 8).toUInt8 (by simp [h0]) (by simpa [h0] using base.rw) (by simp; omega)
-  have third := store_symbol_byte (h := h1) (b := b)
-    (buf := (buf.set! (d.lit_bufsize.toNat + d.sym_next.toNat) dist.toUInt8).set!
-      (d.lit_bufsize.toNat + (d.sym_next.toNat + 1)) (dist >>> 8).toUInt8)
-    (off := d.lit_bufsize.toNat) (i := d.sym_next.toNat + 2)
-    len (by simp [h1]) (by simpa [h1] using base.rw) (by simp; omega)
-  have state : hb.dstates ds = some d := by simpa [hb] using base.dstate
-  have write : stDeflateState (some (.tab ds)) dn hb = .ok ((), hn) :=
-    stDeflateState_tab state
   have tail := match_tally_tail_run (h := hn) (ds := ds) (d := dn) (by simp [hn]) base.wf
     (by simpa [hn, hb] using base.static) dist len (match_distance_index distance positive distanceBound).2.2
-  have first' : store_at d.sym_buf d.sym_next.toNat dist.toUInt8 h = .ok ((), h0) := by
-    rw [base.sym]; exact first
-  have second' : store_at d.sym_buf (d.sym_next.toNat + 1) (dist >>> 8).toUInt8 h0 = .ok ((), h1) := by
-    rw [base.sym]
-    simpa only [h0, h1, Zlib.Trees.Proofs.Out.setB_setB] using second
-  have third' : store_at d.sym_buf (d.sym_next.toNat + 2) len h1 = .ok ((), hb) := by
-    rw [base.sym]
-    simpa only [h1, hb, matchBytes, Zlib.Trees.Proofs.Out.setB_setB] using third
-  dsimp only [dist, len] at first' second' third' tail
-  rw [tally_distance_source, bind_app, ldDeflateState_tab base.dstate]
-  simp only [one, two, bind_app, first']
-  change (do
-    store_at d.sym_buf (d.sym_next.toNat + 1) (dist >>> 8).toUInt8
-    store_at d.sym_buf (d.sym_next.toNat + 2) len
-    stDeflateState (some (.tab ds)) dn
-    matchTallyTail (some (.tab ds)) dist len) h0 = _
-  rw [bind_app, second']
-  simp only
-  change (do
-    store_at d.sym_buf (d.sym_next.toNat + 2) len
-    stDeflateState (some (.tab ds)) dn
-    matchTallyTail (some (.tab ds)) dist len) h1 = _
-  rw [bind_app, third']
-  simp only
-  change (do
-    stDeflateState (some (.tab ds)) dn
-    matchTallyTail (some (.tab ds)) dist len) hb = _
-  rw [bind_app, write]
-  simp only []
+  have packed := put_three_symbol_bytes_run base room dist.toUInt8 (dist >>> 8).toUInt8 len
+  have source : tally_dist (some (.tab ds)) distance length = (do
+      Zlib.Trees.put_symbol_byte (some (.tab ds)) dist.toUInt8
+      Zlib.Trees.put_symbol_byte (some (.tab ds)) (dist >>> 8).toUInt8
+      Zlib.Trees.put_symbol_byte (some (.tab ds)) len) >>= fun _ =>
+        matchTallyTail (some (.tab ds)) dist len := by
+    simp only [tally_distance_source, M_bind_assoc, dist, len]
+  rw [source, bind_app, packed]
+  change matchTallyTail (some (.tab ds)) dist len hn = _
   rw [tail]
   simp only [hn, setD_setD]
   rfl

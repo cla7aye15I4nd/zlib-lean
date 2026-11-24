@@ -41,6 +41,25 @@ theorem OkOn.frame {m : M α} {P : Heap → Prop} {value : Heap → α}
   rw [wp_run, show m h = _ from ok h hp]
   exact ⟨rfl, hf⟩
 
+/-- A returning indexed read leaves every heap component unchanged. -/
+theorem Ptr.index_heap {R T : Type} [Space Heap R T] [Inhabited T]
+    {p : Ptr R} {i : Int} {h after : Heap} {v : T}
+    (run : Ptr.index p i h = .ok (v, after)) : after = h := by
+  unfold Ptr.index at run
+  rw [bind_app] at run
+  cases added : Ptr.add p i h with
+  | error fault => rw [added] at run; cases run
+  | ok pair =>
+    obtain ⟨q, mid⟩ := pair
+    rw [added] at run
+    have same : mid = h := by
+      unfold Ptr.add at added
+      repeat' first | split at added | (cases added <;> rfl)
+    subst mid
+    change Ptr.load q h = _ at run
+    unfold Ptr.load at run
+    repeat' first | split at run | (cases run <;> rfl)
+
 /-- Read a live in-bounds element while carrying the caller's heap predicate. -/
 theorem Ptr.index_spec {R T : Type} [Space Heap R T] [Inhabited T]
     (ref : R) (off i : Nat) (bs : Array T) (F : Heap → Prop) :

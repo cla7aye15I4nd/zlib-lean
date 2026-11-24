@@ -41,6 +41,66 @@ def headDefaultCheck (c : Ctx) (s : InflateState) (l : IL) : X Unit := do
   setMode c.st (if (l.hold &&& 0x200) != 0 then DICTID else TYPE)
   INITBITS
 
+theorem headerCheckStores (c : Ctx) : (liftM (startDataCheck c.strm c.st false) : X Unit) = (do
+      let v ← adler32 0 .null 0
+      wrS c.st fun s => { s with check := v }
+      wrZ c.strm fun z => { z with adler := v }) := by
+    unfold startDataCheck storeChecksum
+    simp only [Bool.false_eq_true, ite_false, liftHeapBind]
+
+/-- The translated zlib wrapper checks following the optional gzip-header store. -/
+def headZlibChecks (c : Ctx) : X Unit := do
+  -- if (!(state->wrap & 1) || ((BITS(8) << 8) + (hold >> 8)) % 31) { "incorrect header check"; BAD; break; }
+  if ← invalidHeaderWord c.st then
+    badMode c "incorrect header check"
+    return
+  -- if (BITS(4) != Z_DEFLATED) { "unknown compression method"; BAD; break; }
+  if (← BITS 4) != i2u Z_DEFLATED then
+    badMode c "unknown compression method"
+    return
+  DROPBITS 4
+  -- len = BITS(4) + 8;
+  windowBitsFromHeader
+  -- if (len > 15 || (state->wbits != 0 && len > state->wbits)) { "invalid window size"; BAD; break; }
+  let s ← ldInflateState c.st
+  let l ← get
+  if l.len > 15 || (s.wbits != 0 && l.len > s.wbits) then
+    badMode c "invalid window size"
+    return
+  -- if (state->wbits == 0) state->wbits = len;
+  let s ← ldInflateState c.st
+  if s.wbits == 0 then
+    let l ← get
+    wrS c.st fun s => { s with wbits := l.len }
+  -- state->dmax = 1U << len; state->flags = 0;
+  setWindowLimit c.st
+  wrS c.st fun s => { s with flags := 0 }
+  -- strm->adler = state->check = adler32(0L, Z_NULL, 0);
+  startDataCheck c.strm c.st false
+  -- state->mode = hold & 0x200 ? DICTID : TYPE; INITBITS(); break;
+  let l ← get
+  setMode c.st (if (l.hold &&& 0x200) != 0 then DICTID else TYPE)
+  INITBITS
+
+theorem headZlibChecks_eq {c : Ctx} {h : Heap} {r : ZStreamRef} {zs : Nat} {z : ZStream}
+    {s : InflateState} (E : Env c h r zs z s) (regs : IL) :
+    runX (headZlibChecks c) regs h = runX (headDefaultCheck c s regs) regs h := by
+  unfold headZlibChecks invalidHeaderWord
+  rw [headerCheckStores]
+  simp only [headDefaultCheck, windowBitsFromHeader, setWindowLimit, x_bind_assoc, Zlib.Infback.Equality.two_state_writes]
+  simp only [runX_bind, runX_ldS E, runX_get, runX_pure, BITS_run _ _ 8 (by decide)]
+  split
+  · rfl
+  simp only [runX_bind,BITS_run _ _ 4 (by decide)]
+  split
+  · rfl
+  simp only [runX_bind,DROPBITS_run _ _ 4 (by decide),BITS_run _ _ 4 (by decide),
+    runX_modify,runX_ldS E,runX_get]
+  split
+  · rfl
+  simp only [runX_bind,runX_ldS E]
+  split <;> simp only [runX_bind,runX_get,runX_wrS E]
+
 /-- The real default HEAD prefix executes NEEDBITS and reaches its literal
 header checks on the same heap. Input exhaustion retains the exact byte
 cursor and bit-source view. -/
@@ -67,14 +127,9 @@ theorem inflate_HEAD_zlib_window_prefix_count {c : Ctx} {h : Heap} {r : ZStreamR
   simp only [nowrap, Bool.false_eq_true, ↓reduceIte]
   rw [runX_bind, pull]
   rcases kinds with rfl | rfl
-  · simp only []
-    rw [runX_bind, runX_get]
-    simp only []
-    rw [runX_bind, runX_ldS E]
-    simp only [nogzip, bne_self_eq_false, Bool.false_and,
-      Bool.false_eq_true, ↓reduceIte, header]
-    unfold headDefaultCheck
-    simp only
+  · simp only [runX_bind, runX_ldS E, runX_get, nogzip, Bool.false_and, Bool.false_eq_true, ↓reduceIte,
+      header, bne_self_eq_false,runX_pure]
+    simpa only [headZlibChecks, invalidHeaderWord, runX_bind,runX_pure,runX_ldS E,runX_get] using headZlibChecks_eq E regs
   · rfl
 
 /-- The first header test, retaining the exact unsigned C operations. -/

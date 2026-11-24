@@ -1,5 +1,6 @@
 import ZlibF.Proof.«deflate.c.universal-call-keep-steps»
 import ZlibF.Proof.«trees.c.monad»
+import ZlibF.Proof.«trees.c.heap.gbdef»
 
 /-!
 # trees.c: returning executions are in `KeepRel`
@@ -172,7 +173,7 @@ theorem keep_blOrder (i : Int) : KeepM (blOrder i) := by
     | trees_keep_step
 
 theorem keep_trees_put_byte (s : DeflateStatePtr) (c : UInt8) : KeepM (put_byte s c) := by
-  unfold put_byte
+  unfold put_byte cdecl
   repeat' first
     | with_reducible exact keep_md _ _ (fun _ => ⟨rfl, rfl⟩)
     | with_reducible exact keep_trees_rd _
@@ -195,7 +196,7 @@ theorem keep_shrUs (val : Int32) (c : Int32) : KeepM (shrUs val c) := by
     | trees_keep_step
 
 theorem keep_send_bits (s : DeflateStatePtr) (value : Int32) (length : Int32) : KeepM (send_bits s value length) := by
-  unfold send_bits
+  unfold send_bits cinline
   repeat' first
     | with_reducible exact keep_shrUs _ _
     | with_reducible exact keep_shlUs _ _
@@ -207,7 +208,7 @@ theorem keep_send_bits (s : DeflateStatePtr) (value : Int32) (length : Int32) : 
     | trees_keep_step
 
 theorem keep_send_code (s : DeflateStatePtr) (c : Int) (tree : CtDataPtr) : KeepM (send_code s c tree) := by
-  unfold send_code
+  unfold send_code cinline
   repeat' first
     | with_reducible exact keep_send_bits _ _ _
     | with_reducible exact keep_getDl _ _
@@ -254,6 +255,7 @@ theorem keep_bi_windup (s : DeflateStatePtr) : KeepM (bi_windup s) := by
 
 theorem keep_gen_codes (tree : CtDataPtr) (max_code : Int32) (bl_count : WPtr) : KeepM (gen_codes tree max_code bl_count) := by
   unfold gen_codes
+  simp only [readNextCode_eq]
   repeat' first
     | with_reducible exact keep_bi_reverse _ _
     | with_reducible exact keep_setFc _ _ _
@@ -274,7 +276,7 @@ theorem keep_init_block (s : DeflateStatePtr) : KeepM (init_block s) := by
     | trees_keep_step
 
 theorem keep_pqdownheap (s : DeflateStatePtr) (tree : CtDataPtr) (k : Int32) : KeepM (pqdownheap s tree k) := by
-  unfold pqdownheap
+  unfold pqdownheap cinline
   repeat' first
     | with_reducible exact keep_smaller _ _ _ _
     | with_reducible exact keep_heapSet _ _ _
@@ -286,7 +288,7 @@ theorem keep_pqdownheap (s : DeflateStatePtr) (tree : CtDataPtr) (k : Int32) : K
     | trees_keep_step
 
 theorem keep_pqremove (s : DeflateStatePtr) (tree : CtDataPtr) : KeepM (pqremove s tree) := by
-  unfold pqremove
+  unfold pqremove heapReplaceRoot
   repeat' first
     | with_reducible exact keep_pqdownheap _ _ _
     | with_reducible exact keep_heapSet _ _ _
@@ -297,7 +299,9 @@ theorem keep_pqremove (s : DeflateStatePtr) (tree : CtDataPtr) : KeepM (pqremove
     | trees_keep_step
 
 theorem keep_gen_bitlen (s : DeflateStatePtr) (desc : TreeDescPtr) : KeepM (gen_bitlen s desc) := by
-  unfold gen_bitlen
+  unfold gen_bitlen withScopedLocals cinline
+  simp only [Zlib.Trees.Proofs.reassignLeaves_eq]
+  unfold Zlib.Trees.Proofs.gbInner
   repeat' first
     | with_reducible exact keep_setDl _ _ _
     | with_reducible exact keep_getDl _ _
@@ -311,7 +315,7 @@ theorem keep_gen_bitlen (s : DeflateStatePtr) (desc : TreeDescPtr) : KeepM (gen_
     | trees_keep_step
 
 theorem keep_build_tree (s : DeflateStatePtr) (desc : TreeDescPtr) : KeepM (build_tree s desc) := by
-  unfold build_tree
+  unfold build_tree withScopedLocals cforIntLt cforIntGe heapPush heapSave nextCodeBelow
   repeat' first
     | with_reducible exact keep_gen_bitlen _ _
     | with_reducible exact keep_pqremove _ _
@@ -332,7 +336,7 @@ theorem keep_build_tree (s : DeflateStatePtr) (desc : TreeDescPtr) : KeepM (buil
     | trees_keep_step
 
 theorem keep_scan_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int32) : KeepM (scan_tree s tree max_code) := by
-  unfold scan_tree
+  unfold scan_tree cforIntLe cinline finishTreeRun
   repeat' first
     | with_reducible exact keep_setDl _ _ _
     | with_reducible exact keep_setFc _ _ _
@@ -343,7 +347,7 @@ theorem keep_scan_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int3
     | trees_keep_step
 
 theorem keep_send_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int32) : KeepM (send_tree s tree max_code) := by
-  unfold send_tree
+  unfold send_tree cforIntLe cinline finishTreeRun
   repeat' first
     | with_reducible exact keep_send_code _ _ _
     | with_reducible exact keep_send_bits _ _ _
@@ -370,7 +374,7 @@ theorem keep_build_bl_tree (s : DeflateStatePtr) : KeepM (build_bl_tree s) := by
     | trees_keep_step
 
 theorem keep_send_all_trees (s : DeflateStatePtr) (lcodes dcodes blcodes : Int32) : KeepM (send_all_trees s lcodes dcodes blcodes) := by
-  unfold send_all_trees
+  unfold send_all_trees cinline
   repeat' first
     | with_reducible exact keep_send_tree _ _ _
     | with_reducible exact keep_send_bits _ _ _
@@ -566,7 +570,7 @@ theorem keep_guess {β : Type} (strm : ZStreamPtr) (s : DeflateStatePtr) (body :
         exact hk () h v h' run
 
 theorem keep__tr_flush_block (s : DeflateStatePtr) (buf : BPtr) (stored_len : UInt64) (last : Int32) : KeepM («_tr_flush_block» s buf stored_len last) := by
-  unfold «_tr_flush_block»
+  unfold «_tr_flush_block» cinline
   repeat' first
     | (refine keep_guess _ s _ _ ?_ (fun _ => rfl))
     | with_reducible exact keep_detect_data_type _

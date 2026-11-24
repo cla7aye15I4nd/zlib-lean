@@ -1,3 +1,4 @@
+import ZlibF.Proof.«infback.c.repeat-source»
 import ZlibF.Proof.«inflate.c.main.table5»
 import ZlibF.Proof.«inflate.c.table-invariant»
 import ZlibF.Proof.«inftrees.c.read-extent»
@@ -131,7 +132,38 @@ def clTail (c : Ctx) : X Unit := do
     return
   clTables c
 
-theorem inflate_CODELENS_eq (c : Ctx) : inflate_CODELENS c = (do clRead c; clTail c) := rfl
+private theorem ordinaryNeedKeepsCode (n : UInt32) (code : Code) :
+    Zlib.Infback.CodeFrame.KeepsCode code (NEEDBITS n) := by
+  unfold NEEDBITS
+  apply registerFrame_xwhile
+  · register_frame_source
+  · unfold PULLBYTE absorbInputByte
+    register_frame_source
+
+private def finishRepeat (c : Ctx) : X Bool := do
+  let s ← ldInflateState c.st
+  if s.«have» + (← get).copy > s.nlen + s.ndist then
+    badMode c "invalid bit length repeat"
+    return true
+  repeatCodeLength c.st
+  return false
+
+private theorem shared_length_reader (c : Ctx) :
+    readCodeLengths c.st (lookup1 c false) NEEDBITS (badMode c "invalid bit length repeat") = clRead c := by
+  let current := Zlib.Infback.Equality.Shared.currentStep c.st NEEDBITS (badMode c "invalid bit length repeat")
+  let previous := Zlib.Infback.Equality.Shared.earlierStep c.st NEEDBITS (badMode c "invalid bit length repeat")
+  have one : current (finishRepeat c) = previous (finishRepeat c) :=
+    Zlib.Infback.Equality.Shared.steps_factored_eq _ _ _ ordinaryNeedKeepsCode _
+  unfold readCodeLengths
+  change xwhileBrk _ (do lookup1 c false; current (finishRepeat c)) = _
+  rw [one]
+  unfold previous Zlib.Infback.Equality.Shared.earlierStep finishRepeat clRead
+  simp only [repeatCodeLength_eq]
+
+theorem inflate_CODELENS_eq (c : Ctx) : inflate_CODELENS c = (do clRead c; clTail c) := by
+  unfold inflate_CODELENS clTail clTables
+  rw [shared_length_reader]
+  simp only [Zlib.Infback.Equality.two_state_writes]
 
 def clLensPre (zs : Nat) (s : InflateState) : InflateState :=
   { s with next := .ref (.istate_codes zs) 0, lencode := .ref (.istate_codes zs) 0, lenbits := 10 }

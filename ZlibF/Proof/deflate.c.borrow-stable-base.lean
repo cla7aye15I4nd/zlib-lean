@@ -202,6 +202,8 @@ macro "deflate_borrow_step" : tactic => `(tactic|
     | with_reducible exact stable_strLitRef _
     | with_reducible exact StableM.pure _
     | exact StableM.ub _
+    | with_reducible apply StableM.cwhileBrk
+    | with_reducible apply StableM.cdoWhileBrk
     | with_reducible apply StableM.cwhile
     | with_reducible apply StableM.cdoWhile
     | with_reducible apply StableM.ite
@@ -216,8 +218,8 @@ theorem stable_store_at (p : BPtr) (i : Nat) (v : UInt8) : StableM (store_at p i
   deflate_borrow_steps
 
 theorem stable_put_byte (p : DeflateStatePtr) (v : UInt8) : StableM (put_byte p v) := by
-  unfold put_byte
-  repeat' first | exact stable_store_at _ _ _ | deflate_borrow_step
+  unfold put_byte Zlib.Trees.put_byte cdecl Zlib.Trees.rd Zlib.Trees.md
+  deflate_borrow_steps
 
 theorem stable_UPDATE_HASH (p : DeflateStatePtr) (v : UInt8) : StableM (UPDATE_HASH p v) := by
   unfold UPDATE_HASH
@@ -226,6 +228,16 @@ theorem stable_UPDATE_HASH (p : DeflateStatePtr) (v : UInt8) : StableM (UPDATE_H
 theorem stable_INSERT_STRING (p : DeflateStatePtr) (str : UInt32) : StableM (INSERT_STRING p str) := by
   unfold INSERT_STRING
   repeat' first | exact stable_UPDATE_HASH _ _ | deflate_borrow_step
+
+theorem stable_updateHashAt (p : DeflateStatePtr) (w : BPtr) (i : UInt32) :
+    StableM (updateHashAt p w i) := by
+  unfold updateHashAt
+  deflate_borrow_steps
+
+theorem stable_insertStringAt (p : DeflateStatePtr) (str : UInt32) :
+    StableM (insertStringAt p str) := by
+  unfold insertStringAt
+  repeat' first | with_reducible exact stable_updateHashAt _ _ _ | deflate_borrow_step
 
 theorem stable_CLEAR_HASH (p : DeflateStatePtr) : StableM (CLEAR_HASH p) := by
   unfold CLEAR_HASH
@@ -248,8 +260,10 @@ theorem stable_read_buf (p : ZStreamPtr) (buf : BPtr) (n : UInt32) : StableM (re
   deflate_borrow_steps
 
 theorem stable_fill_window (p : DeflateStatePtr) : StableM (fill_window p) := by
-  unfold fill_window
+  unfold fill_window fillWindowBody slideWindowForFill fillFromStream primeWindowHash fillWindowInsert
+    fillWindowCondition clearWindowTail
   repeat' first
+    | with_reducible exact stable_updateHashAt _ _ _
     | with_reducible exact stable_slide_hash _
     | with_reducible exact stable_read_buf _ _ _
     | with_reducible exact stable_UPDATE_HASH _ _
@@ -260,7 +274,7 @@ theorem stable_deflateStateCheck (p : ZStreamPtr) : StableM (deflateStateCheck p
   deflate_borrow_steps
 
 theorem stable_ERR_MSG (err : Int32) : StableM (ERR_MSG err) := by
-  unfold ERR_MSG Zlib.Zutil.zError
+  unfold ERR_MSG Zlib.Zutil.errorMessage
   dsimp only
   split
   · exact stable_strLitRef _

@@ -30,9 +30,7 @@ theorem deflate_slow_finish_run_counter_effects {h after : Heap} {r : ZStreamRef
     loop stateL.good.live.hz accountL
   rcases stopped with returned | ⟨running, broke⟩
   · have earlyRun : deflate_slow (some (.tab ds)) Z_FINISH h = .ok (need_more, loopHeap) := by
-      rw [deflate_slow_eof_tail_source, bind_app, loop]
-      simp only [returned]
-      rfl
+      simp only [deflate_slow_eof_tail_source loop, returned, pure_app]
     have same := actual_run_stream_unique earlyRun run stateL.good.live.hz live
     exact stream_counter_effects_identify same accountL account effectsL.1 effectsL.2
   · have eof := stopInput broke
@@ -50,7 +48,7 @@ theorem deflate_slow_finish_run_counter_effects {h after : Heap} {r : ZStreamRef
       slow_eof_finish_counter_execution localState endL buffersL eof.1 (by rw [levelL]; exact positive)
         pointerL readyL.2.1 (by rw [memoryL]; exact memory) readyL.1 (wrapL.trans wrap)
     have wholeRun : deflate_slow (some (.tab ds)) Z_FINISH h = .ok (tailRet, tailHeap) := by
-      rw [deflate_slow_eof_tail_source, bind_app, loop]
+      rw [deflate_slow_eof_tail_source loop]
       simp only [running]
       exact tailRun
     have same := actual_run_stream_unique wholeRun run tailGood.live.hz live

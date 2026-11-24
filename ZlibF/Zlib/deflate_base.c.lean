@@ -1,4 +1,4 @@
-import ZlibF.Runtime.Alloc
+import ZlibF.Runtime.ControlFlow
 import ZlibF.Runtime.Tables
 import ZlibF.Zlib.«adler32.c»
 import ZlibF.Zlib.«zutil.c»
@@ -167,15 +167,13 @@ def ZFREE_words (strm : ZStreamPtr) (p : WPtr) : M Unit := do
   freeW p
 
 /-- `ERR_MSG(err)` -/
-def ERR_MSG (err : Int32) : M BPtr := Zlib.Zutil.zError err
+def ERR_MSG (err : Int32) : M BPtr := Zlib.Zutil.errorMessage err
 
 /-! ## Macros of `deflate.c` and `deflate.h` -/
 
 /-- `put_byte(s, c)`: `{s->pending_buf[s->pending++] = (Bytef)(c);}` (no capacity test, I-1). -/
-def put_byte (s : DeflateStatePtr) (c : UInt8) : M Unit := do
-  let d ← ldDeflateState s
-  store_at d.pending_buf d.pending.toNat c
-  stDeflateState s { d with pending := d.pending + 1 }
+def put_byte (s : DeflateStatePtr) (c : UInt8) : M Unit :=
+  Zlib.Trees.put_byte s c
 
 /-- `UPDATE_HASH(s, s->ins_h, c)`: `s->ins_h = ((s->ins_h << s->hash_shift) ^ (c)) & s->hash_mask` (`c` is an
 `int` made of a byte). -/
@@ -191,6 +189,24 @@ def INSERT_STRING (s : DeflateStatePtr) (str : UInt32) : M UInt32 := do
   let d ← ldDeflateState s
   let c ← index8 d.window (str + (MIN_MATCH_u - 1)).toNat
   UPDATE_HASH s c
+  let d ← ldDeflateState s
+  let v ← Ptr.index d.head d.ins_h.toNat
+  Ptr.store (← padd d.prev (str &&& d.w_mask).toNat) v
+  Ptr.store (← padd d.head d.ins_h.toNat) str.toUInt16
+  return v.toUInt32
+
+def updateHashAt (s : DeflateStatePtr) (window : BPtr) (i : UInt32) : M Unit := do
+  let d ← ldDeflateState s
+  let sh ← ushl d.ins_h d.hash_shift
+  let c ← index8 window i.toNat
+  stDeflateState s { d with ins_h := (sh ^^^ c.toUInt32) &&& d.hash_mask }
+
+/-- `INSERT_STRING(s, str, match_head)`: returns the new `match_head`.
+`(UPDATE_HASH(s, s->ins_h, s->window[(str) + (MIN_MATCH-1)]),
+  match_head = s->prev[(str) & s->w_mask] = s->head[s->ins_h], s->head[s->ins_h] = (Pos)(str))` -/
+def insertStringAt (s : DeflateStatePtr) (str : UInt32) : M UInt32 := do
+  let d ← ldDeflateState s
+  updateHashAt s d.window (str + (MIN_MATCH_u - 1))
   let d ← ldDeflateState s
   let v ← Ptr.index d.head d.ins_h.toNat
   Ptr.store (← padd d.prev (str &&& d.w_mask).toNat) v
@@ -220,12 +236,9 @@ def freq_inc (r : CtDataRef) (i : Nat) : M Unit := do
 /-- `_tr_tally_lit(s, c, flush)` (`flush` is the result). -/
 def tally_lit (s : DeflateStatePtr) (c : UInt8) : M Bool := do
   let cc := c   -- uch cc = (c);
-  let d ← ldDeflateState s
-  -- s->sym_buf[s->sym_next++] = 0; (twice) = cc;
-  store_at d.sym_buf d.sym_next.toNat 0
-  store_at d.sym_buf (d.sym_next + 1).toNat 0
-  store_at d.sym_buf (d.sym_next + 2).toNat cc
-  stDeflateState s { d with sym_next := d.sym_next + 3 }
+  Zlib.Trees.put_symbol_byte s 0
+  Zlib.Trees.put_symbol_byte s 0
+  Zlib.Trees.put_symbol_byte s cc
   -- s->dyn_ltree[cc].Freq++;
   match s with
   | none => ub "null deflate_state"
@@ -239,11 +252,9 @@ def tally_lit (s : DeflateStatePtr) (c : UInt8) : M Bool := do
 def tally_dist (s : DeflateStatePtr) (distance length : UInt32) : M Bool := do
   let len : UInt8 := length.toUInt8            -- uch len = (uch)(length);
   let dist : UInt16 := distance.toUInt16       -- ush dist = (ush)(distance);
-  let d ← ldDeflateState s
-  store_at d.sym_buf d.sym_next.toNat dist.toUInt8
-  store_at d.sym_buf (d.sym_next + 1).toNat (dist >>> 8).toUInt8
-  store_at d.sym_buf (d.sym_next + 2).toNat len
-  stDeflateState s { d with sym_next := d.sym_next + 3 }
+  Zlib.Trees.put_symbol_byte s dist.toUInt8
+  Zlib.Trees.put_symbol_byte s (dist >>> 8).toUInt8
+  Zlib.Trees.put_symbol_byte s len
   let dist : UInt16 := dist - 1                -- dist--;
   match s with
   | none => ub "null deflate_state"
@@ -260,7 +271,7 @@ def tally_dist (s : DeflateStatePtr) (distance length : UInt32) : M Bool := do
 /-! ## `slide_hash` -/
 
 /-- `local void slide_hash(deflate_state *s)` -/
-def slide_hash (s : DeflateStatePtr) : M Unit := do
+def slide_hash (s : DeflateStatePtr) : M (COrder 1 (CStatic Unit)) := do
   let d ← ldDeflateState s
   let wsize : UInt32 := d.w_size                 -- uInt wsize = s->w_size;
   let n : UInt32 := d.hash_size                  -- n = s->hash_size;
@@ -270,7 +281,7 @@ def slide_hash (s : DeflateStatePtr) : M Unit := do
     (fun (n, p) => do
       let p ← psub p 1
       let m : UInt32 := (← Ptr.load p).toUInt32
-      Ptr.store p (if m ≥ wsize then (m - wsize).toUInt16 else (0 : UInt16))
+      Ptr.store p (if m ≥ wsize then m - wsize else 0).toUInt16
       pure (n, p))
     (fun (n, p) => let n := n - 1; pure (n != 0, (n, p)))
     (n, p)
@@ -281,7 +292,7 @@ def slide_hash (s : DeflateStatePtr) : M Unit := do
     (fun (n, p) => do
       let p ← psub p 1
       let m : UInt32 := (← Ptr.load p).toUInt32
-      Ptr.store p (if m ≥ wsize then (m - wsize).toUInt16 else (0 : UInt16))
+      Ptr.store p (if m ≥ wsize then m - wsize else 0).toUInt16
       pure (n, p))
     (fun (n, p) => let n := n - 1; pure (n != 0, (n, p)))
     (n, p)
@@ -291,7 +302,7 @@ def slide_hash (s : DeflateStatePtr) : M Unit := do
 /-! ## `read_buf` and `fill_window` -/
 
 /-- `local unsigned read_buf(z_streamp strm, Bytef *buf, unsigned size)` -/
-def read_buf (strm : ZStreamPtr) (buf : BPtr) (size : UInt32) : M UInt32 := do
+def read_buf (strm : ZStreamPtr) (buf : BPtr) (size : UInt32) : M (COrder 2 (CStatic UInt32)) := do
   let mut len ← zrd strm (·.avail_in)            -- unsigned len = strm->avail_in;
   if len > size then len := size
   if len == 0 then return 0
@@ -316,76 +327,91 @@ def read_buf (strm : ZStreamPtr) (buf : BPtr) (size : UInt32) : M UInt32 := do
   zwr strm (fun z => { z with next_in := ni, total_in := z.total_in + len.toUInt64 })
   return len
 
-/-- `local void fill_window(deflate_state *s)`.
-The loop `do { ... } while (cond)` has two `break`s; the state of the outer loop is the flag `brk`. The
-`if (sizeof(int) <= 2)` block is dead (`sizeof(int)` is 4). -/
-def fill_window (s : DeflateStatePtr) : M Unit := do
-  let wsize ← rd s (·.w_size)                    -- uInt wsize = s->w_size;
-  let _ ← cdoWhile
-    (fun (_ : Bool) => do
-      let d ← ldDeflateState s
-      -- more = (unsigned)(s->window_size -(ulg)s->lookahead -(ulg)s->strstart);
-      let mut more : UInt32 := (d.window_size - d.lookahead.toUInt64 - d.strstart.toUInt64).toUInt32
-      -- if (s->strstart >= wsize + MAX_DIST(s)) { ... }   (MAX_DIST(s) = w_size - MIN_LOOKAHEAD)
-      if d.strstart ≥ wsize + (d.w_size - MIN_LOOKAHEAD_u) then
-        -- zmemcpy(s->window, s->window + wsize, (unsigned)wsize - more);
-        memcpyB d.window (← padd d.window wsize.toNat) (wsize - more).toNat
-        wr s (fun d => { d with match_start := d.match_start - wsize }) -- s->match_start -= wsize;
-        wr s (fun d => { d with strstart := d.strstart - wsize })       -- s->strstart -= wsize;
-        let block_start ← lsub (← rd s (·.block_start)) wsize.toUInt64.toInt64
-        wr s (fun d => { d with block_start })                         -- s->block_start -= (long) wsize;
-        -- if (s->insert > s->strstart) s->insert = s->strstart;
-        wr s (fun d => { d with insert := if d.insert > d.strstart then d.strstart else d.insert })
-        slide_hash s
-        more := more + wsize                                             -- more += wsize;
-      -- if (s->strm->avail_in == 0) break;
-      let strm ← rd s (·.strm)
-      if (← zrd strm (·.avail_in)) == 0 then return true
-      -- n = read_buf(s->strm, s->window + s->strstart + s->lookahead, more);
-      let d ← ldDeflateState s
-      let dst ← padd (← padd d.window d.strstart.toNat) d.lookahead.toNat
-      let n ← read_buf strm dst more
-      wr s (fun d => { d with lookahead := d.lookahead + n })            -- s->lookahead += n;
-      -- if (s->lookahead + s->insert >= MIN_MATCH) { ... }
-      let d ← ldDeflateState s
-      if d.lookahead + d.insert ≥ MIN_MATCH_u then
-        let str : UInt32 := d.strstart - d.insert                    -- uInt str = s->strstart - s->insert;
-        -- s->ins_h = s->window[str];
-        let c0 ← index8 d.window str.toNat
-        wr s (fun d => { d with ins_h := c0.toUInt32 })
-        -- UPDATE_HASH(s, s->ins_h, s->window[str + 1]);
-        UPDATE_HASH s (← index8 d.window (str + 1).toNat)
-        -- while (s->insert) { ... }
-        let (_, _) ← cwhile
-          (fun (str, brk) => do
-            let ins ← rd s (·.insert)
-            pure (ins != 0 && !brk, (str, brk)))
-          (fun (str, _brk) => do
-            let d ← ldDeflateState s
-            -- UPDATE_HASH(s, s->ins_h, s->window[str + MIN_MATCH-1]);
-            UPDATE_HASH s (← index8 d.window (str + (MIN_MATCH_u - 1)).toNat)
-            let d ← ldDeflateState s
-            -- s->prev[str & s->w_mask] = s->head[s->ins_h];
-            let v ← Ptr.index d.head d.ins_h.toNat
-            Ptr.store (← padd d.prev (str &&& d.w_mask).toNat) v
-            -- s->head[s->ins_h] = (Pos)str;
-            Ptr.store (← padd d.head d.ins_h.toNat) str.toUInt16
-            -- str++; s->insert--;
-            let str := str + 1
-            wr s (fun d => { d with insert := d.insert - 1 })
-            -- if (s->lookahead + s->insert < MIN_MATCH) break;
-            let d ← ldDeflateState s
-            pure (str, d.lookahead + d.insert < MIN_MATCH_u))
-          (str, false)
-      pure false)
-    (fun brk => do
-      if brk then return (false, brk)
-      -- while (s->lookahead < MIN_LOOKAHEAD && s->strm->avail_in != 0)
-      let d ← ldDeflateState s
-      if d.lookahead < MIN_LOOKAHEAD_u then
-        return ((← zrd d.strm (·.avail_in)) != 0, brk)
-      return (false, brk))
-    false
+/-- Insert one deferred position into the hash chains during a refill. -/
+def fillWindowInsert (s : DeflateStatePtr) (str : UInt32) : M (LoopStep UInt32 Empty) := do
+  let d ← ldDeflateState s
+  -- UPDATE_HASH(s, s->ins_h, s->window[str + MIN_MATCH-1]);
+  updateHashAt s d.window (str + (MIN_MATCH_u - 1))
+  let d ← ldDeflateState s
+  -- s->prev[str & s->w_mask] = s->head[s->ins_h];
+  let v ← Ptr.index d.head d.ins_h.toNat
+  Ptr.store (← padd d.prev (str &&& d.w_mask).toNat) v
+  -- s->head[s->ins_h] = (Pos)str;
+  Ptr.store (← padd d.head d.ins_h.toNat) str.toUInt16
+  -- str++; s->insert--;
+  let str := str + 1
+  wr s (fun d => { d with insert := d.insert - 1 })
+  -- if (s->lookahead + s->insert < MIN_MATCH) break;
+  let d ← ldDeflateState s
+  if d.lookahead + d.insert < MIN_MATCH_u then return .brk str
+  return .next str
+
+/-- Prime the rolling hash, then insert positions for which enough bytes are available. -/
+def primeWindowHash (s : DeflateStatePtr) : M Unit := do
+  -- if (s->lookahead + s->insert >= MIN_MATCH) { ... }
+  let d ← ldDeflateState s
+  if d.lookahead + d.insert ≥ MIN_MATCH_u then
+    let str : UInt32 := d.strstart - d.insert                    -- uInt str = s->strstart - s->insert;
+    -- s->ins_h = s->window[str];
+    let c0 ← index8 d.window str.toNat
+    wr s (fun d => { d with ins_h := c0.toUInt32 })
+    -- UPDATE_HASH(s, s->ins_h, s->window[str + 1]);
+    updateHashAt s (← ldDeflateState s).window (str + 1)
+    -- while (s->insert) { ... }
+    let _ ← cwhileBrk
+      (fun (str : UInt32) => do
+        let ins ← rd s (·.insert)
+        pure (ins != 0, str))
+      (fillWindowInsert s)
+      str
+
+/-- The window move and hash-chain adjustment when a refill crosses the slide threshold. -/
+def slideWindowForFill (s : DeflateStatePtr) (d : DeflateState) (wsize more : UInt32) : M Unit := do
+  -- zmemcpy(s->window, s->window + wsize, (unsigned)wsize - more);
+  memcpyB d.window (← padd d.window wsize.toNat) (wsize - more).toNat
+  wr s (fun d => { d with match_start := d.match_start - wsize }) -- s->match_start -= wsize;
+  wr s (fun d => { d with strstart := d.strstart - wsize })       -- s->strstart -= wsize;
+  let block_start ← lsub (← rd s (·.block_start)) wsize.toUInt64.toInt64
+  wr s (fun d => { d with block_start })                         -- s->block_start -= (long) wsize;
+  -- if (s->insert > s->strstart) s->insert = s->strstart;
+  let slid ← ldDeflateState s
+  if slid.insert > slid.strstart then
+    wr s (fun d => { d with insert := d.strstart })
+  slide_hash s
+
+/-- Read and prime after accounting for the optional window slide. -/
+def fillFromStream (s : DeflateStatePtr) (more : UInt32) : M (LoopStep Unit Empty) := do
+  -- if (s->strm->avail_in == 0) break;
+  let strm ← rd s (·.strm)
+  if (← zrd strm (·.avail_in)) == 0 then return .brk ()
+  -- n = read_buf(s->strm, s->window + s->strstart + s->lookahead, more);
+  let d ← ldDeflateState s
+  let dst ← padd (← padd d.window d.strstart.toNat) d.lookahead.toNat
+  let n ← read_buf strm dst more
+  wr s (fun d => { d with lookahead := d.lookahead + n })            -- s->lookahead += n;
+  primeWindowHash s
+  pure (.next ())
+
+/-- One refill iteration, stopping before the read when input is exhausted. -/
+def fillWindowBody (s : DeflateStatePtr) (wsize : UInt32) (_ : Unit) : M (LoopStep Unit Empty) := do
+  let d ← ldDeflateState s
+  -- more = (unsigned)(s->window_size -(ulg)s->lookahead -(ulg)s->strstart);
+  let mut more : UInt32 := (d.window_size - d.lookahead.toUInt64 - d.strstart.toUInt64).toUInt32
+  -- if (s->strstart >= wsize + MAX_DIST(s)) { ... }   (MAX_DIST(s) = w_size - MIN_LOOKAHEAD)
+  if d.strstart ≥ wsize + (d.w_size - MIN_LOOKAHEAD_u) then
+    slideWindowForFill s d wsize more
+    more := more + wsize                                             -- more += wsize;
+  fillFromStream s more
+
+def fillWindowCondition (s : DeflateStatePtr) (_ : Unit) : M (Bool × Unit) := do
+  -- while (s->lookahead < MIN_LOOKAHEAD && s->strm->avail_in != 0)
+  let d ← ldDeflateState s
+  if d.lookahead < MIN_LOOKAHEAD_u then
+    return ((← zrd d.strm (·.avail_in)) != 0, ())
+  return (false, ())
+
+/-- Zero the unread suffix used by match comparisons, bounded by the end of the window. -/
+def clearWindowTail (s : DeflateStatePtr) : M Unit := do
   -- if (s->high_water < s->window_size) { ... }
   let d ← ldDeflateState s
   if d.high_water < d.window_size then
@@ -406,15 +432,32 @@ def fill_window (s : DeflateStatePtr) : M Unit := do
       memsetB (← padd d.window d.high_water.toNat) 0 init.toUInt32.toNat
       wr s (fun d => { d with high_water := d.high_water + init })      -- s->high_water += init;
 
+/-- `local void fill_window(deflate_state *s)` in the configured LP64 build. -/
+def fill_window (s : DeflateStatePtr) : M (COrder 3 (CStatic Unit)) := do
+  let wsize ← rd s (·.w_size)
+  let _ ← cdoWhileBrk (fillWindowBody s wsize) (fillWindowCondition s) ()
+  clearWindowTail s
+
 /-! ## `putShortMSB`, `flush_pending` -/
 
 /-- `local void putShortMSB(deflate_state *s, uInt b)` -/
-def putShortMSB (s : DeflateStatePtr) (b : UInt32) : M Unit := do
+def putShortMSB (s : DeflateStatePtr) (b : UInt32) : M (COrder 20 (CStatic Unit)) := do
   put_byte s (b >>> 8).toUInt8        -- put_byte(s, (Byte)(b >> 8));
   put_byte s (b &&& 0xff).toUInt8     -- put_byte(s, (Byte)(b & 0xff));
 
+/-- Advance the two cursors and the three counters in C store order on the heap left by memcpy. -/
+@[inline] def advance_pending (strm : ZStreamPtr) (s : DeflateStatePtr) (len : UInt32) : M Unit := do
+  let no ← padd (← zrd strm (·.next_out)) len.toNat
+  zwr strm (fun z => { z with next_out := no })
+  let po ← padd (← rd s (·.pending_out)) len.toNat
+  wr s (fun d => { d with pending_out := po })
+  zwr strm (fun z => { z with total_out := z.total_out + len.toUInt64 })
+  zwr strm (fun z => { z with avail_out := z.avail_out - len })
+  wr s (fun d => { d with pending := d.pending - len.toUInt64 })
+  if (← rd s (·.pending)) == 0 then wr s (fun d => { d with pending_out := d.pending_buf })
+
 /-- `local void flush_pending(z_streamp strm)` -/
-def flush_pending (strm : ZStreamPtr) : M Unit := do
+def flush_pending (strm : ZStreamPtr) : M (COrder 21 (CStatic Unit)) := do
   let s ← castDeflateState (← zrd strm (·.state))       -- deflate_state *s = strm->state;
   _tr_flush_bits s                                       -- _tr_flush_bits(s);
   let z ← ldZStream strm
@@ -424,16 +467,7 @@ def flush_pending (strm : ZStreamPtr) : M Unit := do
   if len == 0 then return                                -- if (len == 0) return;
   -- zmemcpy(strm->next_out, s->pending_out, len);
   memcpyB z.next_out d.pending_out len.toNat
-  -- strm->next_out += len; s->pending_out += len;
-  let no ← padd z.next_out len.toNat
-  let po ← padd d.pending_out len.toNat
-  -- strm->total_out += len; strm->avail_out -= len;
-  stZStream strm { z with next_out := no, total_out := z.total_out + len.toUInt64, avail_out := z.avail_out - len }
-  -- s->pending -= len;
-  let pend := d.pending - len.toUInt64
-  stDeflateState s { d with pending_out := po, pending := pend }
-  -- if (s->pending == 0) s->pending_out = s->pending_buf;
-  if pend == 0 then wr s (fun d => { d with pending_out := d.pending_buf })
+  advance_pending strm s len
 
 /-- `FLUSH_BLOCK_ONLY(s, last)` -/
 def FLUSH_BLOCK_ONLY (s : DeflateStatePtr) (last : Int32) : M Unit := do

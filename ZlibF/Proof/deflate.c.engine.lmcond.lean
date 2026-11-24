@@ -15,13 +15,7 @@ namespace Zlib.Deflate.Engine.Proofs
 open C Zlib.Deflate
 
 /-- The recursion on the number of comparisons left. -/
-def lmCondR (strend : BPtr) : Nat → BPtr → BPtr → M (Bool × BPtr × BPtr)
-  | 0, scan, m => do return (← Ptr.lt scan strend, scan, m)
-  | n + 1, scan, m => do
-    let scan ← padd scan 1
-    let m ← padd m 1
-    if (← load8 scan) != (← load8 m) then return (false, scan, m)
-    lmCondR strend n scan m
+abbrev lmCondR := compareMatchBytes
 
 /-- The offset at which `n` comparisons from offset `t` stop: the first `i` in `1 .. n` with
 `w (S + t + i) != w (C + t + i)` gives `some (t + i)`; `none` when all `n` agree. -/
@@ -86,7 +80,7 @@ theorem lmCondR_ok {h : Heap} {wb : Nat} {wa : Array UInt8} (hw : h.bytes wb = s
     intro t ht
     have : OkOn h (Ptr.lt (Ptr.ref (BRef.blk wb) (S + t)) (Ptr.ref (BRef.blk wb) (S + 258))) (decide (S + t < S + 258)) :=
       Ptr.lt_ok (r := BRef.blk wb) (by simpa using hw) (by omega) (by omega)
-    simp only [lmCondR, cmpSteps, bind_app, Nat.add_zero]
+    simp only [lmCondR, compareMatchBytes, cmpSteps, bind_app, Nat.add_zero]
     unfold OkOn at this
     rw [this]; rfl
   | succ n ih =>
@@ -102,7 +96,7 @@ theorem lmCondR_ok {h : Heap} {wb : Nat} {wa : Array UInt8} (hw : h.bytes wb = s
     have l2 : load8 (Ptr.ref (BRef.blk wb) (C + t + 1)) h = .ok (wa[C + t + 1], h) := Ptr.load_ok g hc1
     have b1 : bfn wa (S + t + 1) = wa[S + t + 1] := by simp [bfn, Array.getD_eq_getD_getElem?, hs1]
     have b2 : bfn wa (C + t + 1) = wa[C + t + 1] := by simp [bfn, Array.getD_eq_getD_getElem?, hc1]
-    simp only [lmCondR, bind_app, p1, p2, l1, l2]
+    simp only [lmCondR, compareMatchBytes, bind_app, p1, p2, l1, l2]
     by_cases hne : wa[S + t + 1] = wa[C + t + 1]
     · have hne' : ¬ (bfn wa (S + t + 1) ≠ bfn wa (C + t + 1)) := by rw [b1, b2]; simpa using hne
       have hih := ih (t + 1) (by omega)

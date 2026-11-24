@@ -17,7 +17,7 @@ theorem inflate_DICT_wait_run {c : Ctx} {h : Heap} {r : ZStreamRef} {zs : Nat}
   have restored : Env c (setI (r.put h (leaveStream z l)) zs (leaveState s l)) r zs
       (leaveStream z l) (leaveState s l) :=
     ⟨E.strm, E.st, by rw [ZStreamRef.get_setI]; exact ZStreamRef.get_put_same E.hz _, by simp⟩
-  unfold inflate_DICT
+  rw [DICT_previous]
   rw [runX_bind, runX_rdS E]
   simp only [missing, beq_self_eq_true, ↓reduceIte]
   rw [runX_bind, RESTORE_pending_run E]
@@ -75,7 +75,7 @@ theorem inflate_DICT_ready_cut {c : Ctx} {h : Heap} {r : ZStreamRef} {zs : Nat}
     {z : ZStream} {s : InflateState} (E : Env c h r zs z s) (l : IL) (present : s.havedict ≠ 0) :
     runX (inflate_DICT c) l h = runX (inflate_TYPE c) l
       (setI (r.put h { z with adler := 1 }) zs { s with check := 1, mode := TYPE }) := by
-  unfold inflate_DICT
+  rw [DICT_previous]
   rw [runX_bind, runX_rdS E]
   simp only [beq_iff_eq, present, ↓reduceIte]
   rw [runX_bind, runX_lift_ok (adler32_init h)]

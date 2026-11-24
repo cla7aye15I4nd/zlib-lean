@@ -39,15 +39,43 @@ private def pair (w : Nat) (v : C.CtData) : String :=
 
 open Zlib.Trees in
 def trees : String :=
+  let st := trees_statics {}
   "/* header created automatically with -DGEN_TREES_H */\n\n" ++
-  treeArray "local const ct_data static_ltree[L_CODES+2] =" 5 (static_ltree_tab.map (pair 3)) ++
-  treeArray "local const ct_data static_dtree[D_CODES] =" 5 (static_dtree_tab.map (pair 2)) ++
+  treeArray "local const ct_data static_ltree[L_CODES+2] =" 5 (st.static_ltree.map (pair 3)) ++
+  treeArray "local const ct_data static_dtree[D_CODES] =" 5 (st.static_dtree.map (pair 2)) ++
   treeArray "const uch ZLIB_INTERNAL _dist_code[DIST_CODE_LEN] =" 20
-    (dist_code_tab.map fun v => pad ' ' 2 (toString v)) ++
+    (st.dist_code.map fun v => pad ' ' 2 (toString v)) ++
   treeArray "const uch ZLIB_INTERNAL _length_code[MAX_MATCH-MIN_MATCH+1]=" 20
-    (length_code_tab.map fun v => pad ' ' 2 (toString v)) ++
-  treeArray "local const int base_length[LENGTH_CODES] =" 20 (base_length_tab.map toString) ++
-  treeArray "local const int base_dist[D_CODES] =" 10 (base_dist_tab.map fun v => pad ' ' 5 (toString v))
+    (st.length_code.map fun v => pad ' ' 2 (toString v)) ++
+  treeArray "local const int base_length[LENGTH_CODES] =" 20 (st.base_length.map toString) ++
+  treeArray "local const int base_dist[D_CODES] =" 10 (st.base_dist.map fun v => pad ' ' 5 (toString v))
+
+private def treeDescriptor (name : String) (d : C.StaticTreeDesc) : Except String String := do
+  let tree ← match d.static_tree with
+    | .null => pure "0"
+    | .ref .st_static_ltree off => pure s!"static_ltree + {off}"
+    | .ref .st_static_dtree off => pure s!"static_dtree + {off}"
+    | _ => throw "static tree descriptor points into a dynamic tree"
+  let bits ← match d.extra_bits with
+    | .null => pure "0"
+    | .ref .st_extra_lbits off => pure s!"extra_lbits + {off}"
+    | .ref .st_extra_dbits off => pure s!"extra_dbits + {off}"
+    | .ref .st_extra_blbits off => pure s!"extra_blbits + {off}"
+    | _ => throw "unexpected extra-bits pointer in static tree descriptor"
+  return s!"static const static_tree_desc {name} = \{{tree}, {bits}, {d.extra_base}, {d.elems}, {d.max_length}};\n"
+
+/-- Declarations used by the standalone trees translation unit, including its generated header. -/
+def treeGlobals : Except String String := do
+  let st := Zlib.Trees.trees_statics {}
+  let mut text := s!"#define L_CODES {C.L_CODES}\n#define D_CODES {C.D_CODES}\n#define LENGTH_CODES {C.LENGTH_CODES}\n" ++
+    s!"#define MAX_MATCH {C.MAX_MATCH}\n#define MIN_MATCH {C.MIN_MATCH}\n#define DIST_CODE_LEN {st.dist_code.size}\n" ++
+    "#define local static\n#define ZLIB_INTERNAL __attribute__((visibility(\"hidden\")))\ntypedef unsigned char uch;\n"
+  for (name, values) in [("extra_lbits", st.extra_lbits), ("extra_dbits", st.extra_dbits), ("extra_blbits", st.extra_blbits)] do
+    text := text ++ treeArray ("static const int " ++ name ++ "[] =") 12 (values.map toString)
+  text := text ++ treeArray "static const unsigned char bl_order[] =" 19 (Zlib.Trees.bl_order.map toString) ++ "#include \"trees.h\"\n"
+  for (name, desc) in [("static_l_desc", st.static_l_desc), ("static_d_desc", st.static_d_desc), ("static_bl_desc", st.static_bl_desc)] do
+    text := text ++ (← treeDescriptor name desc)
+  return text
 
 private def swap (w : Nat) (v : UInt32) : UInt64 := Id.run do
   let mut x := v.toUInt64

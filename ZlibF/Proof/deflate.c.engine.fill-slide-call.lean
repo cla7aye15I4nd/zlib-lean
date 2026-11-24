@@ -56,11 +56,28 @@ theorem fill_window_slide_transfer {h : Heap} {r : ZStreamRef} {ds w p q : Nat}
   have noSlide := counts.2.2.2.2.2.2.2.2
   have wsize : (slideState d).w_size = d.w_size := rfl
   have more := slide_more_eq good env sizeP sizeH range taken
-  have first : fillBody (some (.tab ds)) d.w_size false h = fillBody (some (.tab ds)) d.w_size false hs := by
-    simp only [fill_body_slide_source, bind_app, ldDeflateState_tab good.live.hs,
-      ldDeflateState_tab afterGood.live.hs, wsize, taken, ite_true, prefixRun, noSlide, ite_false]
-    rw [more]
-  have loop := do_first_body_eq (cond := fillCond (some (.tab ds))) first
+  have slide : ∀ d n m, slideWindowForFill (some (.tab ds)) d n m = fillSlide (some (.tab ds)) d n m := by
+    intro d n m
+    unfold slideWindowForFill fillSlide
+    rw [← clampInsert_eq]
+    simp only [M_bind_assoc, fill_ite_bind, M_pure_bind]
+  have first : fillWindowBody (some (.tab ds)) d.w_size () h =
+      fillWindowBody (some (.tab ds)) d.w_size () hs := by
+    unfold fillWindowBody
+    simp only [bind_app, ldDeflateState_tab good.live.hs, ldDeflateState_tab afterGood.live.hs,
+      wsize, taken, ite_true, noSlide, ite_false, slide]
+    have room (q : DeflateState) :
+        (q.window_size - q.lookahead.toUInt64 - q.strstart.toUInt64).toUInt32 = fillMore q := rfl
+    simp only [room, prefixRun, more, hs]
+  have loop : cdoWhileBrk (fillWindowBody (some (.tab ds)) d.w_size)
+      (fillWindowCondition (some (.tab ds))) () h =
+      cdoWhileBrk (fillWindowBody (some (.tab ds)) d.w_size)
+      (fillWindowCondition (some (.tab ds))) () hs := by
+    unfold cdoWhileBrk cdoWhileCtrl
+    rw [show fuel = (2^64-1)+1 by decide]
+    conv => lhs; rw [bind_app, cdoWhileCtrl.go, bind_app]
+    conv => rhs; rw [bind_app, cdoWhileCtrl.go, bind_app]
+    rw [first]
   have stateS : (slideHeap h ds w p q d wa pa' qa').dstates ds = some (slideState d) := by simp [slideHeap]
   simp only [fill_window_source, bind_app, rdD_eq, good.live.hs, stateS, wsize]
   rw [loop]

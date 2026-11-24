@@ -36,7 +36,7 @@ theorem TabRef.get_eq {i : Nat} {ref : CodeRef} (ok : TabRef i ref) {h h' : Heap
     rw [st]
 
 /-- The body of the lookup loop. -/
-def lkBody (c : BCtx) (dist : Bool) : X Bool := do
+def lkBody (c : DecoderCtx) (dist : Bool) : X Bool := do
   let s ← ldInflateState c.st
   let tab := if dist then s.distcode else s.lencode
   let nb := if dist then s.distbits else s.lenbits
@@ -48,7 +48,7 @@ def lkBody (c : BCtx) (dist : Bool) : X Bool := do
   return false
 
 /-- One trip of the lookup loop: the root entry selected by the held bits. -/
-theorem lkBody_run (c : BCtx) {i : Nat} (dist : Bool) {h : Heap} {s : InflateState} (l : IL)
+theorem lkBody_run (c : DecoderCtx) {i : Nat} (dist : Bool) {h : Heap} {s : InflateState} (l : IL)
     (hc : c.st = some (.tab i)) (hs : h.istates i = some s) {ref : CodeRef} {off : Nat} {ca : Array Code}
     {nb : UInt32} (tab : (if dist then s.distcode else s.lencode) = .ref ref off)
     (hnb : (if dist then s.distbits else s.lenbits) = nb) (get : Space.get h ref = some ca)

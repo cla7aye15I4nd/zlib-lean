@@ -1,5 +1,6 @@
 import ZlibF.Proof.«deflate.c.universal-params-steps»
 import ZlibF.Proof.«trees.c.monad»
+import ZlibF.Proof.«trees.c.heap.gbdef»
 
 /-!
 # trees.c: returning executions keep every deflate parameter
@@ -171,7 +172,7 @@ theorem exact_blOrder (i : Int) : ExactM (blOrder i) := by
     | trees_exact_step
 
 theorem exact_trees_put_byte (s : DeflateStatePtr) (c : UInt8) : ExactM (put_byte s c) := by
-  unfold put_byte
+  unfold put_byte cdecl
   repeat' first
     | ((with_reducible apply exact_md); intro _; rfl)
     | with_reducible exact exact_trees_rd _
@@ -194,7 +195,7 @@ theorem exact_shrUs (val : Int32) (c : Int32) : ExactM (shrUs val c) := by
     | trees_exact_step
 
 theorem exact_send_bits (s : DeflateStatePtr) (value : Int32) (length : Int32) : ExactM (send_bits s value length) := by
-  unfold send_bits
+  unfold send_bits cinline
   repeat' first
     | with_reducible exact exact_shrUs _ _
     | with_reducible exact exact_shlUs _ _
@@ -206,7 +207,7 @@ theorem exact_send_bits (s : DeflateStatePtr) (value : Int32) (length : Int32) :
     | trees_exact_step
 
 theorem exact_send_code (s : DeflateStatePtr) (c : Int) (tree : CtDataPtr) : ExactM (send_code s c tree) := by
-  unfold send_code
+  unfold send_code cinline
   repeat' first
     | with_reducible exact exact_send_bits _ _ _
     | with_reducible exact exact_getDl _ _
@@ -253,6 +254,7 @@ theorem exact_bi_windup (s : DeflateStatePtr) : ExactM (bi_windup s) := by
 
 theorem exact_gen_codes (tree : CtDataPtr) (max_code : Int32) (bl_count : WPtr) : ExactM (gen_codes tree max_code bl_count) := by
   unfold gen_codes
+  simp only [readNextCode_eq]
   repeat' first
     | with_reducible exact exact_bi_reverse _ _
     | with_reducible exact exact_setFc _ _ _
@@ -287,7 +289,7 @@ theorem exact__tr_init (s : DeflateStatePtr) : ExactM («_tr_init» s) := by
     | trees_exact_step
 
 theorem exact_pqdownheap (s : DeflateStatePtr) (tree : CtDataPtr) (k : Int32) : ExactM (pqdownheap s tree k) := by
-  unfold pqdownheap
+  unfold pqdownheap cinline
   repeat' first
     | with_reducible exact exact_smaller _ _ _ _
     | with_reducible exact exact_heapSet _ _ _
@@ -299,7 +301,7 @@ theorem exact_pqdownheap (s : DeflateStatePtr) (tree : CtDataPtr) (k : Int32) : 
     | trees_exact_step
 
 theorem exact_pqremove (s : DeflateStatePtr) (tree : CtDataPtr) : ExactM (pqremove s tree) := by
-  unfold pqremove
+  unfold pqremove heapReplaceRoot
   repeat' first
     | with_reducible exact exact_pqdownheap _ _ _
     | with_reducible exact exact_heapSet _ _ _
@@ -310,7 +312,9 @@ theorem exact_pqremove (s : DeflateStatePtr) (tree : CtDataPtr) : ExactM (pqremo
     | trees_exact_step
 
 theorem exact_gen_bitlen (s : DeflateStatePtr) (desc : TreeDescPtr) : ExactM (gen_bitlen s desc) := by
-  unfold gen_bitlen
+  unfold gen_bitlen withScopedLocals cinline
+  simp only [Zlib.Trees.Proofs.reassignLeaves_eq]
+  unfold Zlib.Trees.Proofs.gbInner
   repeat' first
     | with_reducible exact exact_setDl _ _ _
     | with_reducible exact exact_getDl _ _
@@ -324,7 +328,7 @@ theorem exact_gen_bitlen (s : DeflateStatePtr) (desc : TreeDescPtr) : ExactM (ge
     | trees_exact_step
 
 theorem exact_build_tree (s : DeflateStatePtr) (desc : TreeDescPtr) : ExactM (build_tree s desc) := by
-  unfold build_tree
+  unfold build_tree withScopedLocals cforIntLt cforIntGe heapPush heapSave nextCodeBelow
   repeat' first
     | with_reducible exact exact_gen_bitlen _ _
     | with_reducible exact exact_pqremove _ _
@@ -345,7 +349,7 @@ theorem exact_build_tree (s : DeflateStatePtr) (desc : TreeDescPtr) : ExactM (bu
     | trees_exact_step
 
 theorem exact_scan_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int32) : ExactM (scan_tree s tree max_code) := by
-  unfold scan_tree
+  unfold scan_tree cforIntLe cinline finishTreeRun
   repeat' first
     | with_reducible exact exact_setDl _ _ _
     | with_reducible exact exact_setFc _ _ _
@@ -356,7 +360,7 @@ theorem exact_scan_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int
     | trees_exact_step
 
 theorem exact_send_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int32) : ExactM (send_tree s tree max_code) := by
-  unfold send_tree
+  unfold send_tree cforIntLe cinline finishTreeRun
   repeat' first
     | with_reducible exact exact_send_code _ _ _
     | with_reducible exact exact_send_bits _ _ _
@@ -383,7 +387,7 @@ theorem exact_build_bl_tree (s : DeflateStatePtr) : ExactM (build_bl_tree s) := 
     | trees_exact_step
 
 theorem exact_send_all_trees (s : DeflateStatePtr) (lcodes dcodes blcodes : Int32) : ExactM (send_all_trees s lcodes dcodes blcodes) := by
-  unfold send_all_trees
+  unfold send_all_trees cinline
   repeat' first
     | with_reducible exact exact_send_tree _ _ _
     | with_reducible exact exact_send_bits _ _ _
@@ -453,7 +457,7 @@ theorem exact_detect_data_type (s : DeflateStatePtr) : ExactM (detect_data_type 
         | trees_exact_step
 
 theorem exact__tr_flush_block (s : DeflateStatePtr) (buf : BPtr) (stored_len : UInt64) (last : Int32) : ExactM («_tr_flush_block» s buf stored_len last) := by
-  unfold «_tr_flush_block»
+  unfold «_tr_flush_block» cinline
   repeat' first
     | with_reducible exact exact_detect_data_type _
     | with_reducible exact exact_compress_block _ _ _

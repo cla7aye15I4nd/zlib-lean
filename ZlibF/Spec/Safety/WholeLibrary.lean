@@ -9,6 +9,7 @@ import ZlibF.Spec.Safety.Sequences
 import ZlibF.Spec.Safety.Streams
 import ZlibF.Spec.Safety.Utilities
 import ZlibF.Spec.Safety.UtilitiesCAbi
+import ZlibF.Spec.Safety.StandaloneCAbi
 import ZlibF.Spec.Safety.MultiStream
 
 namespace ZlibF.Spec.Public
@@ -117,12 +118,18 @@ def Goal.whole_library_safety : Prop :=
   (∀ {contract : Prop}, PublicEntry contract → contract) ∧
   (∀ {contract : Prop}, StreamProtocol contract → contract)
 
-/-- C-ABI companion contracts (`_c` pointer-to-length wrappers in `compress.c.lean`). -/
+/-- C-ABI companion contracts (`_c` wrappers in `compress.c.lean` and standalone byte-identical
+companions in `StandaloneCAbi.lean`). -/
 inductive CAbiCompanion : Prop → Type where
   | compress2_z_c : CAbiCompanion Goal.compress2_z_c_safety
   | compress2_c : CAbiCompanion Goal.compress2_c_safety
   | compress_z_c : CAbiCompanion Goal.compress_z_c_safety
   | compress_c : CAbiCompanion Goal.compress_c_safety
+  | adler32_z_c : CAbiCompanion Goal.adler32_z_c_safety
+  | gzopen_c : CAbiCompanion Goal.gzopen_c_safety
+  | gzseek64_c : CAbiCompanion Goal.gzseek64_c_safety
+  | fast_c : CAbiCompanion Zlib.Inffast.Spec.Goal.fast_c_safe
+  | inflate_table_c_decoder : CAbiCompanion Zlib.Inftrees.Spec.Goal.inflate_table_c_decoder_safe
 
 /-- Disjoint multi-stream compositionality and non-interference contracts. -/
 inductive MultiStreamContract : Prop → Type where

@@ -1,3 +1,6 @@
+import ZlibF.Proof.«deflate.c.hash-loop-source»
+import ZlibF.Proof.«deflate.c.huff.source»
+import ZlibF.Proof.«deflate.c.rle.source»
 import ZlibF.Proof.«deflate.c.universal-window»
 import ZlibF.Proof.«trees.c.universal-flush»
 import ZlibF.Proof.«deflate.c.engine.generic-foreign-private-arrays»
@@ -1416,14 +1419,16 @@ theorem huff_spec_of {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
     · rw [brk] at e; cases e
     · rw [ret0] at e; cases e
   · refine ⟨need_more, h1, z1, d1, ?_, head1.inv, head1.buffers, acc1, need_more_meaning why⟩
-    simp [C.run, deflate_huff, bind_app, loopRun, ret]
+    apply HuffProofs.of_legacy_ok
+    simp [HuffProofs.legacy_fuel, bind_app, loopRun, ret]
   · obtain ⟨wrRun, head2⟩ := clear_insert_head head1 id
     obtain ⟨bstate, after, z', d', tailRun, invA, buffersA, accT, meanT⟩ := finish_tail_inv head2 pending1 flush avail1 (idle_of_roll head1.inv.shape (Or.inl head1.kind) : d1.match_available = 0) empty1
     have ins : Fr h1 r ds d1 z1 (setD h1 ds { d1 with insert := 0 }) z1 { d1 with insert := 0 } :=
       Fr.priv head1.inv.good head1.buffers (priv_setD h1 r ds d1 _ head1.inv.good.live.hs) ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
     refine ⟨bstate, after, z', d', ?_, invA, buffersA,
       Fr.trans inv.good entry.buffers acc1 (Fr.trans head1.inv.good head1.buffers ins accT), meanT⟩
-    simp only [C.run, deflate_huff, bind_app, loopRun, ret, wrRun]
+    apply HuffProofs.of_legacy_ok
+    simp only [HuffProofs.legacy_fuel, bind_app, loopRun, ret, wrRun]
     exact tailRun
 
 
@@ -2259,14 +2264,16 @@ theorem rle_spec_of {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
     · rw [brk] at e; cases e
     · rw [ret0] at e; cases e
   · refine ⟨need_more, h1, z1, d1, ?_, head1.inv, head1.buffers, acc1, need_more_meaning why⟩
-    simp [C.run, deflate_rle, bind_app, loopRun, ret]
+    apply RleProofs.of_legacy_ok
+    simp [RleProofs.legacy_fuel, bind_app, loopRun, ret]
   · obtain ⟨wrRun, head2⟩ := clear_insert_head head1 id
     obtain ⟨bstate, after, z', d', tailRun, invA, buffersA, accT, meanT⟩ := finish_tail_inv head2 pending1 flush avail1 (idle_of_roll head1.inv.shape (Or.inr head1.kind) : d1.match_available = 0) empty1
     have ins : Fr h1 r ds d1 z1 (setD h1 ds { d1 with insert := 0 }) z1 { d1 with insert := 0 } :=
       Fr.priv head1.inv.good head1.buffers (priv_setD h1 r ds d1 _ head1.inv.good.live.hs) ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
     refine ⟨bstate, after, z', d', ?_, invA, buffersA,
       Fr.trans inv.good entry.buffers acc1 (Fr.trans head1.inv.good head1.buffers ins accT), meanT⟩
-    simp only [C.run, deflate_rle, bind_app, loopRun, ret, wrRun]
+    apply RleProofs.of_legacy_ok
+    simp only [RleProofs.legacy_fuel, bind_app, loopRun, ret, wrRun]
     exact tailRun
 
 
@@ -3772,7 +3779,7 @@ theorem fast_spec_of {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
     · rw [brk] at e; cases e
     · rw [ret0] at e; cases e
   · refine ⟨need_more, h1, z1, d1, ?_, head1.inv, head1.buffers, acc1, need_more_meaning why⟩
-    simp [C.run, deflate_fast, bind_app, loopRun, ret]
+    simp [C.run, FastProofs.after_loop loopRun, ret]
   · obtain ⟨wrRun, head2⟩ := set_insert_head head1 empty1 (fun _ k => k)
     obtain ⟨bstate, after, z', d', tailRun, invA, buffersA, accT, meanT⟩ := finish_tail_inv head2 pending1 flush avail1 (idle_of_low head1.inv.shape head1.kind.2.1 : d1.match_available = 0) empty1
     have ins : Fr h1 r ds d1 z1
@@ -3781,7 +3788,7 @@ theorem fast_spec_of {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
       Fr.priv head1.inv.good head1.buffers (priv_setD h1 r ds d1 _ head1.inv.good.live.hs) ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
     refine ⟨bstate, after, z', d', ?_, invA, buffersA,
       Fr.trans inv.good entry.buffers acc1 (Fr.trans head1.inv.good head1.buffers ins accT), meanT⟩
-    simp only [C.run, deflate_fast, bind_app, loopRun, ret, wrRun]
+    simp only [C.run, FastProofs.after_loop loopRun, ret, SlowProofs.finish_hash_eq, bind_app, wrRun]
     exact tailRun
 
 end Zlib.Deflate.Universal

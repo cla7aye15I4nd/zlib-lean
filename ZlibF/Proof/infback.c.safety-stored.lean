@@ -74,17 +74,17 @@ def copyRegs (l : IL) (k : UInt32) (nx pt : BPtr) : IL :=
   { l with copy := k, have_ := l.have_ - k, next := nx, left := l.left - k, put := pt }
 
 /-- The copy after `ROOM()`, given the runs of its memory operations. -/
-theorem storedTail_gen (c : BCtx) {l : IL} {h h1 h2 : Heap} {nx pt : BPtr} (k : UInt32)
+theorem copyStoredInput_run (st : InflateStatePtr) {l : IL} {h h1 h2 : Heap} {nx pt : BPtr} (k : UInt32)
     (hk : clampCopy l.copy l.have_ l.left = k)
     (mc : memcpyB l.put l.next k.toNat h = .ok ((), h1))
     (a1 : OkOn h1 (l.next.add (k.toNat : Int)) nx) (a2 : OkOn h1 (l.put.add (k.toNat : Int)) pt)
-    (wr : wrS c.st (fun s => { s with length := s.length - k }) h1 = .ok ((), h2)) :
-    runX (storedTail c) l h = .ok ((.ok (), copyRegs l k nx pt), h2) := by
+    (wr : wrS st (fun s => { s with length := s.length - k }) h1 = .ok ((), h2)) :
+    runX (copyStoredInput st) l h = .ok ((.ok (), copyRegs l k nx pt), h2) := by
   subst hk
   unfold copyRegs
   obtain ⟨m, hm⟩ : ∃ m, m = clampCopy l.copy l.have_ l.left := ⟨_, rfl⟩
   rw [← hm] at mc a1 a2 wr ⊢
-  unfold storedTail
+  unfold copyStoredInput
   rw [runX_bind, runX_get]
   by_cases e1 : l.copy > l.have_
   · by_cases e2 : l.have_ > l.left
@@ -105,6 +105,14 @@ theorem storedTail_gen (c : BCtx) {l : IL} {h h1 h2 : Heap} {nx pt : BPtr} (k : 
       subst hv
       simp only [e1, e2, ↓reduceIte, runX_bind, runX_lift_ok mc, runX_lift_ok a1, runX_lift_ok a2, runX_set,
         runX_lift_ok wr]
+
+theorem storedTail_gen (c : BCtx) {l : IL} {h h1 h2 : Heap} {nx pt : BPtr} (k : UInt32)
+    (hk : clampCopy l.copy l.have_ l.left = k)
+    (mc : memcpyB l.put l.next k.toNat h = .ok ((), h1))
+    (a1 : OkOn h1 (l.next.add (k.toNat : Int)) nx) (a2 : OkOn h1 (l.put.add (k.toNat : Int)) pt)
+    (wr : wrS c.st (fun s => { s with length := s.length - k }) h1 = .ok ((), h2)) :
+    runX (storedTail c) l h = .ok ((.ok (), copyRegs l k nx pt), h2) :=
+  copyStoredInput_run c.st k hk mc a1 a2 wr
 
 /-- **One copy of a stored block on the invariant.** With input, room and `copy ≠ 0`, at least one
 byte moves from the chunk into the window slice; the chunk is outside the slice, so `memcpy` sees

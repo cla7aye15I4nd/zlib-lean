@@ -349,6 +349,56 @@ theorem PULLBYTE_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Na
         simp only [UInt32.toNat_one]
         omega
 
+/-- On a permitted callback history each input refill preserves the decoder record.
+Reading the field at every loop test therefore gives the same execution as its initial value. -/
+theorem needExtra_eq (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
+    (pr : Proto c r i window n) {h0 h : Heap} {l : IL} {log : BackLog} {s : InflateState}
+    (I : PInv c pr h0 h l log) (hs : h.istates i = some s) (bound : s.extra.toNat ≤ 32) :
+    runX (needExtra c) l h = runX (NEEDBITS c s.extra) l h := by
+  let live : X Bool := do return (← get).bits < (← rdS c.st (·.extra))
+  let saved : X Bool := do return (← get).bits < s.extra
+  let condition (test : X Bool) : IL × Stop → M (Bool × (IL × Stop)) := fun (l, st) =>
+    match st with
+    | .go => do
+      let (res, l') ← StateT.run (ExceptT.run test) l
+      pure (match res with | .ok b => (b, (l', Stop.go)) | .error e => (false, (l', Stop.ex e)))
+    | stop => pure (false, (l, stop))
+  let step : X Bool := do PULLBYTE c; pure false
+  let body : IL × Stop → M (IL × Stop) := fun (l, _) => do
+    let (res, l') ← StateT.run (ExceptT.run step) l
+    pure (match res with | .ok b => (l', if b then Stop.brk else Stop.go) | .error e => (l', Stop.ex e))
+  have loops (fuel : Nat) : ∀ {h l log}, PInv c pr h0 h l log → h.istates i = some s →
+      cwhile.go (condition live) body fuel (l, .go) h = cwhile.go (condition saved) body fuel (l, .go) h := by
+    induction fuel with
+    | zero => intros; rfl
+    | succ k ih =>
+      intro h l log inv st
+      have lhs : live.run l h = .ok ((.ok (decide (l.bits < s.extra)), l), h) := by
+        change runX live l h = _
+        simp [live, runX_bind, runX_get, runX_lift_ok (rdS_ok inv.cst st (·.extra)), runX_pure]
+      have rhs : saved.run l h = .ok ((.ok (decide (l.bits < s.extra)), l), h) := rfl
+      by_cases more : l.bits < s.extra
+      · have room := UInt32.lt_iff_toNat_lt.mp more
+        obtain ⟨res, l', h', log', run, inv', _, _, kept, _⟩ := PULLBYTE_p c pr inv (by omega)
+        cases res with
+        | ok u =>
+          cases u
+          have exec : step.run l h = .ok ((.ok false, l'), h') := by
+            change runX step l h = _
+            simp [step, runX_bind, run, runX_pure]
+          simpa only [cwhile.go, condition, body, StateT.run, lhs, rhs, exec, more, decide_true,
+            bind_app, pure_app, Bool.false_eq_true, ↓reduceIte] using (ih inv' (kept.trans st))
+        | error e =>
+          have exec : step.run l h = .ok ((.error e, l'), h') := by
+            change runX step l h = _
+            simp [step, runX_bind, run]
+          cases k <;> simp [cwhile.go, condition, body, StateT.run, lhs, rhs, exec, more]
+      · simp [cwhile.go, condition, StateT.run, lhs, rhs, more]
+  unfold needExtra NEEDBITS xwhile xwhileBrk runX cwhile
+  simp only [ExceptT.run, ExceptT.mk, StateT.run, bind_app]
+  erw [loops C.fuel I hs]
+  rfl
+
 /-- **`NEEDBITS(k)` on the invariant**, for `k ≤ 32`: at least `k` bits held, or the call leaves
 with `Z_BUF_ERROR`. -/
 theorem NEEDBITS_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}

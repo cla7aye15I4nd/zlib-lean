@@ -32,7 +32,7 @@ theorem inflate_LEN_fast_exact_frame {c : Ctx} {l : IL} {h : Heap} {r : ZStreamR
     rw [E.strm]
     exact call
   have cut : runX (inflate_LEN c) l h = runX (inflateAfterFast c) l finished := by
-    unfold inflate_LEN
+    rw [LEN_previous]
     rw [runX_bind, runX_get]
     simp only [fast, ↓reduceIte]
     rw [runX_bind, RESTORE_pending_run E]

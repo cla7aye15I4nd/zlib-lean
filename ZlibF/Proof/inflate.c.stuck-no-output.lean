@@ -90,7 +90,7 @@ theorem inflateStuckNoOutput_holds : InflateStuckNoOutput := by
     cases r <;> simp [ZStreamRef.get, str, gzs]
   rw [getSame] at hz
   by_cases accepted : (z.next_out == .null || (z.next_in == .null && z.avail_in != 0)) = false
-  · simp only [bind_app, stateCheck_live live', bne_self_eq_false, Bool.false_eq_true, ite_false,
+  · simp only [rejectsInput, bind_app, pure_app, stateCheck_live live', bne_self_eq_false, Bool.false_eq_true, ite_false,
       ldZStream_ok live'.hz, accepted, live'.zst, castI] at ebody
     let c : Ctx := ⟨some r, some (.tab k), syncBuf h, Z_NO_FLUSH⟩
     have E : Env c (syncAlloc h) r k z st := ⟨rfl, rfl, live'.hz, live'.hs⟩
@@ -120,8 +120,8 @@ theorem inflateStuckNoOutput_holds : InflateStuckNoOutput := by
       cases e : (z.next_out == .null || (z.next_in == .null && z.avail_in != 0))
       · exact absurd e accepted
       · rfl
-    simp only [bind_app, stateCheck_live live', bne_self_eq_false, Bool.false_eq_true, ite_false,
-      ldZStream_ok live'.hz, refused, ite_true, pure_app] at ebody
+    simp only [rejectsInput, bind_app, pure_app, stateCheck_live live', bne_self_eq_false, Bool.false_eq_true, ite_false,
+      ldZStream_ok live'.hz, refused, ite_true] at ebody
     cases ebody
     rw [live'.hz] at hz
     cases hz

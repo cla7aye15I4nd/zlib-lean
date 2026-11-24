@@ -1,10 +1,5 @@
 name: Lean proof
-on:
-  pull_request:
-    paths: ['ZlibF/**', 'ZlibF.lean', 'lakefile.toml', 'lean-toolchain', 'Makefile', 'pins.json', 'upstream', 'patches/**', 'tests/public-api.json', 'tools/check_public_safety.py', 'tools/reference.py', '.github/workflows/proof.yml']
-  push:
-    paths: ['ZlibF/**', 'ZlibF.lean', 'lakefile.toml', 'lean-toolchain', 'Makefile', 'pins.json', 'upstream', 'patches/**', 'tests/public-api.json', 'tools/check_public_safety.py', 'tools/reference.py', '.github/workflows/proof.yml']
-  workflow_dispatch:
+on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
@@ -17,8 +12,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           submodules: true
+          fetch-depth: 0
       - name: Install pinned Lean
         run: |
           sudo apt-get update -qq && sudo apt-get install -y elan
           elan toolchain install "$(cat lean-toolchain)"
-      - run: make library-safety
+      - name: Check the preserved safety contracts and replay their proofs in a fresh kernel
+        run: make library-safety
+      - name: Check historical lemma statements and runtime equivalences
+        run: lake env lean -DwarningAsError=true tests/LemmaEquivalence.lean

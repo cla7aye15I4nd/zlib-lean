@@ -101,9 +101,31 @@ elab "public_borrow_head" : tactic => do
   unless found do
     Lean.Elab.Tactic.evalTactic (← `(tactic| strategy_borrow_step))
 
-set_option maxHeartbeats 1000000 in
-theorem stable_deflate (p : ZStreamPtr) (flush : Int32) : StableM (deflate p flush) := by
-  unfold deflate
+open Zlib.Deflate.Phases
+
+private theorem stable_entryPhase (p : ZStreamPtr) (flush : Int32) (k : DeflateStatePtr → M Int32)
+    (hk : ∀ s, StableM (k s)) : StableM (entryPhase p flush k) := by
+  unfold entryPhase
+  simp only [cinline]
+  repeat' first | exact hk _ | public_borrow_join | public_borrow_head
+
+private theorem stable_headerPhase (p : ZStreamPtr) (s : DeflateStatePtr) (flush : Int32) (k : M Int32)
+    (hk : StableM k) : StableM (headerPhase p s flush k) := by
+  unfold headerPhase
+  repeat' first | exact hk | public_borrow_join | public_borrow_head
+
+private theorem stable_strategyPhase (p : ZStreamPtr) (s : DeflateStatePtr) (flush : Int32) (k : M Int32)
+    (hk : StableM k) : StableM (strategyPhase p s flush k) := by
+  unfold strategyPhase
+  repeat' first | exact hk | public_borrow_join | public_borrow_head
+
+private theorem stable_trailerPhase (p : ZStreamPtr) (s : DeflateStatePtr) (flush : Int32) :
+    StableM (trailerPhase p s flush) := by
+  unfold trailerPhase
   repeat' first | public_borrow_join | public_borrow_head
+
+theorem stable_deflate (p : ZStreamPtr) (flush : Int32) : StableM (deflate p flush) :=
+  stable_entryPhase _ _ _ fun s =>
+    stable_headerPhase _ s _ _ (stable_strategyPhase _ s _ _ (stable_trailerPhase _ _ _))
 
 end Zlib.Deflate.BorrowProofs

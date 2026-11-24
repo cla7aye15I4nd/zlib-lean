@@ -242,7 +242,6 @@ theorem params_tail {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : De
   have good := inv.good
   have shape := inv.shape
   have ldRun : ldDeflateState (some (.tab ds)) h = .ok (d, h) := ldDeflateState_tab good.live.hs
-  have cfgL := config_at_run h lo hi
   have cfgAll : ∀ g, config_at lv g = .ok (configuration_table[lv.toInt.toNat]!, g) := fun g => config_at_run g lo hi
   obtain ⟨w, p, q, b, blocks⟩ := good.inv.blocks
   obtain ⟨wa, hw, _⟩ := blocks.wa
@@ -366,7 +365,7 @@ theorem params_tail {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : De
     have tailRun : paramsTail (some (.tab ds)) lv strategy h = .ok (Z_OK, setD h ds dF) := by
       rw [dFEq]
       unfold paramsTail
-      simp only [bind_app, ldRun, levelB, ite_true, zeroB, Bool.false_eq_true, ite_false, cfgL, wrD_eq,
+      simp only [bind_app, ldRun, levelB, ite_true, zeroB, Bool.false_eq_true, ite_false, config_at_run _ lo hi, wrD_eq,
         good.live.hs, setD_dstates_same, setD_setD]
       rfl
     have chains : Chains h dF := by
@@ -482,10 +481,11 @@ and the block empty, and the tail. -/
 def paramsFlush (strm : ZStreamPtr) (s : DeflateStatePtr) (level strategy : Int32) : M Int32 := do
   let err ← deflate strm Z_BLOCK
   if err == Z_STREAM_ERROR then return err
+  if (← zrd strm (·.avail_in)) != 0 then return Z_BUF_ERROR
   let d ← ldDeflateState s
   let diff ← lsub d.strstart.toUInt64.toInt64 d.block_start
   let tot ← ladd diff d.lookahead.toUInt64.toInt64
-  if (← zrd strm (·.avail_in)) != 0 || tot != 0 then return Z_BUF_ERROR
+  if tot != 0 then return Z_BUF_ERROR
   paramsTail s level strategy
 
 /-- `deflateParams` when the strategy or the compression function changes. -/
@@ -526,10 +526,11 @@ theorem params_differs {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d :
 /-- The part of the flush branch after `deflate(Z_BLOCK)` returned `err`. -/
 def paramsAfter (strm : ZStreamPtr) (s : DeflateStatePtr) (level strategy : Int32) (err : Int32) : M Int32 := do
   if err == Z_STREAM_ERROR then return err
+  if (← zrd strm (·.avail_in)) != 0 then return Z_BUF_ERROR
   let d ← ldDeflateState s
   let diff ← lsub d.strstart.toUInt64.toInt64 d.block_start
   let tot ← ladd diff d.lookahead.toUInt64.toInt64
-  if (← zrd strm (·.avail_in)) != 0 || tot != 0 then return Z_BUF_ERROR
+  if tot != 0 then return Z_BUF_ERROR
   paramsTail s level strategy
 
 theorem params_flush_split (strm : ZStreamPtr) (s : DeflateStatePtr) (level strategy : Int32) :
@@ -557,6 +558,11 @@ theorem params_after_outcome
     simp only [paramsAfter, err, beq_self_eq_true, ite_true, pure_app]
     all_goals (try rfl)
   have errB : (rc == Z_STREAM_ERROR) = false := by simpa using err
+  by_cases hasInput : z.avail_in ≠ 0
+  · left
+    refine ⟨Z_BUF_ERROR, ?_⟩
+    simp [paramsAfter, bind_app, avail1, hasInput, errB, pure_app]
+  have emptyInput : z.avail_in = 0 := Classical.not_not.mp hasInput
   -- the flush test in `long` arithmetic
   have shape := inv.shape
   have ssLt : d.strstart.toNat < 2 ^ 32 := d.strstart.toNat_lt
@@ -583,42 +589,33 @@ theorem params_after_outcome
   have totInt : (Int64.ofInt ((Int64.ofInt (d.strstart.toUInt64.toInt64.toInt - d.block_start.toInt)).toInt +
       d.lookahead.toUInt64.toInt64.toInt)).toInt = (d.strstart.toNat : Int) - d.block_start.toInt + d.lookahead.toNat := by
     rw [diffInt, laInt]; exact int64_ofInt_toInt _ (by omega) (by omega)
-  by_cases busy : z.avail_in ≠ 0 ∨ (d.strstart.toNat : Int) - d.block_start.toInt + d.lookahead.toNat ≠ 0
+  by_cases nonempty : (d.strstart.toNat : Int) - d.block_start.toInt + d.lookahead.toNat ≠ 0
   · left
     refine ⟨Z_BUF_ERROR, ?_⟩
-    have testB : ((z.avail_in != 0) || (Int64.ofInt ((Int64.ofInt (d.strstart.toUInt64.toInt64.toInt -
-        d.block_start.toInt)).toInt + d.lookahead.toUInt64.toInt64.toInt) != 0)) = true := by
-      rcases busy with a | t
-      · rw [show (z.avail_in != 0) = true from bne_iff_ne.mpr a, Bool.true_or]
-      · have : Int64.ofInt ((Int64.ofInt (d.strstart.toUInt64.toInt64.toInt - d.block_start.toInt)).toInt +
-            d.lookahead.toUInt64.toInt64.toInt) ≠ 0 := by
-          intro e; apply t; rw [← totInt, e]; rfl
-        rw [show (Int64.ofInt ((Int64.ofInt (d.strstart.toUInt64.toInt64.toInt - d.block_start.toInt)).toInt +
-            d.lookahead.toUInt64.toInt64.toInt) != 0) = true from bne_iff_ne.mpr this, Bool.or_true]
-    simp only [paramsAfter, bind_app, errB, Bool.false_eq_true, ite_false, ld1, subRun, addRun, avail1, testB,
-      ite_true, pure_app]
-    all_goals (try rfl)
-  · -- all input consumed and the block empty: the tail
-    have availZero : z.avail_in = 0 := by
-      refine Classical.byContradiction fun ne => ?_; exact busy (Or.inl ne)
-    have totZero : (d.strstart.toNat : Int) - d.block_start.toInt + d.lookahead.toNat = 0 := by
-      refine Classical.byContradiction fun ne => ?_; exact busy (Or.inr ne)
+    have busy : Int64.ofInt ((Int64.ofInt (d.strstart.toUInt64.toInt64.toInt - d.block_start.toInt)).toInt +
+        d.lookahead.toUInt64.toInt64.toInt) ≠ 0 := by
+      intro zero
+      rw [zero] at totInt
+      exact nonempty totInt.symm
+    have busyB : (Int64.ofInt ((Int64.ofInt (d.strstart.toUInt64.toInt64.toInt - d.block_start.toInt)).toInt +
+        d.lookahead.toUInt64.toInt64.toInt) != 0) = true := by simpa using busy
+    simp only [paramsAfter, bind_app, errB, Bool.false_eq_true, ite_false, avail1, emptyInput,
+      bne_self_eq_false, ld1, subRun, addRun, busyB, ite_true, pure_app]
+  · have totZero := Classical.not_not.mp nonempty
     have la0 : d.lookahead = 0 := by
       have : d.lookahead.toNat = 0 := by omega
       exact UInt32.toNat_inj.mp this
     have block : d.block_start.toInt = d.strstart.toNat := by omega
-    have testB : ((z.avail_in != 0) || (Int64.ofInt ((Int64.ofInt (d.strstart.toUInt64.toInt64.toInt -
-        d.block_start.toInt)).toInt + d.lookahead.toUInt64.toInt64.toInt) != 0)) = false := by
-      have : Int64.ofInt ((Int64.ofInt (d.strstart.toUInt64.toInt64.toInt - d.block_start.toInt)).toInt +
-          d.lookahead.toUInt64.toInt64.toInt) = 0 := by
-        apply Int64.toInt_inj.mp; rw [totInt, totZero]; rfl
-      rw [availZero, this]; rfl
+    have emptyBlock : Int64.ofInt ((Int64.ofInt (d.strstart.toUInt64.toInt64.toInt - d.block_start.toInt)).toInt +
+        d.lookahead.toUInt64.toInt64.toInt) = 0 := by
+      apply Int64.toInt_inj.mp
+      rw [totInt, totZero]; rfl
     right
     obtain ⟨after, dF, tailRun, rest⟩ :=
       params_tail inv (Flushed.of_empty shape la0 block) lv strategy lo hi slo shi
     refine ⟨after, dF, ?_, rest⟩
-    simp only [paramsAfter, bind_app, errB, Bool.false_eq_true, ite_false, ld1, subRun, addRun, avail1, testB]
-    exact tailRun
+    simpa only [paramsAfter, bind_app, errB, Bool.false_eq_true, ite_false, avail1, emptyInput,
+      bne_self_eq_false, ld1, subRun, addRun, emptyBlock] using tailRun
 
 /-- The changed set of `StepOk` from the stream's owned blocks. -/
 theorem changed_of_owned {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : DeflateState} {call : Call}
@@ -813,7 +810,7 @@ theorem params_same_run {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d 
     refine ⟨paramsState d (if level == Z_DEFAULT_COMPRESSION then 6 else level) strategy
       configuration_table[(if level == Z_DEFAULT_COMPRESSION then 6 else level).toInt.toNat]!, ?_, rfl, rfl, rfl, fun c => ⟨c.fresh, c.freshStart, c.finishSym, c.finishLook, c.finishBits⟩⟩
     unfold paramsTail
-    simp only [bind_app, ldRun, levelB, ite_true, zeroB, Bool.false_eq_true, ite_false, cfgL, wrD_eq,
+    simp only [bind_app, ldRun, levelB, ite_true, zeroB, Bool.false_eq_true, ite_false, config_at_run _ lo hi, wrD_eq,
       good.live.hs, setD_dstates_same, setD_setD]
     all_goals (try rfl)
 

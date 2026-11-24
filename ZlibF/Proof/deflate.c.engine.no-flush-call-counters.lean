@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.slow.source»
 import ZlibF.Proof.«deflate.c.engine.body-counters»
 import ZlibF.Proof.«deflate.c.engine.no-flush-ready-call»
 
@@ -116,10 +117,7 @@ theorem deflate_slow_no_flush_ready_counters {h : Heap} {r : ZStreamRef} {ds ob 
     endpointA, agreesA, baseA, _validA, _brkA, _retA, _outputA, stopA, inputA, outputA⟩ := finalInv
   refine ⟨used, produced, after, z', result, base', ys, extended, nextOrigin,
     ?_, stateA, endA, controlsA, buffersA, accountA, agreesA, endpointA, baseA, stopA returned, ?_, inputA, outputA⟩
-  · unfold deflate_slow
-    rw [bind_app, loop]
-    simp only [returned]
-    rfl
+  · simp only [SlowProofs.after_loop loop, returned, pure_app]
   · intro space
     rcases stopA returned with ⟨empty, _⟩ | empty
     · have count := accountA.2.2.1

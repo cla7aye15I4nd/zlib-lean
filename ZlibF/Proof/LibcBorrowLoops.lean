@@ -1,3 +1,4 @@
+import ZlibF.Proof.ControlFlowFrame
 import ZlibF.Proof.«gzfs.borrow-stable»
 
 /-! Actual loop composition for the external borrow observation. -/
@@ -36,6 +37,20 @@ theorem StableM.cdoWhile_go {σ : Type} (body : σ → M σ) (cond : σ → M (B
 theorem StableM.cdoWhile {σ : Type} (body : σ → M σ) (cond : σ → M (Bool × σ))
     (hb : ∀ s, StableM (body s)) (hc : ∀ s, StableM (cond s)) (s : σ) :
     StableM (C.cdoWhile body cond s) := StableM.cdoWhile_go body cond hb hc fuel s
+
+theorem StableM.cforEverRet {σ ρ : Type} (body : σ → M (LoopStep σ ρ)) (s : σ) (k : σ → M ρ)
+    (hb : ∀ s, StableM (body s)) (hk : ∀ s, StableM (k s)) : StableM (C.cforEverRet body s k) :=
+  Preserves.cforEverRet (R := (fun a b => b.libcErrorBorrow = a.libcErrorBorrow)) (fun _ => rfl) (fun h₁ h₂ => h₂.trans h₁) body s k hb hk
+
+theorem StableM.cwhileBrk {σ : Type} (cond : σ → M (Bool × σ)) (body : σ → M (LoopStep σ Empty))
+    (s : σ) (hc : ∀ s, StableM (cond s)) (hb : ∀ s, StableM (body s)) :
+    StableM (C.cwhileBrk cond body s) :=
+  Preserves.cwhileBrk (R := (fun a b => b.libcErrorBorrow = a.libcErrorBorrow)) (fun _ => rfl) (fun h₁ h₂ => h₂.trans h₁) cond body s hc hb
+
+theorem StableM.cdoWhileBrk {σ : Type} (body : σ → M (LoopStep σ Empty)) (cond : σ → M (Bool × σ))
+    (s : σ) (hb : ∀ s, StableM (body s)) (hc : ∀ s, StableM (cond s)) :
+    StableM (C.cdoWhileBrk body cond s) :=
+  Preserves.cdoWhileBrk (R := (fun a b => b.libcErrorBorrow = a.libcErrorBorrow)) (fun _ => rfl) (fun h₁ h₂ => h₂.trans h₁) body cond s hb hc
 
 #print axioms StableM.cwhile
 #print axioms StableM.cdoWhile

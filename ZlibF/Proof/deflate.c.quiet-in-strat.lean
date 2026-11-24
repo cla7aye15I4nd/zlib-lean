@@ -1,3 +1,5 @@
+import ZlibF.Proof.«deflate.c.huff.source»
+import ZlibF.Proof.«deflate.c.rle.source»
 import ZlibF.Proof.«deflate.c.quiet-strat-in»
 
 /-!
@@ -162,12 +164,14 @@ theorem huff_qI2 {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
     · rw [brk] at e; cases e
     · rw [ret0] at e; cases e
   · refine ⟨need_more, h1, z1, d1, ?_, head1.inv.good.live.hz, head1.inv.good.live.hs, QEndI2.more_of down1 why⟩
-    simp [C.run, deflate_huff, bind_app, loopRun, ret]
+    apply HuffProofs.of_legacy_ok
+    simp [HuffProofs.legacy_fuel, bind_app, loopRun, ret]
   · obtain ⟨wrRun, head2⟩ := clear_insert_head head1 id
     obtain ⟨bstate, after, z', d', tailRun, hz', hs', fin⟩ := finish_tail_qI2 head2 pending1 flush
       (idle_of_roll head1.inv.shape (Or.inl head1.kind) : d1.match_available = 0) empty1
     refine ⟨bstate, after, z', d', ?_, hz', hs', QEndI2.after down1 (QEndI2.after (QDI.of_down (insert_down pending1 0) rfl) fin)⟩
-    simp only [C.run, deflate_huff, bind_app, loopRun, ret, wrRun]
+    apply HuffProofs.of_legacy_ok
+    simp only [HuffProofs.legacy_fuel, bind_app, loopRun, ret, wrRun]
     exact tailRun
 
 /-- **`deflate_rle` with input** does not raise the work term plus four per input byte. -/
@@ -185,12 +189,14 @@ theorem rle_qI2 {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
     · rw [brk] at e; cases e
     · rw [ret0] at e; cases e
   · refine ⟨need_more, h1, z1, d1, ?_, head1.inv.good.live.hz, head1.inv.good.live.hs, QEndI2.more_of down1 why⟩
-    simp [C.run, deflate_rle, bind_app, loopRun, ret]
+    apply RleProofs.of_legacy_ok
+    simp [RleProofs.legacy_fuel, bind_app, loopRun, ret]
   · obtain ⟨wrRun, head2⟩ := clear_insert_head head1 id
     obtain ⟨bstate, after, z', d', tailRun, hz', hs', fin⟩ := finish_tail_qI2 head2 pending1 flush
       (idle_of_roll head1.inv.shape (Or.inr head1.kind) : d1.match_available = 0) empty1
     refine ⟨bstate, after, z', d', ?_, hz', hs', QEndI2.after down1 (QEndI2.after (QDI.of_down (insert_down pending1 0) rfl) fin)⟩
-    simp only [C.run, deflate_rle, bind_app, loopRun, ret, wrRun]
+    apply RleProofs.of_legacy_ok
+    simp only [RleProofs.legacy_fuel, bind_app, loopRun, ret, wrRun]
     exact tailRun
 
 /-- **`deflate_fast` with input** does not raise the work term plus four per input byte. -/
@@ -210,12 +216,12 @@ theorem fast_qI2 {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
     · rw [brk] at e; cases e
     · rw [ret0] at e; cases e
   · refine ⟨need_more, h1, z1, d1, ?_, head1.inv.good.live.hz, head1.inv.good.live.hs, QEndI2.more_of down1 why⟩
-    simp [C.run, deflate_fast, bind_app, loopRun, ret]
+    simp [C.run, FastProofs.after_loop loopRun, ret]
   · obtain ⟨wrRun, head2⟩ := set_insert_head head1 empty1 (fun _ k => k)
     obtain ⟨bstate, after, z', d', tailRun, hz', hs', fin⟩ := finish_tail_qI2 head2 pending1 flush
       (idle_of_low head1.inv.shape head1.kind.2.1 : d1.match_available = 0) empty1
     refine ⟨bstate, after, z', d', ?_, hz', hs', QEndI2.after down1 (QEndI2.after (QDI.of_down (insert_down pending1 _) rfl) fin)⟩
-    simp only [C.run, deflate_fast, bind_app, loopRun, ret, wrRun]
+    simp only [C.run, FastProofs.after_loop loopRun, ret, SlowProofs.finish_hash_eq, bind_app, wrRun]
     exact tailRun
 
 /-- **`deflate_slow` with input** does not raise the work term plus four per input byte. -/
@@ -235,7 +241,7 @@ theorem slow_qI2 {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
     · rw [brk] at e; cases e
     · rw [ret0] at e; cases e
   · refine ⟨need_more, h1, z1, d1, ?_, head1.inv.good.live.hz, head1.inv.good.live.hs, QEndI2.more_of down1 why⟩
-    simp [C.run, deflate_slow, bind_app, loopRun, ret]
+    simp [C.run, SlowProofs.after_loop loopRun, ret]
   · have ld1 : ldDeflateState (some (.tab ds)) h1 = .ok (d1, h1) := ldDeflateState_tab head1.inv.good.live.hs
     by_cases avail : d1.match_available ≠ 0
     · have availB : (d1.match_available != 0) = true := by simpa using avail
@@ -254,14 +260,14 @@ theorem slow_qI2 {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
           (setD h3 ds { literalState d1 c with match_available := 0 }) =
           .ok ((), setD (setD h3 ds { literalState d1 c with match_available := 0 }) ds (endState (literalState d1 c))) := by
         rw [wrD_eq]; simp; rfl
-      simp only [C.run, deflate_slow, bind_app, loopRun, ret, ld1, availB, ite_true, readC, tallyRun, wr1, wr2]
+      simp only [C.run, SlowProofs.after_loop loopRun, ret, slowFinish, SlowProofs.finish_hash_eq, bind_app, ld1, availB, ite_true, readC, tallyRun, wr1, wr2]
       exact tailRun
     · have idle : d1.match_available = 0 := by simpa using avail
       have availB : (d1.match_available != 0) = false := by simp [idle]
       obtain ⟨wrRun, head2⟩ := set_insert_head head1 empty1 (fun _ k => k)
       obtain ⟨bstate, after, z', d', tailRun, hz', hs', fin⟩ := finish_tail_qI2 head2 pending1 flush idle empty1
       refine ⟨bstate, after, z', d', ?_, hz', hs', QEndI2.after down1 (QEndI2.after (QDI.of_down (insert_down pending1 _) rfl) fin)⟩
-      simp only [C.run, deflate_slow, bind_app, loopRun, ret, ld1, availB, Bool.false_eq_true, ite_false, wrRun]
+      simp only [C.run, SlowProofs.after_loop loopRun, ret, slowFinish, SlowProofs.finish_hash_eq, bind_app, ld1, availB, Bool.false_eq_true, ite_false, wrRun]
       exact tailRun
 
 end Zlib.Deflate.Universal
@@ -329,7 +335,7 @@ theorem stored_finalG2 {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d :
   have hz := good.live.hz
   have readAvail : zrd (some r) (·.avail_in) h = .ok (z.avail_in, h) := by simp [zrd_eq, hz]
   unfold storedFinal
-  simp only [bind_app, ldDeflateState_tab good.live.hs, lsubRun, pure_app, readAvail]
+  simp only [bind_app, ldDeflateState_tab good.live.hs, lsubRun, pure_app, good.live.back, storedShouldEmit_at hz, show @storedMin UInt32 _ _ = MIN from rfl, show @storedMin UInt64 _ _ = MIN from rfl]
   obtain ⟨left, hleft⟩ : ∃ l, l = (Int64.ofInt ((d.strstart.toNat : Int) - d.block_start.toInt)).toUInt64.toUInt32 :=
     ⟨_, rfl⟩
   rw [← hleft]
@@ -376,7 +382,7 @@ theorem stored_finalG2 {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d :
   have wd := work_l0 level0 shape
   by_cases c : (decide (left ≥ MIN Hv d.w_size) || ((left != 0 || flush == Z_FINISH) && flush != Z_NO_FLUSH &&
       z.avail_in == 0 && decide (left ≤ Hv))) = true
-  · obtain ⟨p, H1, bs, H2, after, z', e, produced, add, blk, lad, wrt, fl, goodA, buffersA, accA, fieldsA, bsA,
+  · obtain ⟨p, H1, bs, H2, after, z', e, produced, add, blk, readStart, lad, wrt, readStream, fl, goodA, buffersA, accA, fieldsA, bsA,
         bvA, cursorA, staticA, nallocA, winA, prevA, headA, totA, frA, cntA, remA⟩ :=
       stored_block_flushQ good buffers out pend0 (shape.cursor pend0) bits.2 zero.1 (MIN left Hv)
         (by have := shape.blockStart; omega) (by omega) (by omega)
@@ -395,7 +401,7 @@ theorem stored_finalG2 {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d :
       rw [we, wd, ssA]; omega
     have outA := accA.2.2.2.1
     have inA : z'.avail_in = z.avail_in := UInt32.toNat_inj.mp (by have := accA.2.2.1; omega)
-    simp only [c, ite_true, bind_app, add, blk, lad, wrt, fl]
+    simp only [c, ite_true, bind_app, storedLast_at hz, add, blk, readStart, lad, wrt, readStream, fl]
     by_cases l0 : ((if (flush == Z_FINISH && z.avail_in == 0 && MIN left Hv == left) = true then (1 : Int32) else 0) != 0) = true
     · obtain ⟨wrRun, invB, buffersB⟩ := bi_used_step invA buffersA levelA
       refine ⟨finish_started, _, z', _, by simp only [l0, ite_true, bind_app, wrRun]; rfl, invB.good.live.hz,
@@ -498,9 +504,10 @@ theorem stored_endG2 {g : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : D
       exact ⟨g, _, _, by simp only [u0, Bool.false_eq_true, ite_false]; rfl, hwRun, inv2, buffers2, pend0, level0, rfl,
         Nat.le_of_eq rfl, rfl, fun _ => ⟨rfl, rfl, rfl, rfl⟩⟩
   have hz2 := inv2.good.live.hz
+  have readStream : rd (some (.tab ds)) (·.strm) g = .ok (some r, g) := by simp [rdD_eq, good.live.hs, good.live.back]
   unfold storedEnd
   simp only [ite_seq]
-  simp only [bind_app, readAvail g hz, keepRun, hwRun]
+  simp only [bind_app, readStream, readAvail g hz, keepRun, storedHighWater_eq, hwRun]
   by_cases lastC : (st.last != 0) = true
   · obtain ⟨wrRun, inv3, buffers3⟩ := bi_used_step inv2 buffers2 level1
     have facts := lastF (by simpa using lastC)
@@ -508,7 +515,7 @@ theorem stored_endG2 {g : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : D
       inv3.good.live.hs, by show Quiet.work e2 + _ ≤ _; omega, Nat.le_refl _, gz2, fun _ nz => absurd facts.2.1 nz,
       fun e => absurd e (by decide)⟩
   · simp only [Bool.not_eq_true] at lastC
-    simp only [lastC, Bool.false_eq_true, ite_false, bind_app, ldDeflateState_tab inv2.good.live.hs, readAvail _ hz2]
+    simp only [lastC, Bool.false_eq_true, ite_false, bind_app, ldDeflateState_tab inv2.good.live.hs, storedBlockDone_at hz2 _ inv2.good.live.back]
     by_cases early : (flush != Z_NO_FLUSH && flush != Z_FINISH && z.avail_in == 0 &&
         (e2.strstart.toUInt64.toInt64 == e2.block_start)) = true
     · refine ⟨block_done, _, z, _, by simp only [early, ite_true]; rfl, hz2, inv2.good.live.hs, by omega,

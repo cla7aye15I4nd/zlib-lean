@@ -164,12 +164,12 @@ theorem ofNat_succ (i : Nat) (hi : i ≤ 4) : UInt32.ofNat i + 1 = UInt32.ofNat 
 theorem syncFirst_run {H0 : Heap} {zs nb : Nat} {st : InflateState} {A : Array UInt8}
     (hs : H0.istates zs = some st) (hA : H0.bytes nb = some A) (hAs : A.size = 4) (hro : H0.ro nb = false)
     (hb39 : st.bits.toNat ≤ 39) :
-    syncFirst (some (.tab zs)) (.ref (.blk nb) 0) st H0 = .ok ((), syncFirstHeap H0 zs nb st A) := by
+    syncFirst (some (.tab zs)) (.ref (.blk nb) 0) H0 = .ok ((), syncFirstHeap H0 zs nb st A) := by
   have h7 : (st.bits &&& 7) < 64 := by
     rw [UInt32.lt_iff_toNat_lt, sync_and7_toNat]; simp; omega
   have hbd := bitsDrop_toNat st.bits hb39
   unfold syncFirst
-  isimp [hs, sync_shr64_run H0 _ _ h7]
+  isimp [hs, setI_istates_same, setI_setI, sync_shr64_run _ _ _ h7, syncsearch_inflateHave]
   have hn4 : syncNB st ≤ 4 := by unfold syncNB; omega
   have hs0 : (setI H0 zs { st with mode := SYNC, hold := st.hold >>> (st.bits.toUInt64 &&& 7), bits := st.bits - (st.bits &&& 7) }) = restoreHeap H0 zs nb { st with mode := SYNC, hold := st.hold >>> (st.bits.toUInt64 &&& 7), bits := st.bits - (st.bits &&& 7) } A (syncNB st) 0 := by
     have hb8 : UInt32.ofNat (8 * syncNB st) = st.bits - (st.bits &&& 7) := by rw [hbd]; rfl
@@ -201,7 +201,7 @@ theorem syncFirst_run {H0 : Heap} {zs nb : Nat} {st : InflateState} {A : Array U
     have hadd' := hadd
     unfold OkOn at hadd'
     simp only [Nat.zero_add] at hadd'
-    simp only [bind_app, pure_app, ldI_eq, hi, hlen, hadd', store8, hstore, wrI_eq, Space.put]
+    simp only [bind_app, pure_app, ldI_eq, hi, hlen, hadd', store8, hstore, wrI_eq, Space.put, setI_istates_same, setI_setI]
     simp [restoreHeap, setI, upd_upd, fillBuf, shr8N]
     have e1 : 8 * UInt32.ofNat (syncNB st - i) - 8 = 8 * UInt32.ofNat (syncNB st - (i + 1)) := by
       rw [bits_step (syncNB st - i) (by omega) (by omega)]
@@ -209,7 +209,7 @@ theorem syncFirst_run {H0 : Heap} {zs nb : Nat} {st : InflateState} {A : Array U
     rw [e1]
   have hist : (restoreHeap H0 zs nb { st with mode := SYNC, hold := st.hold >>> (st.bits.toUInt64 &&& 7), bits := st.bits - (st.bits &&& 7) } A (syncNB st) (syncNB st)).istates zs = some { st with mode := SYNC, hold := shr8N (syncNB st) (st.hold >>> (st.bits.toUInt64 &&& 7)), bits := UInt32.ofNat (8 * (syncNB st - syncNB st)) } := by
     simp [restoreHeap]
-  simp only [hist]
+  simp only [hist, setI_istates_same]
   have hsz : (fillBuf A (st.hold >>> (st.bits.toUInt64 &&& 7)) (syncNB st)).size = 4 := by rw [fillBuf_size]; exact hAs
   have hnn : (UInt32.ofNat (syncNB st)).toNat = syncNB st := UInt32.toNat_ofNat_of_lt' (by simp [UInt32.size]; omega)
   rw [syncsearch_run (r := BRef.blk nb) (a := fillBuf A (st.hold >>> (st.bits.toUInt64 &&& 7)) (syncNB st)) (o := 0)

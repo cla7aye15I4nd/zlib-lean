@@ -64,7 +64,7 @@ theorem stable_ZFREE_words (p : ZStreamPtr) (words : WPtr) : StableM (ZFREE_word
     | deflate_borrow_step
 
 theorem stable_deflateEnd (p : ZStreamPtr) : StableM (deflateEnd p) := by
-  unfold deflateEnd
+  unfold deflateEnd ZFREE_state
   repeat' first
     | exact stable_deflateStateCheck _
     | exact stable_ZFREE_bytes _ _

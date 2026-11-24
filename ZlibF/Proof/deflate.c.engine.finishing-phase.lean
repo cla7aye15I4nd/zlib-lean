@@ -30,7 +30,7 @@ theorem public_finishing_header_source {h : Heap} {r : ZStreamRef} {ds : Nat}
       (publicDataTail (some r) (some (.tab ds)) Z_FINISH) h =
       publicFinishTail (some r) (some (.tab ds)) Z_FINISH h := by
   unfold publicZlibHeader
-  simp only [bind_app, rdD_eq, good.live.hs, phase.status,
+  simp only [bind_app, ldDeflateState_tab good.live.hs, rdD_eq, good.live.hs, phase.status,
     show (FINISH_STATE == INIT_STATE) = false from rfl, Bool.false_and, Bool.false_eq_true, ite_false]
   exact public_finish_source good.live.hz good.live.hs phase.status empty phase.lookahead
 

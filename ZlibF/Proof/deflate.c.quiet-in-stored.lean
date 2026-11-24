@@ -38,7 +38,7 @@ theorem stored_restS {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : D
     (mbPos : 0 < min_block.toNat)
     (lenCase : len.toNat = left.toNat + z.avail_in.toNat ∨ len.toNat = have_.toNat ∨ len.toNat = 65535)
     (mbW : min_block.toNat ≤ d.w_size.toNat) (lenLeA : len.toNat ≤ left.toNat + z.avail_in.toNat) :
-    ∃ st' g z' d', storedRest (some (.tab ds)) flush (some r) min_block st have_ left len z h = .ok (st', g) ∧
+    ∃ st' g z' d', storedRest (some (.tab ds)) flush min_block st have_ left len z h = .ok (st', g) ∧
       StoredStep h g r ds z z' d d' ∧ (st'.brk = false → z'.avail_out.toNat < z.avail_out.toNat) ∧
       (st.last = 0 → st'.last ≠ 0 → flush = Z_FINISH ∧ z'.avail_in = 0 ∧ d'.bi_valid.toInt = 0) ∧
       (st'.brk = true → g = h ∧ z' = z ∧ d' = d ∧
@@ -120,8 +120,8 @@ theorem stored_restS {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : D
     have run : (if (decide (len < min_block) && (len == 0 && flush != Z_FINISH || flush == Z_NO_FLUSH || !all)) = true
         then (pure { st with len, left, have_, all, brk := true } : M StoredS)
         else (do
-          storedEmit (some (.tab ds)) (some r) len last
-          let moved ← storedDirect (some (.tab ds)) (some r) left len
+          storedEmit (some (.tab ds)) len last
+          let moved ← storedDirect (some (.tab ds)) left len
           pure { st with last, len := moved.2, left := moved.1, have_, all, brk := false })) h =
         .ok ({ st with last, len := len - directLeft left len, left := directLeft left len, have_, all, brk := false }, g) := by
       dsimp only [all, last]
@@ -190,7 +190,7 @@ theorem stored_iterationS {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {
     (out : z.next_out ≠ .null) (input : z.avail_in ≠ 0 → z.next_in ≠ .null) (level0 : d.level = 0)
     (flush : Int32) (min_block : UInt32) (st : StoredS) (mbPos : 0 < min_block.toNat)
     (mbW : min_block.toNat ≤ d.w_size.toNat) :
-    ∃ st' g z' d', storedBody (some (.tab ds)) flush (some r) min_block st h = .ok (st', g) ∧
+    ∃ st' g z' d', storedBody (some (.tab ds)) flush min_block st h = .ok (st', g) ∧
       StoredStep h g r ds z z' d d' ∧ (st'.brk = false → z'.avail_out.toNat < z.avail_out.toNat) ∧
       (st.last = 0 → st'.last ≠ 0 → flush = Z_FINISH ∧ z'.avail_in = 0 ∧ d'.bi_valid.toInt = 0) ∧
       (st'.brk = true → g = h ∧ z' = z ∧ d' = d ∧
@@ -208,7 +208,7 @@ theorem stored_iterationS {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {
   have bits := inv.bi_valid_le
   have hvN := header_bytes_value d.bi_valid bits.1 bits.2
   unfold storedBody
-  simp only [bind_app, ldDeflateState_tab good.live.hs, ldZ_eq, good.live.hz]
+  simp only [bind_app, ldDeflateState_tab good.live.hs, good.live.back, ldZ_eq, good.live.hz]
   by_cases full : z.avail_out < (d.bi_valid.toUInt32 + 42) >>> 3
   · have fullN : z.avail_out.toNat < ((d.bi_valid.toUInt32 + 42) >>> 3).toNat := UInt32.lt_iff_toNat_lt.mp full
     rw [hvN] at fullN
@@ -307,7 +307,7 @@ theorem stored_loopS {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : D
     (out : z.next_out ≠ .null) (input : z.avail_in ≠ 0 → z.next_in ≠ .null) (level0 : d.level = 0)
     (flush : Int32) (min_block : UInt32) (st0 : StoredS) (start : st0.last = 0)
     (mbPos : 0 < min_block.toNat) (mbW : min_block.toNat ≤ d.w_size.toNat) :
-    ∃ st g z' d', cdoWhile (storedBody (some (.tab ds)) flush (some r) min_block)
+    ∃ st g z' d', cdoWhile (storedBody (some (.tab ds)) flush min_block)
         (fun st => pure (!st.brk && st.last == 0, st)) st0 h = .ok (st, g) ∧
       StoredStep h g r ds z z' d d' ∧
       (st.last ≠ 0 → flush = Z_FINISH ∧ z'.avail_in = 0 ∧ d'.bi_valid.toInt = 0) ∧
@@ -322,7 +322,7 @@ theorem stored_loopS {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : D
     (s.last = 0 → LoopExit flush min_block.toNat z' d') ∧
     (z'.avail_in.toNat < z.avail_in.toNat → Zlib.Deflate.Universal.Quiet.work d' = 0)
   let μ : StoredS → Heap → Nat := fun _ g => match r.get g with | some z' => z'.avail_out.toNat | none => 0
-  have step : ∀ s g, P s g → ∃ s1 g1 c s2 g2, storedBody (some (.tab ds)) flush (some r) min_block s g = .ok (s1, g1) ∧
+  have step : ∀ s g, P s g → ∃ s1 g1 c s2 g2, storedBody (some (.tab ds)) flush min_block s g = .ok (s1, g1) ∧
       (fun st : StoredS => (pure (!st.brk && st.last == 0, st) : M (Bool × StoredS))) s1 g1 = .ok ((c, s2), g2) ∧
       (c = true → P s2 g2 ∧ μ s2 g2 < μ s g) ∧ (c = false → Q s2 g2) := by
     intro s g ⟨l0, z1, d1, now, w1⟩
@@ -419,7 +419,7 @@ theorem stored_refillS {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d :
   have hSelf : setD { h with bytes := upd h.bytes w (some wa) } ds d = h := by
     rw [upd_self _ _ _ getW]; exact setD_self state0
   unfold storedRefill
-  simp only [bind_app, readAvail h hz]
+  simp only [bind_app, good.live.back, readAvail h hz]
   by_cases cond : (decide (z.avail_in > (d.window_size - d.strstart.toUInt64).toUInt32) &&
       decide (d.block_start ≥ d.w_size.toUInt64.toInt64)) = true
   · simp only [Bool.and_eq_true, decide_eq_true_eq] at cond
@@ -493,7 +493,7 @@ theorem stored_refillS {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d :
     have condT : (decide (z.avail_in > (d.window_size - d.strstart.toUInt64).toUInt32) &&
         decide (d.block_start ≥ d.w_size.toUInt64.toInt64)) = true := by
       simp only [Bool.and_eq_true, decide_eq_true_eq]; exact ⟨more, far⟩
-    simp only [condT, ite_true, bind_app, slide, readAvail _ hz1]
+    simp only [condT, ite_true, bind_app, slide, rdD_eq, setD_dstates_same, show (refillSlide d).strm = some r from good.live.back, readAvail _ hz1]
     by_cases c2 : (d.window_size - d.strstart.toUInt64).toUInt32 + d.w_size > z.avail_in
     · have c2N := UInt32.lt_iff_toNat_lt.mp c2
       rw [have1N] at c2N
@@ -512,7 +512,7 @@ theorem stored_refillS {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d :
       rw [wk, un]
       omega
   · simp only [Bool.not_eq_true] at cond
-    simp only [cond, Bool.false_eq_true, ite_false, bind_app, readAvail h hz]
+    simp only [cond, Bool.false_eq_true, ite_false, bind_app, rdD_eq, state0, good.live.back, readAvail h hz]
     have finishB : ∀ n : UInt32, n.toNat ≤ z.avail_in.toNat → n.toNat ≤ d.window_size.toNat - d.strstart.toNat →
         ∃ g zF eF used, storedRead (some (.tab ds)) (some r) n h = .ok ((), g) ∧ DInv g r ds zF eF ∧
           StreamBuffers g r ∧ ByteSizes h g ∧ StreamAccounting z zF used 0 ∧
@@ -628,7 +628,7 @@ theorem stored_finalS {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : 
   have hz := good.live.hz
   have readAvail : zrd (some r) (·.avail_in) h = .ok (z.avail_in, h) := by simp [zrd_eq, hz]
   unfold storedFinal
-  simp only [bind_app, ldDeflateState_tab good.live.hs, lsubRun, pure_app, readAvail]
+  simp only [bind_app, ldDeflateState_tab good.live.hs, lsubRun, pure_app, good.live.back, storedShouldEmit_at hz, show @storedMin UInt32 _ _ = MIN from rfl, show @storedMin UInt64 _ _ = MIN from rfl]
   obtain ⟨left, hleft⟩ : ∃ l, l = (Int64.ofInt ((d.strstart.toNat : Int) - d.block_start.toInt)).toUInt64.toUInt32 :=
     ⟨_, rfl⟩
   rw [← hleft]
@@ -675,7 +675,7 @@ theorem stored_finalS {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : 
   have wd := work_l0 level0 shape
   by_cases c : (decide (left ≥ MIN Hv d.w_size) || ((left != 0 || flush == Z_FINISH) && flush != Z_NO_FLUSH &&
       z.avail_in == 0 && decide (left ≤ Hv))) = true
-  · obtain ⟨p, H1, bs, H2, after, z', e, produced, add, blk, lad, wrt, fl, goodA, buffersA, accA, fieldsA, bsA,
+  · obtain ⟨p, H1, bs, H2, after, z', e, produced, add, blk, readStart, lad, wrt, readStream, fl, goodA, buffersA, accA, fieldsA, bsA,
         bvA, cursorA, staticA, nallocA, winA, prevA, headA, totA, frA, cntA, remA⟩ :=
       stored_block_flushQ good buffers out pend0 (shape.cursor pend0) bits.2 zero.1 (MIN left Hv)
         (by have := shape.blockStart; omega) (by omega) (by omega)
@@ -695,7 +695,7 @@ theorem stored_finalS {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : 
     have bigA : z.avail_in ≠ 0 → z'.avail_out = 0 := fun nz => by
       have := P1 nz; have := P2 nz
       exact fullA (by omega)
-    simp only [c, ite_true, bind_app, add, blk, lad, wrt, fl]
+    simp only [c, ite_true, bind_app, storedLast_at hz, add, blk, readStart, lad, wrt, readStream, fl]
     by_cases l0 : ((if (flush == Z_FINISH && z.avail_in == 0 && MIN left Hv == left) = true then (1 : Int32) else 0) != 0) = true
     · obtain ⟨wrRun, invB, buffersB⟩ := bi_used_step invA buffersA levelA
       have cf : (flush == Z_FINISH && z.avail_in == 0 && MIN left Hv == left) = true := by
@@ -797,16 +797,17 @@ theorem stored_endS {g : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : De
       exact ⟨g, _, _, by simp only [u0, Bool.false_eq_true, ite_false]; rfl, hwRun, inv2, buffers2, pend0, level0, rfl,
         Nat.le_of_eq rfl, rfl, fun _ => ⟨rfl, rfl⟩, fun c => absurd (by rw [← usedN]; simp at u0; rw [u0]; rfl) c, rfl, rfl⟩
   have hz2 := inv2.good.live.hz
+  have readStream : rd (some (.tab ds)) (·.strm) g = .ok (some r, g) := by simp [rdD_eq, good.live.hs, good.live.back]
   unfold storedEnd
   simp only [ite_seq]
-  simp only [bind_app, readAvail g hz, keepRun, hwRun]
+  simp only [bind_app, readStream, readAvail g hz, keepRun, storedHighWater_eq, hwRun]
   by_cases lastC : (st.last != 0) = true
   · obtain ⟨wrRun, inv3, buffers3⟩ := bi_used_step inv2 buffers2 level1
     have facts := lastF (by simpa using lastC)
     exact ⟨finish_done, _, z, _, by simp only [lastC, ite_true, bind_app, wrRun]; rfl, inv3.good.live.hz,
       inv3.good.live.hs, Or.inl facts.2.1, fun e => by rcases e with e | e <;> exact absurd e (by decide)⟩
   · simp only [Bool.not_eq_true] at lastC
-    simp only [lastC, Bool.false_eq_true, ite_false, bind_app, ldDeflateState_tab inv2.good.live.hs, readAvail _ hz2]
+    simp only [lastC, Bool.false_eq_true, ite_false, bind_app, ldDeflateState_tab inv2.good.live.hs, storedBlockDone_at hz2 _ inv2.good.live.back]
     by_cases early : (flush != Z_NO_FLUSH && flush != Z_FINISH && z.avail_in == 0 &&
         (e2.strstart.toUInt64.toInt64 == e2.block_start)) = true
     · have early' := early

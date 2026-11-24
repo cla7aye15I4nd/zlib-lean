@@ -31,6 +31,13 @@ theorem orderAt_run (h : Heap) (i : UInt32) (hi : i.toNat < 19) :
   simp [pure_app]
   exact (getElem!_pos order i.toNat hi').symm
 
+/-- The raw C subscript requires this bound even though the decoder model
+can report the invalid index as a fault. -/
+theorem orderAt_outside (h : Heap) (i : UInt32) (outside : 19 ≤ i.toNat) :
+    orderAt i h = .error (.ub "order index outside its array") := by
+  have past : order.size ≤ i.toNat := by simpa only [order_size] using outside
+  simp [orderAt, Array.getElem?_eq_none past, C.ub]
+
 /-! ## The 3-bit groups of a bit stream -/
 
 /-- The number given by the first three bits of `L` (least significant first; missing bits are 0). -/
@@ -302,7 +309,7 @@ theorem noRet_xwhile {cond : X Bool} {body : X Unit} (hc : NoRet cond) (hb : NoR
   noRet_xwhileBrk hc (noRet_bind hb fun _ => noRet_pure _)
 
 theorem noRet_PULLBYTE : NoRet PULLBYTE := by
-  unfold PULLBYTE
+  rw [Zlib.Inflate.Proofs.pullByte_eq_previous]
   refine noRet_bind noRet_get fun l => ?_
   by_cases h0 : l.have_ == 0
   · simp only [h0, ite_true]

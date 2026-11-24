@@ -1,9 +1,19 @@
 import Lean2C.ABI
 import Lean2C.Headers
 import Lean2C.Simple
+import ZlibF.Zlib.«deflate.c»
 import ZlibF.Zlib.«gzclose.c»
+import ZlibF.Zlib.«gzlib.c»
+import ZlibF.Zlib.«gzread.c»
+import ZlibF.Zlib.«gzwrite.c»
+import ZlibF.Zlib.«infback.c»
+import ZlibF.Zlib.«inflate.c»
+import ZlibF.Zlib.«inffast.c»
+import ZlibF.Zlib.«inftrees.c»
+import ZlibF.Zlib.«trees.c»
 import ZlibF.Zlib.«zutil.c»
 import ZlibF.Zlib.«adler32.c»
+import ZlibF.Zlib.«crc32.c»
 import ZlibF.Zlib.«compress.c»
 import ZlibF.Zlib.«uncompr.c»
 
@@ -22,13 +32,24 @@ elab "standaloneUnits%" : term => do
   let defl ← evalStr (← `(abiDeflateLayouts%))
   let gz ← evalStr (← `(abiGzLayouts%))
   let mods : List (String × Name) :=
-    [("gzclose.c", `ZlibF.Zlib.«gzclose.c»),
+    [("deflate.c", `ZlibF.Zlib.«deflate.c»),
+     ("gzclose.c", `ZlibF.Zlib.«gzclose.c»),
+     ("gzlib.c", `ZlibF.Zlib.«gzlib.c»),
+     ("gzread.c", `ZlibF.Zlib.«gzread.c»),
+     ("gzwrite.c", `ZlibF.Zlib.«gzwrite.c»),
+     ("infback.c", `ZlibF.Zlib.«infback.c»),
+     ("inflate.c", `ZlibF.Zlib.«inflate.c»),
+     ("inffast.c", `ZlibF.Zlib.«inffast.c»),
+     ("inftrees.c", `ZlibF.Zlib.«inftrees.c»),
+     ("trees.c", `ZlibF.Zlib.«trees.c»),
      ("zutil.c", `ZlibF.Zlib.«zutil.c»),
      ("adler32.c", `ZlibF.Zlib.«adler32.c»),
+     ("crc32.c", `ZlibF.Zlib.«crc32.c»),
      ("compress.c", `ZlibF.Zlib.«compress.c»),
      ("uncompr.c", `ZlibF.Zlib.«uncompr.c»)]
   let pairs ← mods.mapM fun (file, modName) => do
-    return (file, ← Lean2C.Simple.compileModule modName zs inf defl gz)
+    let parts := if modName == `ZlibF.Zlib.«deflate.c» then [`ZlibF.Zlib.«deflate_base.c», `ZlibF.Zlib.«deflate_strategies.c»] else []
+    return (file, ← Lean2C.Simple.compileModule modName zs inf defl gz parts)
   return toExpr pairs.toArray
 
 def emit (out : System.FilePath) : IO Unit := do

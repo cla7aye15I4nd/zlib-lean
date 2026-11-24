@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.mode-correspondence»
 import ZlibF.Proof.«inflate.c.output-invariant»
 
 namespace Zlib.Inflate.Proofs
@@ -22,7 +23,7 @@ theorem inflate_LIT_view_run {c : Ctx} {l : IL} {h : Heap} {r : ZStreamRef} {zs 
   have afterEnv : Env c after r zs z s :=
     ⟨E.strm, E.st, by rw [byte_view_put_stream]; exact E.hz,
       by rw [byte_view_put_istates]; exact E.hs⟩
-  unfold inflate_LIT
+  rw [LIT_preserved]
   rw [runX_bind, runX_get]
   simp only [left, beq_iff_eq, ↓reduceIte]
   rw [runX_bind, runX_ldS E]

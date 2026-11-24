@@ -238,18 +238,55 @@ theorem put_setD (h : Heap) (ds w : Nat) (d : DeflateState) (a : Array UInt8) :
 def keepSlide (d : DeflateState) : DeflateState :=
   { d with strstart := d.strstart - d.w_size, «matches» := if d.«matches» < 2 then d.«matches» + 1 else d.«matches», insert := if d.insert > d.strstart - d.w_size then d.strstart - d.w_size else d.insert }
 
+/-- Copy a window after a record update. The byte view of the raw window
+and its permissions are unchanged by the intermediate state write. -/
+private theorem slide_copy_after {h : Heap} {ds w : Nat} {d : DeflateState} {wa : Array UInt8}
+    (e : DeflateState) (win : d.window = .ref (.blk w) 0) (get : Space.get h (BRef.blk w) = some wa)
+    (ro : Space.ro h (BRef.blk w) = false) (fit : d.w_size.toNat ≤ wa.size)
+    (limit : (d.strstart-d.w_size).toNat + d.w_size.toNat ≤ wa.size)
+    (apart : (d.strstart-d.w_size).toNat ≤ d.w_size.toNat) :
+    let H := setD h ds e
+    let n := (d.strstart-d.w_size).toNat
+    padd d.window d.w_size.toNat H = .ok (.ref (.blk w) d.w_size.toNat, H) ∧
+    memcpyB d.window (.ref (.blk w) d.w_size.toNat) n H =
+      .ok ((), setD (Space.put h (BRef.blk w) (copyRange wa wa 0 d.w_size.toNat n)) ds e) := by
+  dsimp only
+  rw [win]
+  have g : Space.get (setD h ds e) (BRef.blk w) = some wa := get
+  constructor
+  · simpa only [Nat.zero_add] using padd_view (io := 0) (n := d.w_size.toNat) g (by omega)
+  · exact Ptr.memcpy_ok g g ro (by omega) (by omega) (Or.inr (Or.inl (by omega)))
+
+private theorem storedSlideCount_tab {h : Heap} {ds : Nat} {d : DeflateState} (hd : h.dstates ds = some d) :
+    storedSlideCount (some (.tab ds)) h = .ok ((), setD h ds
+      {d with «matches» := if d.«matches» < 2 then d.«matches» + 1 else d.«matches»}) := by
+  by_cases step : d.«matches» < 2 <;>
+    simp [storedSlideCount, rdD_eq, hd, step, wrD_eq, setD_self hd]
+
+private theorem storedClampInsert_tab {h : Heap} {ds : Nat} {d : DeflateState} (hd : h.dstates ds = some d) :
+    storedClampInsert (some (.tab ds)) h = .ok ((), setD h ds
+      {d with insert := if d.insert > d.strstart then d.strstart else d.insert}) := by
+  by_cases step : d.insert > d.strstart <;>
+    simp [storedClampInsert, ldDeflateState_tab hd, step, wrD_eq, hd, setD_self hd]
+
+private theorem storedAddInsert_tab {h : Heap} {ds : Nat} {d : DeflateState} (hd : h.dstates ds = some d)
+    (n : UInt32) : storedAddInsert (some (.tab ds)) n h = .ok ((), setD h ds
+      {d with insert := d.insert + MIN n (d.w_size - d.insert)}) := by
+  simp [storedAddInsert, ldDeflateState_tab hd, cdecl, wrD_eq, hd, MIN, storedMin]
+
 /-- The last part of `storedKeep`: `used` input bytes after `strstart`, then the block start. -/
 theorem keep_write {H : Heap} {r : ZStreamRef} {ds w : Nat} {z : ZStream} {e : DeflateState}
     {wb ia : Array UInt8} {ref : BRef} {io : Nat} (used : UInt32)
-    (state : H.dstates ds = some e) (win : e.window = .ref (.blk w) 0)
+    (state : H.dstates ds = some e) (back : e.strm = some r) (win : e.window = .ref (.blk w) 0)
     (get : Space.get H (BRef.blk w) = some wb) (ro : Space.ro H (BRef.blk w) = false)
     (fit : e.strstart.toNat + used.toNat ≤ wb.size) (hz : r.get H = some z) (src : z.next_in = .ref ref io)
     (inGet : Space.get H ref = some ia) (inBound : io ≤ ia.size) (consumed : used.toNat ≤ io)
     (apart : ref ≠ .blk w) :
     (do
       let d ← ldDeflateState (some (.tab ds))
-      memcpyB (← padd d.window d.strstart.toNat) (← psub (← zrd (some r) (·.next_in)) used.toNat) used.toNat
-      wr (some (.tab ds)) (fun d => { d with strstart := d.strstart + used, insert := d.insert + MIN used (d.w_size - d.insert) })
+      memcpyB (← padd d.window d.strstart.toNat) (← psub (← zrd d.strm (·.next_in)) used.toNat) used.toNat
+      wr (some (.tab ds)) (fun d => { d with strstart := d.strstart + used })
+      storedAddInsert (some (.tab ds)) used
       wr (some (.tab ds)) (fun d => { d with block_start := d.strstart.toUInt64.toInt64 })) H =
       .ok ((), setD (Space.put H (BRef.blk w) (copyRange wb ia e.strstart.toNat (io - used.toNat) used.toNat)) ds
         (keepState e (e.strstart + used) (e.insert + MIN used (e.w_size - e.insert)) e.«matches»
@@ -264,8 +301,8 @@ theorem keep_write {H : Heap} {r : ZStreamRef} {ds w : Nat} {z : ZStream} {e : D
     Ptr.memcpy_ok get inGet ro fit (by omega) (Or.inl (Ne.symm apart))
   have state1 : (Space.put H (BRef.blk w) (copyRange wb ia e.strstart.toNat (io - used.toNat) used.toNat)).dstates ds =
       some e := state
-  simp only [bind_app, ldDeflateState_tab state, dst, read, sub, copy, wrD_eq, state1, setD_dstates_same, setD_setD]
-  rfl
+  simp only [bind_app, ldDeflateState_tab state, back, dst, read, sub, copy, wrD_eq, state1, storedAddInsert_tab (setD_dstates_same ..), setD_dstates_same, setD_setD]
+  simp only [keepState, back]
 
 /-- The high-water update after keeping the input. -/
 def waterState (e : DeflateState) : DeflateState :=
@@ -365,10 +402,22 @@ theorem stored_keep {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : De
       rw [win]; exact Ptr.memcpy_ok getWv inGet ro (by omega) (by omega) (Or.inl (Ne.symm apart))
     let d' := keepState d d.w_size d.w_size 2 d.w_size.toUInt64.toInt64 d.high_water
     have state1 : (Space.put h (BRef.blk w) wa1).dstates ds = some d := state0
+    let M := setD h ds {d with «matches» := 2}
+    have gI : Space.get M ref = some ia := (view_setD_other apartS).trans inGet
+    have gW : Space.get M (BRef.blk w) = some wa := getWv
+    have subM := psub_view (n := d.w_size.toNat) gI (by omega) inBound
+    have copyM : memcpyB d.window (.ref ref (io - d.w_size.toNat)) d.w_size.toNat M =
+        .ok ((), setD (Space.put h (BRef.blk w) wa1) ds {d with «matches» := 2}) := by
+      have copied : memcpyB (.ref (.blk w) 0) (.ref ref (io - d.w_size.toNat)) d.w_size.toNat M = .ok ((), Space.put M (BRef.blk w) wa1) :=
+        Ptr.memcpy_ok gW gI ro (by omega) (by omega) (Or.inl (Ne.symm apart))
+      exact (congrArg (fun p => memcpyB p (.ref ref (io - d.w_size.toNat)) d.w_size.toNat M) win).trans copied
+    have readM : zrd d.strm (·.next_in) M = .ok (.ref ref io, M) := by
+      rw [good.live.back]; exact readIn M good.live.hz
+    dsimp only [M] at readM subM copyM
     have run : storedKeep (some (.tab ds)) (some r) used h = .ok ((), setD (Space.put h (BRef.blk w) wa1) ds d') := by
       unfold storedKeep
-      simp only [bind_app, ldDeflateState_tab state0, big, ite_true, readIn h good.live.hz, sub, copy,
-        wrD_eq, state1, setD_dstates_same, setD_setD]
+      simp only [bind_app, ldDeflateState_tab state0, big, ite_true, wrD_eq, state0, setD_dstates_same,
+        ldDeflateState_tab (setD_dstates_same ..), rdD_eq, readM, subM, copyM, setD_setD]
       rfl
     have bsN : (d.w_size.toUInt64.toInt64).toInt = d.w_size.toNat := u32_toInt64_toInt _
     have wf := water_facts (d := d) d' hwLe (by show d.w_size.toNat ≤ _; omega) wsSmall
@@ -410,7 +459,7 @@ theorem stored_keep {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : De
         rw [view_put_stream]; exact hz
       have w2 := keep_write (H := setD (Space.put h (BRef.blk w)
           (copyRange wa wa 0 d.w_size.toNat (d.strstart - d.w_size).toNat)) ds (keepSlide d))
-        (r := r) (z := z) used (setD_dstates_same _ _ _) win
+        (r := r) (z := z) used (setD_dstates_same _ _ _) (by exact good.live.back) win
         (by rw [view_setD_other (by simp)]; exact view_put_get getWv ro _) ro
         (by rw [size1]; show (d.strstart - d.w_size).toNat + used.toNat ≤ wa.size; omega)
         hzH src (by rw [view_setD_other apartS, view_put_other apart]; exact inGet) inBound consumed apart
@@ -452,9 +501,14 @@ theorem stored_keep {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : De
             setD { h with bytes := upd h.bytes w (some wa2) } ds e3 := by
           rw [put_setD, setD_setD, put_blk_put_blk]; rfl
         rw [← heapEq, ← w2]
+        let e := {d with strstart := d.strstart - d.w_size}
+        obtain ⟨address, moved⟩ := slide_copy_after (ds := ds) e win getWv ro (by omega) (by omega) (by omega)
+        rw [← hwa1] at moved
+        dsimp only [e] at address moved
         unfold storedKeep
-        simp only [bind_app, ldDeflateState_tab state0, big, ite_false, slide, ite_true, dstW, copy1, wrD_eq,
-          stateP]
+        simp only [bind_app, ldDeflateState_tab state0, big, ite_false, slide, ite_true, wrD_eq, state0,
+          ldDeflateState_tab (setD_dstates_same ..), address, moved, setD_setD,
+          storedSlideCount_tab (setD_dstates_same ..), storedClampInsert_tab (setD_dstates_same ..)]
         rfl
       have hash1 : LevelHash (setD (Space.put h (BRef.blk w) wa1) ds (keepSlide d)) (keepSlide d) :=
         level_hash_slide hash0 zero.2.1 zero.2.1 ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩ rfl
@@ -495,7 +549,7 @@ theorem stored_keep {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : De
       window_priv good win getW _ _⟩
     · have slideN : ¬ d.window_size.toNat - d.strstart.toNat ≤ used.toNat := by
         intro c; apply slide; apply UInt64.le_iff_toNat_le.mpr; rw [wsS]; simpa using c
-      have w2 := keep_write (H := h) (r := r) (z := z) used state0 win getWv ro
+      have w2 := keep_write (H := h) (r := r) (z := z) used state0 good.live.back win getWv ro
         (by rw [sizeW]; omega) hz src inGet inBound consumed apart
       obtain ⟨wa2, hwa2⟩ : ∃ x, x = copyRange wa ia d.strstart.toNat (io - used.toNat) used.toNat := ⟨_, rfl⟩
       rw [← hwa2] at w2
@@ -591,7 +645,7 @@ theorem stored_slide_run {h : Heap} {ds w : Nat} {d : DeflateState} {wa : Array 
     (wide : d.w_size.toNat ≤ d.strstart.toNat) (high : d.strstart.toNat ≤ 2 * d.w_size.toNat)
     (low : 0 ≤ d.block_start.toInt) (top : d.block_start.toInt ≤ d.strstart.toNat) :
     storedSlide (some (.tab ds)) d h =
-      .ok ((), setD (Space.put h (BRef.blk w) (copyRange wa wa 0 d.w_size.toNat (d.strstart - d.w_size).toNat)) ds
+      .ok (d.w_size, setD (Space.put h (BRef.blk w) (copyRange wa wa 0 d.w_size.toNat (d.strstart - d.w_size).toNat)) ds
         (refillSlide d)) := by
   have ssLt := d.strstart.toNat_lt
   have wsN : d.w_size.toUInt64.toInt64.toInt = d.w_size.toNat := u32_toInt64_toInt _
@@ -607,8 +661,14 @@ theorem stored_slide_run {h : Heap} {ds w : Nat} {d : DeflateState} {wa : Array 
     rw [win]; exact Ptr.memcpy_ok get get ro (by omega) (by omega) (Or.inr (Or.inl (by omega)))
   have state1 : (Space.put h (BRef.blk w) (copyRange wa wa 0 d.w_size.toNat (d.strstart - d.w_size).toNat)).dstates ds =
       some d := state
+  let e := {d with block_start := Int64.ofInt (d.block_start.toInt - d.w_size.toNat),
+                   strstart := d.strstart - d.w_size}
+  obtain ⟨address, moved⟩ := slide_copy_after (ds := ds) e win get ro (by omega) (by omega) (by omega)
+  dsimp only [e] at address moved
   unfold storedSlide
-  simp only [bind_app, sub, dst, copy, wrD_eq, state1]
+  simp only [bind_app, sub, wrD_eq, state, setD_dstates_same, setD_setD,
+    ldDeflateState_tab (setD_dstates_same ..), address, moved, storedSlideCount_tab (setD_dstates_same ..),
+    rdD_eq, storedClampInsert_tab (setD_dstates_same ..), pure_app]
   rfl
 
 /-- The state after the read of the refill and the high-water mark. -/
@@ -617,7 +677,7 @@ def refillRead (e : DeflateState) (n : UInt32) : DeflateState :=
   { e2 with high_water := if e2.high_water < e2.strstart.toUInt64 then e2.strstart.toUInt64 else e2.high_water }
 
 theorem stored_read_run {H : Heap} {r : ZStreamRef} {ds w : Nat} {z : ZStream} {e : DeflateState}
-    {wb : Array UInt8} (n : UInt32) (state : H.dstates ds = some e) (hz : r.get H = some z)
+    {wb : Array UInt8} (n : UInt32) (state : H.dstates ds = some e) (back : e.strm = some r) (hz : r.get H = some z)
     (zst : z.state = some (.deflate ds)) (globals : e.wrap = 2 → CrcGlobals H)
     (win : e.window = .ref (.blk w) 0) (get : H.bytes w = some wb) (ro : H.ro w = false)
     (fit : e.strstart.toNat + n.toNat ≤ wb.size) (avail : n.toNat ≤ z.avail_in.toNat)
@@ -634,6 +694,7 @@ theorem stored_read_run {H : Heap} {r : ZStreamRef} {ds w : Nat} {z : ZStream} {
         rw [upd_self _ _ _ get]; exact ZStreamRef.put_self hz
       rw [keep]
       unfold storedRead
+      rw [storedHighWater_eq]
       simp only [bne_self_eq_false, Bool.false_eq_true, ite_false, wrD_eq, state]
       have e0 : refillRead e 0 = { e with high_water := if e.high_water < e.strstart.toUInt64 then e.strstart.toUInt64 else e.high_water } := by
         unfold refillRead MIN
@@ -666,9 +727,10 @@ theorem stored_read_run {H : Heap} {r : ZStreamRef} {ds w : Nat} {z : ZStream} {
       size_copyRange _ _ _ _ _, fun i lt => ?_, read_stream_accounting z n ref io _ src avail,
       by simp [readStream], by simp [readStream]⟩
     · unfold storedRead
-      simp only [show (n != 0) = true by simpa using zero, ite_true, bind_app, ldDeflateState_tab state, dst,
-        read, wrD_eq, state1, setD_dstates_same, setD_setD]
-      rfl
+      rw [storedHighWater_eq]
+      simp only [show (n != 0) = true by simpa using zero, ite_true, bind_app, ldDeflateState_tab state, back, dst,
+        read, wrD_eq, state1, storedAddInsert_tab (setD_dstates_same ..), setD_dstates_same, setD_setD]
+      simp only [refillRead, back]
     · rw [bfn_copyRange _ _ _ _ _ _ fit, ite_eq_right (by omega)]
 
 
@@ -789,7 +851,7 @@ theorem refill_finish {h : Heap} {r : ZStreamRef} {ds w : Nat} {z : ZStream} {d 
     rw [view_setD_other apartS]
     show Space.get (Space.put h (BRef.blk w) wb) ref = some ia
     rw [view_put_other (Ne.symm apartW)]; exact inGet
-  obtain ⟨waF, zF, run, sizeF, keepF, accF, totF⟩ := stored_read_run (H := H) n stateH hzH good.live.zst globalsH
+  obtain ⟨waF, zF, run, sizeF, keepF, accF, totF⟩ := stored_read_run (H := H) n stateH good.live.back hzH good.live.zst globalsH
     win getH roW (by rw [sizeB]; exact fit) avail inputH
   have heapEq : setD (r.put { H with bytes := upd H.bytes w (some waF) } zF) ds (refillRead (keepState d ss ins m bs hw) n) =
       setD (r.put { h with bytes := upd h.bytes w (some waF) } zF) ds (refillRead (keepState d ss ins m bs hw) n) := by
@@ -866,7 +928,7 @@ theorem stored_refill {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : 
   have hSelf : setD { h with bytes := upd h.bytes w (some wa) } ds d = h := by
     rw [upd_self _ _ _ getW]; exact setD_self state0
   unfold storedRefill
-  simp only [bind_app, readAvail h hz]
+  simp only [bind_app, good.live.back, readAvail h hz]
   by_cases cond : (decide (z.avail_in > (d.window_size - d.strstart.toUInt64).toUInt32) &&
       decide (d.block_start ≥ d.w_size.toUInt64.toInt64)) = true
   · simp only [Bool.and_eq_true, decide_eq_true_eq] at cond
@@ -934,7 +996,7 @@ theorem stored_refill {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : 
     have condT : (decide (z.avail_in > (d.window_size - d.strstart.toUInt64).toUInt32) &&
         decide (d.block_start ≥ d.w_size.toUInt64.toInt64)) = true := by
       simp only [Bool.and_eq_true, decide_eq_true_eq]; exact ⟨more, far⟩
-    simp only [condT, ite_true, bind_app, slide, readAvail _ hz1]
+    simp only [condT, ite_true, bind_app, slide, rdD_eq, setD_dstates_same, show (refillSlide d).strm = some r from good.live.back, readAvail _ hz1]
     by_cases c2 : (d.window_size - d.strstart.toUInt64).toUInt32 + d.w_size > z.avail_in
     · have c2N := UInt32.lt_iff_toNat_lt.mp c2
       rw [have1N] at c2N
@@ -946,7 +1008,7 @@ theorem stored_refill {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : 
       simp only [c2, ite_false]
       exact finishA _ (by rw [have1N]; omega) (by rw [have1N]; exact Nat.le_refl _) (by rw [have1N]; omega)
   · simp only [Bool.not_eq_true] at cond
-    simp only [cond, Bool.false_eq_true, ite_false, bind_app, readAvail h hz]
+    simp only [cond, Bool.false_eq_true, ite_false, bind_app, rdD_eq, state0, good.live.back, readAvail h hz]
     have finishB : ∀ n : UInt32, n.toNat ≤ z.avail_in.toNat → n.toNat ≤ d.window_size.toNat - d.strstart.toNat →
         ∃ g zF eF used, storedRead (some (.tab ds)) (some r) n h = .ok ((), g) ∧ DInv g r ds zF eF ∧
           StreamBuffers g r ∧ ByteSizes h g ∧ StreamAccounting z zF used 0 ∧
@@ -993,8 +1055,10 @@ theorem stored_block_flush {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} 
     ∃ (p : BPtr) (H1 : Heap) (bs : Int64) (H2 after : Heap) (z' : ZStream) (e : DeflateState) (produced : Nat),
       Ptr.add d.window d.block_start.toInt h = .ok (p, h) ∧
       Zlib.Trees._tr_stored_block (some (.tab ds)) p len.toUInt64 (if lastv then 1 else 0) h = .ok ((), H1) ∧
+      rd (some (.tab ds)) (·.block_start) H1 = .ok (d.block_start, H1) ∧
       ladd d.block_start len.toUInt64.toInt64 H1 = .ok (bs, H1) ∧
       wr (some (.tab ds)) (fun d => { d with block_start := bs }) H1 = .ok ((), H2) ∧
+      rd (some (.tab ds)) (·.strm) H2 = .ok (some r, H2) ∧
       flush_pending (some r) H2 = .ok ((), after) ∧
       DGood after r ds z' e ∧ StreamBuffers after r ∧ StreamAccounting z z' 0 produced ∧
       StoredFields d e ∧ e.block_start.toInt = d.block_start.toInt + len.toNat ∧ e.bi_valid.toInt = 0 ∧
@@ -1048,6 +1112,10 @@ theorem stored_block_flush {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} 
   have good2 : DGood H2 r ds z r2 := by
     have g := good1.setD' (d' := r2) rfl good1.live.status inv2 (by trkeep)
     rw [setD_setD] at g; exact g
+  have readStart : rd (some (.tab ds)) (·.block_start) (setD (Zlib.Trees.Proofs.Out.setB h pb next) ds r1) = .ok (d.block_start, setD (Zlib.Trees.Proofs.Out.setB h pb next) ds r1) := by
+    simp [rdD_eq, state1, bs1]
+  have readStream : rd (some (.tab ds)) (·.strm) H2 = .ok (some r, H2) := by
+    simp [rdD_eq, good2.live.hs, good2.live.back]
   have buffers2 : StreamBuffers H2 r := by
     have b := Zlib.Deflate.Universal.state_write_buffers good1 buffers1 (d' := r2) ⟨rfl, rfl, rfl, rfl⟩
       (by have g := good1.setD' (d' := r2) rfl good1.live.status inv2 (by trkeep); exact g)
@@ -1095,8 +1163,10 @@ theorem stored_block_flush {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} 
       ∃ (p : BPtr) (H1 : Heap) (bs : Int64) (H2 after : Heap) (z' : ZStream) (e : DeflateState) (produced : Nat),
         Ptr.add d.window d.block_start.toInt h = .ok (p, h) ∧
         Zlib.Trees._tr_stored_block (some (.tab ds)) p len.toUInt64 (if lastv then 1 else 0) h = .ok ((), H1) ∧
+        rd (some (.tab ds)) (·.block_start) H1 = .ok (d.block_start, H1) ∧
         ladd d.block_start len.toUInt64.toInt64 H1 = .ok (bs, H1) ∧
         wr (some (.tab ds)) (fun d => { d with block_start := bs }) H1 = .ok ((), H2) ∧
+        rd (some (.tab ds)) (·.strm) H2 = .ok (some r, H2) ∧
         flush_pending (some r) H2 = .ok ((), after) ∧
         DGood after r ds z' e ∧ StreamBuffers after r ∧ StreamAccounting z z' 0 produced ∧
         StoredFields d e ∧ e.block_start.toInt = d.block_start.toInt + len.toNat ∧ e.bi_valid.toInt = 0 ∧
@@ -1117,7 +1187,7 @@ theorem stored_block_flush {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} 
       rw [fields]
       dsimp only [r2]
       rw [hr1]
-    refine ⟨_, _, _, _, after, z', result, produced, add, run1, lad, wrt, run, goodA, buffersA, account, fieldsS,
+    refine ⟨_, _, _, _, after, z', result, produced, add, run1, readStart, lad, wrt, readStream, run, goodA, buffersA, account, fieldsS,
       ?_, bv, cursorA, by rw [staticA]; rfl, by rw [nallocA]; rfl, fun w' e => ?_, fun p' e => ?_, fun q' e => ?_, totals, ?_⟩
     · rw [fields]; exact bsR
     · have : w' = w := by simpa only [blocks.win, Ptr.ref.injEq, BRef.blk.injEq, and_true] using e.symm
@@ -1187,8 +1257,30 @@ theorem bi_used_step {g : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {e : D
   exact dinv_stored_keep inv good2 rfl sh2 (inv.shape.levelZero level0).2.2 rfl (fun _ _ => rfl)
     (fun _ _ => rfl) (fun _ _ => rfl) rfl rfl
 
+theorem storedShouldEmit_at {h : Heap} {r : ZStreamRef} {z : ZStream} (hz : r.get h = some z)
+    (flush : Int32) (left minBlock room : UInt32) :
+    storedShouldEmit (some r) flush left minBlock room h = .ok
+      (decide (left ≥ minBlock) || ((left != 0 || flush == Z_FINISH) && flush != Z_NO_FLUSH &&
+        z.avail_in == 0 && decide (left ≤ room)), h) := by
+  by_cases big : left ≥ minBlock <;> cases check : ((left != 0 || flush == Z_FINISH) && flush != Z_NO_FLUSH) <;>
+    simp [storedShouldEmit, big, check, ldZStream_ok hz] at *
+
+theorem storedLast_at {h : Heap} {r : ZStreamRef} {z : ZStream} (hz : r.get h = some z)
+    (flush : Int32) (len left : UInt32) :
+    storedLast (some r) flush len left h = .ok
+      (if flush == Z_FINISH && z.avail_in == 0 && len == left then 1 else 0, h) := by
+  by_cases f : flush = Z_FINISH <;> by_cases empty : z.avail_in = 0 <;>
+    simp [storedLast, f, empty, ldZStream_ok hz]
+
+theorem storedBlockDone_at {h : Heap} {r : ZStreamRef} {z : ZStream} (hz : r.get h = some z)
+    (d : DeflateState) (back : d.strm = some r) (flush : Int32) :
+    storedBlockDone d flush h = .ok (flush != Z_NO_FLUSH && flush != Z_FINISH && z.avail_in == 0 &&
+      d.strstart.toUInt64.toInt64 == d.block_start, h) := by
+  cases f : (flush != Z_NO_FLUSH && flush != Z_FINISH) <;>
+    simp [storedBlockDone, back, zrd_eq, hz, f] at *
+
 set_option maxHeartbeats 8000000 in
-/-- **The final block of `deflate_stored` keeps the invariant.** -/
+/-- The final block of `deflate_stored` keeps the invariant. -/
 theorem stored_final {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : DeflateState}
     (inv : DInv h r ds z d) (buffers : StreamBuffers h r) (pend0 : d.pending = 0) (out : z.next_out ≠ .null)
     (level0 : d.level = 0) (flush last0 : Int32) (lastZero : last0 = 0) :
@@ -1241,7 +1333,7 @@ theorem stored_final {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : D
   have hz := good.live.hz
   have readAvail : zrd (some r) (·.avail_in) h = .ok (z.avail_in, h) := by simp [zrd_eq, hz]
   unfold storedFinal
-  simp only [bind_app, ldDeflateState_tab good.live.hs, lsubRun, pure_app, readAvail]
+  simp only [bind_app, ldDeflateState_tab good.live.hs, lsubRun, pure_app, good.live.back, storedShouldEmit_at hz, show @storedMin UInt32 _ _ = MIN from rfl, show @storedMin UInt64 _ _ = MIN from rfl]
   obtain ⟨left, hleft⟩ : ∃ l, l = (Int64.ofInt ((d.strstart.toNat : Int) - d.block_start.toInt)).toUInt64.toUInt32 :=
     ⟨_, rfl⟩
   rw [← hleft]
@@ -1278,7 +1370,7 @@ theorem stored_final {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : D
   by_cases c : (decide (left ≥ MIN Hv d.w_size) || ((left != 0 || flush == Z_FINISH) && flush != Z_NO_FLUSH &&
       z.avail_in == 0 && decide (left ≤ Hv))) = true
   · have lastv := flush == Z_FINISH && z.avail_in == 0 && MIN left Hv == left
-    obtain ⟨p, H1, bs, H2, after, z', e, produced, add, blk, lad, wrt, fl, goodA, buffersA, accA, fieldsA, bsA,
+    obtain ⟨p, H1, bs, H2, after, z', e, produced, add, blk, readStart, lad, wrt, readStream, fl, goodA, buffersA, accA, fieldsA, bsA,
         bvA, cursorA, staticA, nallocA, winA, prevA, headA, totA, frA⟩ :=
       stored_block_flush good buffers out pend0 (shape.cursor pend0) bits.2 zero.1 (MIN left Hv)
         (by have := shape.blockStart; omega) (by omega) (by omega)
@@ -1288,7 +1380,7 @@ theorem stored_final {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : D
     have invA : DInv after r ds z' e := dinv_stored_keep inv goodA fieldsA shapeA zero.2.2 staticA winA prevA headA
       accA.2.2.2.2.2.2.2.1 accA.2.2.2.2.2.2.2.2.1
     have levelA : e.level = 0 := by rw [fieldsA]; exact level0
-    simp only [c, ite_true, bind_app, add, blk, lad, wrt, fl]
+    simp only [c, ite_true, bind_app, storedLast_at hz, add, blk, readStart, lad, wrt, readStream, fl]
     by_cases l0 : ((if (flush == Z_FINISH && z.avail_in == 0 && MIN left Hv == left) = true then (1 : Int32) else 0) != 0) = true
     · obtain ⟨wrRun, invB, buffersB⟩ := bi_used_step invA buffersA levelA
       have fin : flush = Z_FINISH := by
@@ -1416,7 +1508,7 @@ theorem stored_end {g : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : Def
   have hz2 := inv2.good.live.hz
   unfold storedEnd
   simp only [ite_seq]
-  simp only [bind_app, readAvail g hz, keepRun, hwRun]
+  simp only [bind_app, rdD_eq, good.live.hs, good.live.back, readAvail g hz, keepRun, storedHighWater_eq, hwRun]
   by_cases lastC : (st.last != 0) = true
   · obtain ⟨wrRun, inv3, buffers3⟩ := bi_used_step inv2 buffers2 level1
     have facts := lastF (by simpa using lastC)
@@ -1428,7 +1520,7 @@ theorem stored_end {g : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : Def
       Totals.refl z,
       Fr.trans good buffers fr2 (Fr.priv inv2.good buffers2 (priv_setD g2 r ds e2 _ inv2.good.live.hs) ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩)⟩
   · simp only [Bool.not_eq_true] at lastC
-    simp only [lastC, Bool.false_eq_true, ite_false, bind_app, ldDeflateState_tab inv2.good.live.hs, readAvail _ hz2]
+    simp only [lastC, Bool.false_eq_true, ite_false, bind_app, ldDeflateState_tab inv2.good.live.hs, storedBlockDone_at hz2 _ inv2.good.live.back]
     by_cases early : (flush != Z_NO_FLUSH && flush != Z_FINISH && z.avail_in == 0 &&
         (e2.strstart.toUInt64.toInt64 == e2.block_start)) = true
     · exact ⟨block_done, _, z, _, 0, 0, by simp only [early, ite_true]; rfl, inv2, buffers2,

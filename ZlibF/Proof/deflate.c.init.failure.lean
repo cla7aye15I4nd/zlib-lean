@@ -44,7 +44,7 @@ theorem memory_message (h : Heap) : ∃ m, ERR_MSG Z_MEM_ERROR h = .ok (m, h) :=
     (Zlib.Zutil.Spec.errText Z_MEM_ERROR.toInt) (Zlib.Zutil.Proofs.errText_lit _)
   refine ⟨.ref (.str i) 0, ?_⟩
   unfold ERR_MSG
-  rw [Zlib.Zutil.Proofs.zError_eval]
+  rw [Zlib.Zutil.Proofs.errorMessage_eval]
   exact hr
 
 /-- The actual failed-buffer branch sets FINISH_STATE, obtains the actual

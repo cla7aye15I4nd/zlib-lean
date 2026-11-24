@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.window-stream»
 import ZlibF.Proof.«crc32.c»
 import ZlibF.Proof.«inflate.c.completes-observe-mode»
 
@@ -673,7 +674,9 @@ theorem frame_after_first {α β : Type} {r : ZStreamRef} {owner : InflateStateP
 theorem inflate_leave_avail (r : ZStreamRef) (c : Ctx) (root : c.strm = some r) (l : IL) {h after : Heap}
     {rc : Int32} (run : inflate_leave c l h = .ok (rc, after)) :
     ∃ z, r.get after = some z ∧ z.avail_in = l.have_ ∧ z.avail_out = l.left := by
-  unfold inflate_leave at run
+  rw [Zlib.Inflate.Proofs.WindowStream.inflate_leave_eq_saved] at run
+  unfold leaveWindow leaveAccounting at run
+  simp only [Zlib.Inflate.Proofs.WindowStream.savedOutput_bind] at run
   rw [root] at run
   obtain ⟨u, h1, first, frame⟩ := frame_after_first (r := r) (owner := c.st) (by
     intro u

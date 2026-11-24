@@ -1,3 +1,5 @@
+import ZlibF.Proof.«deflate.c.gzip-header-source»
+import ZlibF.Proof.«deflate.c.extra-loop-source»
 import ZlibF.Proof.«deflate.c.universal-call-phases»
 
 /-!
@@ -16,7 +18,8 @@ set_option autoImplicit false
 /-- Header stage of `deflate`: the `wrap == 0` shortcut to `BUSY_STATE`. -/
 def wrapStage (_strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) : M Int32 := do
   -- Write the header
-  if (← rd s (·.status)) == INIT_STATE && (← rd s (·.wrap)) == 0 then
+  let d ← ldDeflateState s
+  if d.status == INIT_STATE && d.wrap == 0 then
     wr s (fun d => { d with status := BUSY_STATE })
   k
 
@@ -52,8 +55,7 @@ def initStage (strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) : M Int32 
       return Z_OK
   k
 
-/-- Header stage of `deflate`: the fixed part of the gzip header. -/
-def gzipStage (strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) : M Int32 := do
+private def gzipWith (strm : ZStreamPtr) (s : DeflateStatePtr) (fields k : M Int32) : M Int32 := do
   if (← rd s (·.status)) == GZIP_STATE then
     -- gzip header: strm->adler = crc32(0L, Z_NULL, 0);
     let r ← crc32 0 (Ptr.null : BPtr) 0
@@ -61,48 +63,12 @@ def gzipStage (strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) : M Int32 
     put_byte s 31
     put_byte s 139
     put_byte s 8
-    let d ← ldDeflateState s
-    -- the XFL byte: s->level == 9 ? 2 : (s->strategy >= Z_HUFFMAN_ONLY || s->level < 2 ? 4 : 0)
-    let xfl : UInt8 := if d.level == 9 then 2 else if d.strategy ≥ Z_HUFFMAN_ONLY || d.level < 2 then 4 else 0
-    if d.gzhead == none then
-      put_byte s 0
-      put_byte s 0
-      put_byte s 0
-      put_byte s 0
-      put_byte s 0
-      put_byte s xfl
-      put_byte s OS_CODE.toUInt32.toUInt8
-      wr s (fun d => { d with status := BUSY_STATE })
-      -- Compression must start with an empty pending buffer
-      flush_pending strm
-      if (← rd s (·.pending)) != 0 then
-        wr s (fun d => { d with last_flush := -1 })
-        return Z_OK
-    else
-      let gh ← ldGzHeader d.gzhead
-      -- put_byte(s, (text ? 1 : 0) + (hcrc ? 2 : 0) + (extra == NULL ? 0 : 4) + (name == NULL ? 0 : 8) + (comment == NULL ? 0 : 16));
-      -- (each term is a constant, so the sum is at most 31 and cannot overflow)
-      put_byte s (((if gh.text != 0 then 1 else 0) + (if gh.hcrc != 0 then 2 else 0) +
-        (if gh.extra == .null then 0 else 4) + (if gh.name == .null then 0 else 8) +
-        (if gh.comment == .null then 0 else 16) : Nat).toUInt8)
-      put_byte s (gh.time &&& 0xff).toUInt8
-      put_byte s ((gh.time >>> 8) &&& 0xff).toUInt8
-      put_byte s ((gh.time >>> 16) &&& 0xff).toUInt8
-      put_byte s ((gh.time >>> 24) &&& 0xff).toUInt8
-      put_byte s xfl
-      put_byte s (gh.os &&& 0xff).toUInt32.toUInt8
-      if gh.extra != .null then
-        put_byte s (gh.extra_len &&& 0xff).toUInt8
-        put_byte s ((gh.extra_len >>> 8) &&& 0xff).toUInt8
-      if gh.hcrc != 0 then
-        -- strm->adler = crc32_z(strm->adler, s->pending_buf, s->pending);
-        let d ← ldDeflateState s
-        let a ← zrd strm (·.adler)
-        let r ← crc32_z a d.pending_buf d.pending
-        zwr strm (fun z => { z with adler := r })
-      -- s->gzindex = 0; s->status = EXTRA_STATE;
-      wr s (fun d => { d with gzindex := 0, status := EXTRA_STATE })
-  k
+    fields
+  else k
+
+/-- Fixed gzip fields followed by the remaining header states. -/
+def gzipStage (strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) : M Int32 :=
+  gzipWith strm s (HeaderSource.previousGzip strm s k) k
 
 /-- Header stage of `deflate`: the gzip extra field. -/
 def extraStage (strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) : M Int32 := do
@@ -111,27 +77,7 @@ def extraStage (strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) : M Int32
     let gh ← ldGzHeader d.gzhead
     if gh.extra != .null then
       -- ulg beg = s->pending; ulg left = (s->gzhead->extra_len & 0xffff) - s->gzindex;
-      let st ← cwhile
-        (fun (st : ExtraS) => do
-          let d ← ldDeflateState s
-          pure (!st.ret && d.pending + st.left > d.pending_buf_size, st))
-        (fun (st : ExtraS) => do
-          let d ← ldDeflateState s
-          let gh ← ldGzHeader d.gzhead
-          -- ulg copy = s->pending_buf_size - s->pending;
-          let copy := d.pending_buf_size - d.pending
-          -- zmemcpy(s->pending_buf + s->pending, s->gzhead->extra + s->gzindex, copy);
-          memcpyB (← padd d.pending_buf d.pending.toNat) (← padd gh.extra d.gzindex.toNat) copy.toNat
-          -- s->pending = s->pending_buf_size; HCRC_UPDATE(beg); s->gzindex += copy;
-          wr s (fun d => { d with pending := d.pending_buf_size })
-          HCRC_UPDATE strm s st.beg
-          wr s (fun d => { d with gzindex := d.gzindex + copy })
-          flush_pending strm
-          if (← rd s (·.pending)) != 0 then
-            wr s (fun d => { d with last_flush := -1 })
-            return { st with ret := true }
-          -- beg = 0; left -= copy;
-          pure { st with beg := 0, left := st.left - copy })
+      let st ← cwhileBrk (extraSourceCond s) (extraSourceBody strm s)
         { beg := d.pending, left := (gh.extra_len &&& 0xffff).toUInt64 - d.gzindex, ret := false }
       if st.ret then return Z_OK
       -- zmemcpy(s->pending_buf + s->pending, s->gzhead->extra + s->gzindex, left);
@@ -196,8 +142,78 @@ set_option maxHeartbeats 4000000 in
 theorem header_stages (strm : ZStreamPtr) (s : DeflateStatePtr) (flush : Int32) (k : M Int32) :
     headerPhase strm s flush k = wrapStage strm s (initStage strm s (gzipStage strm s (extraStage strm s
       (nameStage strm s (commentStage strm s (hcrcStage strm s k)))))) := by
-  delta headerPhase wrapStage initStage gzipStage extraStage nameStage commentStage hcrcStage
-  exact rfl
+  let beforeGzip (next : M Int32) : M Int32 := do
+    -- Write the header
+    let d ← ldDeflateState s
+    if d.status == INIT_STATE && d.wrap == 0 then
+      wr s (fun d => { d with status := BUSY_STATE })
+    if (← rd s (·.status)) == INIT_STATE then
+      -- zlib header: uInt header = (Z_DEFLATED + ((s->w_bits - 8) << 4)) << 8;
+      let d ← ldDeflateState s
+      let mut header : UInt32 := ((8 : UInt32) + ((d.w_bits - 8) <<< 4)) <<< 8
+      -- level_flags
+      let level_flags : UInt32 :=
+        if d.strategy ≥ Z_HUFFMAN_ONLY || d.level < 2 then 0
+        else if d.level < 6 then 1
+        else if d.level == 6 then 2
+        else 3
+      header := header ||| (level_flags <<< 6)                  -- header |= (level_flags << 6);
+      if d.strstart != 0 then header := header ||| 0x20          -- header |= PRESET_DICT;
+      header := header + (31 - (header % 31))                    -- header += 31 - (header % 31);
+      putShortMSB s header
+      -- Save the adler32 of the preset dictionary:
+      if (← rd s (·.strstart)) != 0 then
+        let a ← zrd strm (·.adler)
+        putShortMSB s (a >>> 16).toUInt32
+        let a ← zrd strm (·.adler)
+        putShortMSB s (a &&& 0xffff).toUInt32
+      -- strm->adler = adler32(0L, Z_NULL, 0); s->status = BUSY_STATE;
+      let r ← Zlib.Adler32.adler32 0 (Ptr.null : BPtr) 0
+      zwr strm (fun z => { z with adler := r })
+      wr s (fun d => { d with status := BUSY_STATE })
+      -- Compression must start with an empty pending buffer
+      flush_pending strm
+      if (← rd s (·.pending)) != 0 then
+        wr s (fun d => { d with last_flush := -1 })
+        return Z_OK
+    next
+  let finishHeader (next : M Int32) : M Int32 := do
+    if (← rd s (·.status)) == HCRC_STATE then
+      let d ← ldDeflateState s
+      let gh ← ldGzHeader d.gzhead
+      if gh.hcrc != 0 then
+        -- if (s->pending + 2 > s->pending_buf_size) { flush_pending(strm); if (s->pending != 0) {...return Z_OK;} }
+        if d.pending + 2 > d.pending_buf_size then
+          flush_pending strm
+          if (← rd s (·.pending)) != 0 then
+            wr s (fun d => { d with last_flush := -1 })
+            return Z_OK
+        let a ← zrd strm (·.adler)
+        put_byte s (a &&& 0xff).toUInt8
+        let a ← zrd strm (·.adler)
+        put_byte s ((a >>> 8) &&& 0xff).toUInt8
+        let r ← crc32 0 (Ptr.null : BPtr) 0
+        zwr strm (fun z => { z with adler := r })
+      wr s (fun d => { d with status := BUSY_STATE })
+      -- Compression must start with an empty pending buffer
+      flush_pending strm
+      if (← rd s (·.pending)) != 0 then
+        wr s (fun d => { d with last_flush := -1 })
+        return Z_OK
+    next
+  let remaining := extraStage strm s (nameStage strm s (commentStage strm s (finishHeader k)))
+  change beforeGzip (gzipWith strm s (HeaderSource.sourceGzip strm s remaining) remaining) = _
+  have before (next : M Int32) : beforeGzip next = wrapStage strm s (initStage strm s next) := by
+    unfold beforeGzip wrapStage initStage
+    simp only [Engine.Proofs.dictionary_header_reread_then]
+  have finish (next : M Int32) : finishHeader next = hcrcStage strm s next := by
+    unfold finishHeader hcrcStage
+    simp only [Engine.Proofs.hcrc_reread_then]
+  rw [before, HeaderSource.gzip_eq]
+  change wrapStage strm s (initStage strm s (gzipStage strm s remaining)) = _
+  dsimp only [remaining]
+  rw [finish]
+
 
 /-- The end of the zlib header stage: the checksum reset, `BUSY_STATE` and the flush. -/
 def initTail (strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) : M Int32 := do
@@ -298,7 +314,7 @@ def gzipStage' (strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) : M Int32
 
 theorem gzip_stage_split (strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) :
     gzipStage strm s k = gzipStage' strm s k := by
-  delta gzipStage gzipStage' busyTail gzipRecord
+  delta gzipStage gzipWith HeaderSource.previousGzip gzipStage' busyTail gzipRecord
   exact rfl
 
 /-- The two extra-length bytes of the gzip header. -/
@@ -339,30 +355,10 @@ theorem gzip_record_split (strm : ZStreamPtr) (s : DeflateStatePtr) (d : Deflate
   delta gzipRecord gzipRecord' recordLen recordCrc
   exact rfl
 
-/-- The test of the extra-field copy loop. -/
-def extraCond (s : DeflateStatePtr) (st : ExtraS) : M (Bool × ExtraS) := do
-  let d ← ldDeflateState s
-  pure (!st.ret && d.pending + st.left > d.pending_buf_size, st)
-
-/-- One iteration of the extra-field copy loop: fill `pending_buf`, update the header CRC, flush. -/
-def extraBody (strm : ZStreamPtr) (s : DeflateStatePtr) (st : ExtraS) : M ExtraS := do
-  let d ← ldDeflateState s
-  let gh ← ldGzHeader d.gzhead
-  let copy := d.pending_buf_size - d.pending
-  memcpyB (← padd d.pending_buf d.pending.toNat) (← padd gh.extra d.gzindex.toNat) copy.toNat
-  wr s (fun d => { d with pending := d.pending_buf_size })
-  HCRC_UPDATE strm s st.beg
-  wr s (fun d => { d with gzindex := d.gzindex + copy })
-  flush_pending strm
-  if (← rd s (·.pending)) != 0 then
-    wr s (fun d => { d with last_flush := -1 })
-    return { st with ret := true }
-  pure { st with beg := 0, left := st.left - copy }
-
 /-- The extra-field copy: the loop, its early return, and the last part of the field. -/
 def extraCopy (strm : ZStreamPtr) (s : DeflateStatePtr) (d : DeflateState) (gh : GzHeader) (k : M Int32) :
     M Int32 := do
-  let st ← cwhile (extraCond s) (extraBody strm s)
+  let st ← cwhileBrk (extraSourceCond s) (extraSourceBody strm s)
     { beg := d.pending, left := (gh.extra_len &&& 0xffff).toUInt64 - d.gzindex, ret := false }
   if st.ret then return Z_OK
   let d ← ldDeflateState s
@@ -389,7 +385,7 @@ def extraStage' (strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) : M Int3
 
 theorem extra_stage_split (strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) :
     extraStage strm s k = extraStage' strm s k := by
-  delta extraStage extraStage' extraCopy extraCond extraBody
+  delta extraStage extraStage' extraCopy
   exact rfl
 
 end Zlib.Deflate.Universal.Call

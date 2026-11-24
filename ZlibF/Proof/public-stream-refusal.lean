@@ -67,7 +67,7 @@ theorem inflate_refusal : Goal.inflate_refusal := by
     simp [bind_app, notInit_check (refused_dom hr) (refused_not_initialised hr), pure_app]
   · intro h p d l hr
     show inflateGetDictionary p d l h = _
-    unfold inflateGetDictionary
+    unfold inflateGetDictionary getDictionaryWith
     simp [bind_app, notInit_check (refused_dom hr) (refused_not_initialised hr), pure_app]
   · intro h p d l hr
     show inflateSetDictionary p d l h = _
@@ -90,7 +90,7 @@ theorem deflate_refusal : Goal.deflate_refusal := by
   refine ⟨?_, ?_, ?_, ?_, ?_⟩
   · intro h p flush hr
     show deflate p flush h = _
-    unfold deflate
+    unfold deflate Zlib.Deflate.Phases.entryPhase
     rw [bind_app, notInit_check (refused_deflate_dom hr) (refused_deflate_not_init hr)]
     rfl
   · intro h p d l hr

@@ -44,7 +44,7 @@ NEED_DICT return; the ready-dictionary TYPE continuation retains it. -/
 theorem inputCounterExceptX_inflate_DICT (r : ZStreamRef) (c : Ctx) (zs : Nat)
     (root : c.strm = some r) (state : c.st = some (.tab zs)) :
     InputCounterExceptX r (inflate_DICT c) := by
-  unfold inflate_DICT
+  rw [Zlib.Inflate.Proofs.DICT_previous]
   have continuation := inputCounterExceptX_of_frame (inputCounterX_inflate_TYPE r c root)
   repeat' first
     | exact inputCounterExceptX_request r zs c root state
@@ -53,7 +53,7 @@ theorem inputCounterExceptX_inflate_DICT (r : ZStreamRef) (c : Ctx) (zs : Nat)
 theorem inputCounterExceptX_inflate_DICTID (r : ZStreamRef) (c : Ctx) (zs : Nat)
     (root : c.strm = some r) (state : c.st = some (.tab zs)) :
     InputCounterExceptX r (inflate_DICTID c) := by
-  unfold inflate_DICTID
+  rw [Zlib.Inflate.Proofs.DICTID_previous]
   have continuation := inputCounterExceptX_inflate_DICT r c zs root state
   input_counter_exit_source r, root
 

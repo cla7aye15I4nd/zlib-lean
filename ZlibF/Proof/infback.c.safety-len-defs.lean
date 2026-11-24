@@ -1,3 +1,4 @@
+import ZlibF.Proof.«infback.c.repeat-fields»
 import ZlibF.Proof.«infback.c.safety-lookup2»
 
 /-!
@@ -15,7 +16,7 @@ open Zlib.Inffast (inflate_fast)
 set_option autoImplicit false
 
 /-- The distance check and the copy of the match through the window. -/
-def lenCopy (c : BCtx) : X Unit := do
+def lenCopy (c : DecoderCtx) : X Unit := do
   let s ← ldInflateState c.st
   let l ← get
   if s.offset > s.wsize - (if s.whave < s.wsize then l.left else 0) then
@@ -55,7 +56,7 @@ def lenCopy (c : BCtx) : X Unit := do
     (do return (← rdS c.st (·.length)) != 0)
 
 /-- The distance symbol: `DROPBITS(here.bits)`, the invalid code, the distance and its extra bits. -/
-def distSym (c : BCtx) : X Unit := do
+def distSym (c : DecoderCtx) : X Unit := do
   let here := (← get).here
   DROPBITS here.bits.toUInt32
   -- if (here.op & 64) { "invalid distance code"; BAD; break; }
@@ -66,14 +67,14 @@ def distSym (c : BCtx) : X Unit := do
   wrS c.st fun s => { s with offset := here.val.toUInt32, extra := here.op.toUInt32 &&& 15 }
   let ex := here.op.toUInt32 &&& 15
   if ex != 0 then
-    NEEDBITS c ex
-    let b ← BITS ex
+    needExtra c
+    let b ← BITS (← rdS c.st (·.extra))
     wrS c.st fun s => { s with offset := s.offset + b }
-    DROPBITS ex
+    DROPBITS (← rdS c.st (·.extra))
   lenCopy c
 
 /-- The distance lookup. -/
-def lenDist (c : BCtx) : X Unit := do
+def lenDist (c : DecoderCtx) : X Unit := do
   lookup1 c true
   let here := (← get).here
   if (here.op &&& 0xf0) == 0 then
@@ -83,7 +84,7 @@ def lenDist (c : BCtx) : X Unit := do
   distSym c
 
 /-- The literal/length symbol after its lookup. -/
-def lenSym (c : BCtx) : X Unit := do
+def lenSym (c : DecoderCtx) : X Unit := do
   let here := (← get).here
   DROPBITS here.bits.toUInt32
   wrS c.st fun s => { s with length := here.val.toUInt32 }
@@ -108,13 +109,16 @@ def lenSym (c : BCtx) : X Unit := do
   wrS c.st fun s => { s with extra := here.op.toUInt32 &&& 15 }
   let ex := here.op.toUInt32 &&& 15
   if ex != 0 then
-    NEEDBITS c ex
-    let b ← BITS ex
+    needExtra c
+    let b ← BITS (← rdS c.st (·.extra))
     wrS c.st fun s => { s with length := s.length + b }
-    DROPBITS ex
+    DROPBITS (← rdS c.st (·.extra))
   lenDist c
 
-theorem back_LEN_eq (c : BCtx) : back_LEN c = (do
+set_option maxHeartbeats 2200000 in
+set_option maxRecDepth 6000 in
+set_option linter.unusedSimpArgs false in
+theorem back_LEN_eq (c : DecoderCtx) : back_LEN c = (do
   let l ← get
   -- if (have >= 6 && left >= 258) { RESTORE(); inflate_fast(strm, state->wsize); LOAD(); break; }
   if l.have_ >= 6 && l.left >= 258 then
@@ -130,6 +134,12 @@ theorem back_LEN_eq (c : BCtx) : back_LEN c = (do
     lookup2 c false
     DROPBITS (← get).last.bits.toUInt32
   -- DROPBITS(here.bits); state->length = (unsigned)here.val;
-  lenSym c) := rfl
+  lenSym c) := by
+  delta back_LEN lenSym lenDist distSym lenCopy
+  simp only [Zlib.Infback.Equality.extend_known c true,
+    Zlib.Infback.Equality.extend_known c false, ↓reduceIte]
+  simp only [Zlib.Infback.Equality.two_state_writes, emitLiteral, backMatch, Zlib.Inflate.Proofs.x_bind_assoc,
+    Zlib.Inflate.Proofs.x_pure_bind, ↓reduceIte]
+  rfl
 
 end Zlib.Infback.Safety

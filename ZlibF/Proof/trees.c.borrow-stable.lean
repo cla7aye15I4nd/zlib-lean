@@ -1,4 +1,5 @@
 import ZlibF.Proof.«deflate.c.borrow-stable-base»
+import ZlibF.Proof.«trees.c.heap.gbdef»
 
 /-!
 # trees.c: returning executions preserve borrowed libc text
@@ -228,7 +229,7 @@ theorem stable_blOrder (i : Int) : StableM (blOrder i) := by
     | trees_borrow_step
 
 theorem stable_put_byte (s : DeflateStatePtr) (c : UInt8) : StableM (put_byte s c) := by
-  unfold put_byte
+  unfold put_byte cdecl
   repeat' first
     | with_reducible exact stable_md _ _
     | with_reducible exact stable_rd _
@@ -251,7 +252,7 @@ theorem stable_shrUs (val : Int32) (c : Int32) : StableM (shrUs val c) := by
     | trees_borrow_step
 
 theorem stable_send_bits (s : DeflateStatePtr) (value : Int32) (length : Int32) : StableM (send_bits s value length) := by
-  unfold send_bits
+  unfold send_bits cinline
   repeat' first
     | with_reducible exact stable_shrUs _ _
     | with_reducible exact stable_shlUs _ _
@@ -263,7 +264,7 @@ theorem stable_send_bits (s : DeflateStatePtr) (value : Int32) (length : Int32) 
     | trees_borrow_step
 
 theorem stable_send_code (s : DeflateStatePtr) (c : Int) (tree : CtDataPtr) : StableM (send_code s c tree) := by
-  unfold send_code
+  unfold send_code cinline
   repeat' first
     | with_reducible exact stable_send_bits _ _ _
     | with_reducible exact stable_getDl _ _
@@ -310,6 +311,7 @@ theorem stable_bi_windup (s : DeflateStatePtr) : StableM (bi_windup s) := by
 
 theorem stable_gen_codes (tree : CtDataPtr) (max_code : Int32) (bl_count : WPtr) : StableM (gen_codes tree max_code bl_count) := by
   unfold gen_codes
+  simp only [readNextCode_eq]
   repeat' first
     | with_reducible exact stable_bi_reverse _ _
     | with_reducible exact stable_setFc _ _ _
@@ -344,7 +346,7 @@ theorem stable__tr_init (s : DeflateStatePtr) : StableM («_tr_init» s) := by
     | trees_borrow_step
 
 theorem stable_pqdownheap (s : DeflateStatePtr) (tree : CtDataPtr) (k : Int32) : StableM (pqdownheap s tree k) := by
-  unfold pqdownheap
+  unfold pqdownheap cinline
   repeat' first
     | with_reducible exact stable_smaller _ _ _ _
     | with_reducible exact stable_heapSet _ _ _
@@ -356,7 +358,7 @@ theorem stable_pqdownheap (s : DeflateStatePtr) (tree : CtDataPtr) (k : Int32) :
     | trees_borrow_step
 
 theorem stable_pqremove (s : DeflateStatePtr) (tree : CtDataPtr) : StableM (pqremove s tree) := by
-  unfold pqremove
+  unfold pqremove heapReplaceRoot
   repeat' first
     | with_reducible exact stable_pqdownheap _ _ _
     | with_reducible exact stable_heapSet _ _ _
@@ -367,7 +369,9 @@ theorem stable_pqremove (s : DeflateStatePtr) (tree : CtDataPtr) : StableM (pqre
     | trees_borrow_step
 
 theorem stable_gen_bitlen (s : DeflateStatePtr) (desc : TreeDescPtr) : StableM (gen_bitlen s desc) := by
-  unfold gen_bitlen
+  unfold gen_bitlen withScopedLocals cinline
+  simp only [Zlib.Trees.Proofs.reassignLeaves_eq]
+  unfold Zlib.Trees.Proofs.gbInner
   repeat' first
     | with_reducible exact stable_setDl _ _ _
     | with_reducible exact stable_getDl _ _
@@ -381,7 +385,7 @@ theorem stable_gen_bitlen (s : DeflateStatePtr) (desc : TreeDescPtr) : StableM (
     | trees_borrow_step
 
 theorem stable_build_tree (s : DeflateStatePtr) (desc : TreeDescPtr) : StableM (build_tree s desc) := by
-  unfold build_tree
+  unfold build_tree withScopedLocals cforIntLt cforIntGe heapPush heapSave nextCodeBelow
   repeat' first
     | with_reducible exact stable_gen_bitlen _ _
     | with_reducible exact stable_pqremove _ _
@@ -402,7 +406,7 @@ theorem stable_build_tree (s : DeflateStatePtr) (desc : TreeDescPtr) : StableM (
     | trees_borrow_step
 
 theorem stable_scan_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int32) : StableM (scan_tree s tree max_code) := by
-  unfold scan_tree
+  unfold scan_tree cforIntLe cinline finishTreeRun
   repeat' first
     | with_reducible exact stable_setDl _ _ _
     | with_reducible exact stable_setFc _ _ _
@@ -413,7 +417,7 @@ theorem stable_scan_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : In
     | trees_borrow_step
 
 theorem stable_send_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int32) : StableM (send_tree s tree max_code) := by
-  unfold send_tree
+  unfold send_tree cforIntLe cinline finishTreeRun
   repeat' first
     | with_reducible exact stable_send_code _ _ _
     | with_reducible exact stable_send_bits _ _ _
@@ -440,7 +444,7 @@ theorem stable_build_bl_tree (s : DeflateStatePtr) : StableM (build_bl_tree s) :
     | trees_borrow_step
 
 theorem stable_send_all_trees (s : DeflateStatePtr) (lcodes dcodes blcodes : Int32) : StableM (send_all_trees s lcodes dcodes blcodes) := by
-  unfold send_all_trees
+  unfold send_all_trees cinline
   repeat' first
     | with_reducible exact stable_send_tree _ _ _
     | with_reducible exact stable_send_bits _ _ _
@@ -510,7 +514,7 @@ theorem stable_detect_data_type (s : DeflateStatePtr) : StableM (detect_data_typ
         | trees_borrow_step
 
 theorem stable__tr_flush_block (s : DeflateStatePtr) (buf : BPtr) (stored_len : UInt64) (last : Int32) : StableM («_tr_flush_block» s buf stored_len last) := by
-  unfold «_tr_flush_block»
+  unfold «_tr_flush_block» cinline
   repeat' first
     | with_reducible exact stable_detect_data_type _
     | with_reducible exact stable_compress_block _ _ _

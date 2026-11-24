@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.trailer-source»
 import ZlibF.Proof.«deflate.c.engine.block-reset»
 import ZlibF.Math.DeflateZlibTrailer
 
@@ -7,12 +8,6 @@ namespace Zlib.Deflate.Engine.Proofs
 open C Zlib.Deflate Zlib.Deflate.Spec Zlib.Deflate.Proofs ZlibF.Spec.Public
 open Zlib.Trees.Proofs.Out (TreesInvAt BitsDiff)
 set_option autoImplicit false
-
-/-- The two source calls in the zlib trailer branch. -/
-def zlibTrailer (strm : ZStreamPtr) (s : DeflateStatePtr) : M Unit := do
-  let a ← zrd strm (·.adler)
-  putShortMSB s (a >>> 16).toUInt32
-  putShortMSB s (a &&& 0xffff).toUInt32
 
 def zlibTrailerBuffer (buf : Array UInt8) (a : UInt64) : Array UInt8 :=
   (((buf.set! 0 ((a >>> 16).toUInt32 >>> 8).toUInt8).set! 1

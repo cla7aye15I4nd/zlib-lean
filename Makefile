@@ -1,6 +1,6 @@
 export LEAN_NUM_THREADS ?= 3
 
-.PHONY: audit audit-pinned archive-equal ast-equal binary binary-pinned emit reference bytes differential proof library-safety test
+.PHONY: audit audit-pinned archive-equal source-bounds source-byteswap source-zerror source-length-guards source-restore source-tally ast-equal binary binary-pinned emit reference bytes differential proof library-safety test
 
 audit:
 	python3 tools/audit.py
@@ -9,7 +9,32 @@ audit-pinned:
 	python3 tools/audit.py --pinned
 
 archive-equal:
-	python3 tools/archive.py
+	python3 tools/archive.py --pinned
+
+source-bounds:
+	python3 tools/source_bounds.py
+
+source-byteswap:
+	python3 tools/source_byteswap.py
+
+source-zerror:
+	python3 tools/source_zerror.py
+
+source-length-guards:
+	python3 tools/source_length_guards.py
+
+.PHONY: source-compress-lengths source-uncompress-lengths
+source-compress-lengths:
+	python3 tools/source_compress_lengths.py
+
+source-uncompress-lengths:
+	python3 tools/source_uncompress_lengths.py
+
+source-restore:
+	python3 tools/source_restore.py
+
+source-tally:
+	python3 tools/source_tally.py
 
 ast-equal:
 	python3 tools/audit.py --require-equal
@@ -41,7 +66,7 @@ library-safety: proof
 	python3 tools/check_baseline_equiv.py
 
 test:
-	lake build --wfail Lean2C.Lower Lean2C.Soundness ZlibF.Proof.LibcMemory ZlibF.Proof.LibcScalar
+	lake build --wfail Lean2C.Lower Lean2C.Soundness Lean2C.OriginalWrapperSafety ZlibF.Results
 	lake env lean -DwarningAsError=true tests/ShiftLowering.lean
 	lake env lean -DwarningAsError=true tests/SafetyRules.lean
 	lake env lean -DwarningAsError=true tests/LemmaEquivalence.lean

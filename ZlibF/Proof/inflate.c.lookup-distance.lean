@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.code-width-correspondence»
 import ZlibF.Proof.«inflate.c.length-extra»
 
 namespace Zlib.Inflate.Proofs
@@ -292,7 +293,8 @@ private theorem bindX_pure {α β : Type} (a : α) (f : α → X β) :
 
 /-- Exact decomposition of the actual DIST branch into lookup and leaf work. -/
 theorem inflate_DIST_lookup_cut (c : Ctx) : inflate_DIST c = (do distLookup c; distFinish c) := by
-  unfold inflate_DIST distLookup distRootTail distFinish
+  rw [DIST_previous]
+  unfold distLookup distRootTail distFinish
   simp only [bindX_assoc, bindX_ite, bindX_pure]
 
 /-- Actual DIST lookup uses the same installed table as its caller. It

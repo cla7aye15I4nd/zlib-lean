@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.engine.block-clear»
 import ZlibF.Proof.«deflate.c.engine.initial»
 import ZlibF.Proof.«trees.c.initial-clear»
 import ZlibF.Proof.«deflate.c.engine.fill-pending-complete»
@@ -15,14 +16,6 @@ open Zlib.Deflate.Proofs.DefaultInit ZlibF.Spec.Public ZlibF.Spec
 open ZlibF.Spec.Public.Proofs.DeflateInit Zlib.Deflate.Engine.Proofs
 open Zlib.Trees.Proofs.Out (InitialFrequencies TreesBase TreesStatic TreesInvAt ibRec trInitRec)
 set_option autoImplicit false
-
-/-- Reset data needed when constructing the next dynamic header. It is
-established by actual init/reset and retained through non-flushing frames. -/
-structure BlockClear (d : DeflateState) : Prop where
-  bl : ∀ k, k < 19 → d.bl_tree[k]!.fc = 0
-  opt : d.opt_len = 0
-  fixed : d.static_len = 0
-
 
 theorem rkTail2_bl_zero {H : Heap} {r : ZStreamRef} {ds : Nat} {z' : ZStream} {d3 : DeflateState} {b : Nat} {buf : Array UInt8}
     (hz : r.get H = some z') (hb : Zlib.Trees.Proofs.Out.TreesBase H ds d3 b buf) (v : UInt64) :

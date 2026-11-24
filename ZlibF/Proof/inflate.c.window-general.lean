@@ -189,7 +189,7 @@ theorem uw_core_small1_public {h : Heap} {r : ZStreamRef} {zs : Nat} {z : ZStrea
     UInt32.sub_self, bne_self_eq_false, Bool.false_eq_true]
   simp only [hcp']
   by_cases c1 : st.wnext + copy = st.wsize <;> by_cases c2 : st.whave < st.wsize <;>
-    simp [c1, c2, wrI_eq, hl.hs, setI, hw]
+    simp [c1, c2, ldI_eq, wrI_eq, hl.hs, setI, upd_upd, hw]
 
 /-- `updatewindow` copies a short source ending exactly at the window end.
 The public separation condition permits any readable object, including a
@@ -255,7 +255,7 @@ theorem uw_core_small3_public {h : Heap} {r : ZStreamRef} {zs : Nat} {z : ZStrea
     Bool.false_eq_true, ite_false]
   simp only [ge_iff_le, hlt, ite_false, hq, bind_app, hw, hadd, hsub, hcp', hr,
     bne_self_eq_false, Bool.false_eq_true]
-  by_cases hwh : st.whave < st.wsize <;> simp [hwh, wrI_eq, hl.hs, setI, hw, hsum]
+  by_cases hwh : st.whave < st.wsize <;> simp [hwh, ldI_eq, wrI_eq, hl.hs, setI, upd_upd, hw, hsum]
 
 /-- A positive source range separated from a nonempty window either belongs
 to another object or begins beyond the window. -/

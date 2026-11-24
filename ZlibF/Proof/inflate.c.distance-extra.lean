@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.mode-correspondence»
 import ZlibF.Proof.«inflate.c.distance-finish»
 
 namespace Zlib.Inflate.Proofs
@@ -19,7 +20,8 @@ theorem inflate_DISTEXT_need_cut {c : Ctx} {l : IL} {h : Heap} {zs : Nat} {s : I
     (hc : c.st = some (.tab zs)) (hs : h.istates zs = some s) (nonzero : s.extra ≠ 0) :
     runX (inflate_DISTEXT c) l h = runX (distExtraNeed c s.extra) l h := by
   have load : ldInflateState c.st h = .ok (s, h) := by rw [hc, ldI_eq, hs]
-  unfold inflate_DISTEXT distExtraNeed
+  rw [DISTEXT_preserved]
+  unfold distExtraNeed
   rw [runX_bind, runX_lift_ok load]
   simp [nonzero]
 
@@ -53,7 +55,7 @@ theorem inflate_DISTEXT_boundary_bounded {c : Ctx} {l : IL} {h : Heap} {r : ZStr
     have finalTables := tables.decode_update good.live.hs (after := state) rfl
     refine ⟨l, setI h zs state, state, 0, ?_, by omega, finalGood, finalTables,
       B.decode_update zs state, rfl, rfl, by rfl, ?_, rfl, ?_, lower, ?_, ?_, (inputAdvance_zero l.next).symm, Nat.le_max_left _ _⟩
-    · unfold inflate_DISTEXT
+    · rw [DISTEXT_preserved]
       simp only [runX_bind, runX_lift_ok load, zero, bne_self_eq_false, Bool.false_eq_true, ite_false,
         runX_setMode env]
       simp only [state, zero]

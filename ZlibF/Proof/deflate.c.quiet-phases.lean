@@ -855,6 +855,7 @@ theorem extra_stage_q {h : Heap} {r : ZStreamRef} {ds pb : Nat} {z : ZStream} {d
     obtain ⟨st1, H1, runL, head1, mono1, exit1⟩ :=
       extra_loop_q extra other sizeLo (L - d.gzindex.toNat) (by omega) (by omega) globals good buffers record low psize st0 head0
         ⟨d, good.live.hs, Nat.le_refl _, fun e => Bool.noConfusion e⟩
+    have sourceRun := extra_run_of_previous (st := st0) rfl runL
     have stageEq : extraStage (some r) (some (.tab ds)) k h =
         extraCopy (some r) (some (.tab ds)) d g (do
           wr (some (.tab ds)) (fun d => { d with status := NAME_STATE })
@@ -919,7 +920,7 @@ theorem extra_stage_q {h : Heap} {r : ZStreamRef} {ds pb : Nat} {z : ZStream} {d
       · rw [stageEq]
         unfold extraCopy
         simp only [bind_app]
-        rw [runL]
+        rw [sourceRun]
         simp only [ret1, Bool.false_eq_true, ite_false, bind_app, ldDeflateState_tab good1.live.hs, ldg1, pp1, pe1]
         rw [run2]
         simp only [wrD_eq, show (Zlib.Trees.Proofs.Out.setB H1 pb (copyRange buf1 ea1 d1.pending.toNat
@@ -943,7 +944,7 @@ theorem extra_stage_q {h : Heap} {r : ZStreamRef} {ds pb : Nat} {z : ZStream} {d
       rw [stageEq]
       unfold extraCopy
       simp only [bind_app]
-      rw [runL]
+      rw [sourceRun]
       simp [ret1, pure_app]
 
 

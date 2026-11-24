@@ -258,21 +258,12 @@ def okLog (log : DataLog) (input out : List UInt8) (u : Nat) : DataLog :=
     result := Z_OK
     finished := log.finished || Z_OK == Z_STREAM_END }
 
-/-- One call after the refills, from the public `inflate` goal alone. -/
-theorem call_phase_safe (call : Goal.inflate) {e : Env} {l : UncLoop} {H : Heap} {log : DataLog} {i : Nat}
-    {z : ZStream} {s : InflateState} (ok : EnvOK e) (st : SafeState e l H log i z s)
-    (fullIn : z.avail_in = 0 → l.len = 0) (fullOut : z.avail_out = 0 → l.left = 0) :
-    ∃ rc H', C.run (inflate (some e.r) Z_NO_FLUSH) H = .ok (rc, H') ∧
-      (rc = Z_OK → ∃ input out u z' s', DataStep .inflate H H' e.r Z_NO_FLUSH rc input out u ∧
-        input = (e.src.drop log.input.length).take z.avail_in.toNat ∧ u ≤ z.avail_in.toNat ∧
-        SafeState e { l with err := rc } H' (okLog log input out u) i z' s' ∧
-        measure e { l with err := rc } H' < measure e l H) ∧
-      (rc ≠ Z_OK → ∃ input output u z' s',
-        SafeFinal e { l with err := rc } rc H H' log input output u i z z' s s') := by
-  obtain ⟨srcH, srcBlocks, outW, outBlocks, sepIO, outW0⟩ := call_ranges ok st
-  have k0 : ¬ e.h₀.live e.k := ok.fresh e.k (Nat.le_refl _)
-  have k1 : ¬ e.h₀.live (e.k + 1) := ok.fresh (e.k + 1) (Nat.le_succ _)
-  -- the arguments of the call
+/-- The live input and output ranges from the wrapper are valid buffers
+for the public decoder, including the reserved byte view at zero capacity. -/
+theorem SafeState.call_buffers {e : Env} {l : UncLoop} {H : Heap} {log : DataLog} {i : Nat}
+    {z : ZStream} {s : InflateState} (st : SafeState e l H log i z s) (ok : EnvOK e) :
+    StreamBuffers H e.r := by
+  obtain ⟨srcH, srcBlocks, outW, outBlocks, sepIO, _⟩ := call_ranges ok st
   have notOwnedRoot : ∀ (q : BPtr), (∀ r j, q = .ref r j → ∀ c, BRef.block r = some c →
       e.h₀.live c ∨ c = e.k + 1) → ∀ b, ByteRoot q b → ¬ StreamOwned H e.r b := by
     intro q blocks b root
@@ -284,14 +275,29 @@ theorem call_phase_safe (call : Goal.inflate) {e : Env} {l : UncLoop} {H : Heap}
       rcases blocks r j rfl b (byteRoot_block root) with x | x
       · exact Or.inl x
       · exact Or.inr (Or.inr x)
-  have buffers : StreamBuffers H e.r := by
-    refine ⟨z, st.good.live.hz, ?_, ?_, sepIO⟩
-    · exact Or.inr ⟨⟨_, srcH⟩, (fun h => absurd h (by decide)),
-        notOwnedRoot z.next_in (fun r j hp c hc => Or.inl (srcBlocks r j hp c hc))⟩
-    · rcases outW with ⟨h0, -⟩ | ⟨r, j, a, hq, g, ro, fit⟩
-      · exact Or.inl h0
-      · refine Or.inr ⟨⟨_, Or.inr ⟨r, j, a, hq, g, fit, rfl⟩⟩, fun _ => Or.inr ⟨r, j, a, hq, g, ro, fit⟩,
-          notOwnedRoot z.next_out outBlocks⟩
+  refine ⟨z, st.good.live.hz, ?_, ?_, sepIO⟩
+  · exact Or.inr ⟨⟨_, srcH⟩, (fun h => absurd h (by decide)),
+      notOwnedRoot z.next_in (fun r j hp c hc => Or.inl (srcBlocks r j hp c hc))⟩
+  · rcases outW with ⟨h0, -⟩ | ⟨r, j, a, hq, g, ro, fit⟩
+    · exact Or.inl h0
+    · refine Or.inr ⟨⟨_, Or.inr ⟨r, j, a, hq, g, fit, rfl⟩⟩, fun _ => Or.inr ⟨r, j, a, hq, g, ro, fit⟩,
+        notOwnedRoot z.next_out outBlocks⟩
+
+/-- One call after the refills, from the public `inflate` goal alone. -/
+theorem call_phase_safe (call : Goal.inflate) {e : Env} {l : UncLoop} {H : Heap} {log : DataLog} {i : Nat}
+    {z : ZStream} {s : InflateState} (ok : EnvOK e) (st : SafeState e l H log i z s)
+    (fullIn : z.avail_in = 0 → l.len = 0) (fullOut : z.avail_out = 0 → l.left = 0) :
+    ∃ rc H', C.run (inflate (some e.r) Z_NO_FLUSH) H = .ok (rc, H') ∧
+      (rc = Z_OK → ∃ input out u z' s', DataStep .inflate H H' e.r Z_NO_FLUSH rc input out u ∧
+        input = (e.src.drop log.input.length).take z.avail_in.toNat ∧ u ≤ z.avail_in.toNat ∧
+        SafeState e { l with err := rc } H' (okLog log input out u) i z' s' ∧
+        measure e { l with err := rc } H' < measure e l H) ∧
+      (rc ≠ Z_OK → ∃ input output u z' s',
+        SafeFinal e { l with err := rc } rc H H' log input output u i z z' s s') := by
+  have srcH := (call_ranges ok st).1
+  have k0 : ¬ e.h₀.live e.k := ok.fresh e.k (Nat.le_refl _)
+  have k1 : ¬ e.h₀.live (e.k + 1) := ok.fresh (e.k + 1) (Nat.le_succ _)
+  have buffers := st.call_buffers ok
   have active : ActiveHeader H e.r := by
     refine ⟨z, st.good.live.hz, ?_, ?_⟩
     · intro i' s' hst his

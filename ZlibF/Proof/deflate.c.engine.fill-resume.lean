@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.engine.fill-refinement»
 import ZlibF.Proof.«deflate.c.engine.fill-read-invariant»
 import ZlibF.Proof.«deflate.c.engine.fill-padding-invariant»
 import ZlibF.Proof.«deflate.c.engine.fill-initial»
@@ -73,7 +74,7 @@ theorem fill_window_resume_read {h : Heap} {r : ZStreamRef} {ds w io : Nat}
       pointer input inputBound nonempty separate
   have loop := do_once body next
   have pad := fill_high_water_complete goodR winR getR (window_writable goodR winR) rangeR
-  rw [fill_window_source]
+  apply fill_window_of_return
   simp only [bind_app, rdD_eq, good.live.hs, loop]
   exact pad
 

@@ -17,7 +17,7 @@ open Zlib.Inflate.Spec (setI)
 set_option autoImplicit false
 
 /-- The condition of the decoding loop. -/
-def trCond (c : BCtx) : X Bool := do
+def trCond (c : DecoderCtx) : X Bool := do
   let s ← ldInflateState c.st
   return s.«have» < s.nlen + s.ndist
 
@@ -28,13 +28,13 @@ def trCopyCond : X Bool := do
   return l.copy != 0
 
 /-- The body of the repeat loop: `state->lens[state->have++] = (unsigned short)len;`. -/
-def trCopyBody (c : BCtx) : X Unit := do
+def trCopyBody (c : DecoderCtx) : X Unit := do
   let s ← ldInflateState c.st
   Ptr.store (← (lensP c.st).add (s.«have».toNat : Int)) (← get).len.toUInt16
   wrS c.st fun s => { s with «have» := s.«have» + 1 }
 
 /-- After a repeat code: the check and the repeat loop. -/
-def trTail (c : BCtx) : X Bool := do
+def trTail (c : DecoderCtx) : X Bool := do
   let s ← ldInflateState c.st
   if s.«have» + (← get).copy > s.nlen + s.ndist then
     badMode c "invalid bit length repeat"
@@ -43,7 +43,7 @@ def trTail (c : BCtx) : X Bool := do
   return false
 
 /-- A repeat code (16, 17, 18). -/
-def trRep (c : BCtx) (here : Code) : X Bool := do
+def trRep (c : DecoderCtx) (here : Code) : X Bool := do
   if here.val == 16 then
     NEEDBITS c (here.bits.toUInt32 + 2)
     DROPBITS here.bits.toUInt32
@@ -70,7 +70,7 @@ def trRep (c : BCtx) (here : Code) : X Bool := do
   trTail c
 
 /-- A length below 16. -/
-def trLit (c : BCtx) (here : Code) : X Bool := do
+def trLit (c : DecoderCtx) (here : Code) : X Bool := do
   DROPBITS here.bits.toUInt32
   let s ← ldInflateState c.st
   Ptr.store (← (lensP c.st).add (s.«have».toNat : Int)) here.val
@@ -78,11 +78,11 @@ def trLit (c : BCtx) (here : Code) : X Bool := do
   return false
 
 /-- The body of the decoding loop after the lookup. -/
-def trAfter (c : BCtx) : X Bool := do
+def trAfter (c : DecoderCtx) : X Bool := do
   let here := (← get).here
   if here.val < 16 then trLit c here else trRep c here
 
-theorem tabRead_eq (c : BCtx) :
+theorem tabRead_eq (c : DecoderCtx) :
     tabRead c = xwhileBrk (trCond c) (do Zlib.Infback.lookup1 c false; trAfter c) := rfl
 
 /-- The decoded lengths so far are at most 15. -/
@@ -144,7 +144,7 @@ theorem PInv.withCopy {c : BCtx} {r : ZStreamRef} {i : Nat} {window : BPtr} {n :
   ⟨I.cstrm, I.cst, I.valid, I.winRoot, I.put, I.chunk, I.held, I.bits, I.proto, I.frame, I.live, I.mode,
     I.platform, I.fit, I.chunkBlk, I.stOk⟩
 
-theorem trCopyBody_run (c : BCtx) {i : Nat} (hc : c.st = some (.tab i)) {h : Heap} {s : InflateState}
+theorem trCopyBody_run (c : DecoderCtx) {i : Nat} (hc : c.st = some (.tab i)) {h : Heap} {s : InflateState}
     (hs : h.istates i = some s) (lt : s.«have».toNat < 320) (size : s.lens.size = 320) (l : IL) :
     runX (trCopyBody c) l h = .ok ((.ok (), l), setI h i (rdSet s l.len.toUInt16)) := by
   obtain ⟨add, st⟩ := lens_at hs lt size l.len.toUInt16
@@ -279,6 +279,14 @@ theorem dropR_bits {l : IL} {k : UInt32} (hk : k.toNat ≤ l.bits.toNat) :
     (dropR l k).bits.toNat = l.bits.toNat - k.toNat :=
   UInt32.toNat_sub_of_le _ _ (UInt32.le_iff_toNat_le.mpr hk)
 
+theorem dropR_clean {l : IL} {k : UInt32} (width : k.toNat < 64) (fit : k.toNat ≤ l.bits.toNat)
+    (clean : l.hold.toNat < 2 ^ l.bits.toNat) :
+    (dropR l k).hold.toNat < 2 ^ (dropR l k).bits.toNat := by
+  rw [dropR_bits fit]
+  change (l.hold >>> k.toUInt64).toNat < _
+  rw [shr64_toNat _ _ width, Nat.div_lt_iff_lt_mul (Nat.two_pow_pos _), ← Nat.pow_add, Nat.sub_add_cancel fit]
+  exact clean
+
 theorem bitsV_lt (l : IL) {k : UInt32} (hk : k.toNat < 32) : (bitsV l k).toNat < 2 ^ k.toNat := by
   unfold bitsV
   rw [BITS_toNat l k hk]
@@ -370,13 +378,13 @@ theorem trRep_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
       obtain ⟨k2, mx2⟩ : here.bits.toNat + 2 ≤ l2.bits.toNat ∧
           l2.bits.toNat ≤ max l.bits.toNat (here.bits.toNat + 2 + 7) := okc rfl
       obtain ⟨I3, e3, b3⟩ := drop I2 (by omega)
-      have ld : ldInflateState (some (.tab i)) h2 = .ok (s, h2) := ldInflateState_tab hs2
+      have ld : ldInflateState c.st h2 = .ok (s, h2) := by rw [I2.cst]; exact ldInflateState_tab hs2
       by_cases z : (s.«have» == 0) = true
       · obtain ⟨h', bad, I', m, s', hs', mode'⟩ := I3.badRound "invalid bit length repeat" lit_bit_length_repeat
         refine ⟨.ok true, dropR l2 here.bits.toUInt32, h', log2, ?_, I',
           fun b x => ⟨by omega, s', hs', Or.inl ⟨by injection x with x; exact x.symm, mode'⟩⟩, fun e x => (nomatch x)⟩
         unfold trRep
-        simp only [v16, ↓reduceIte, runX_bind, run2, DROPBITS_run _ _ _ b64, I2.cst, runX_lift_ok ld, z,
+        simp only [v16, ↓reduceIte, runX_bind, run2, DROPBITS_run _ _ _ b64, runX_lift_ok ld, z,
           runX_lift_ok bad]
         rfl
       · have z' : s.«have» ≠ 0 := by simpa using z
@@ -389,6 +397,7 @@ theorem trRep_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
           UInt32.toNat_sub_of_le _ _ (UInt32.le_iff_toNat_le.mpr (by simp; omega))
         have l320 : s1.«have».toNat ≤ 316 := by have := rd.le; have := rd.tab.nlen; have := rd.tab.ndist; omega
         have inside : 0 + (s1.«have» - 1).toNat < s1.lens.size := by rw [wf.1, sub]; omega
+        have lens : lensP c.st = .ref (.istate_lens i) 0 := by rw [I2.cst]; rfl
         have read0 := Ptr.index_ok (off := 0) (i := (s1.«have» - 1).toNat) (WRef.get_istate_lens hs2) inside
         have val : s1.lens[0 + (s1.«have» - 1).toNat] = s1.lens.getD (s1.«have» - 1).toNat 0 := by
           simp only [Nat.zero_add, Array.getD_eq_getD_getElem?]
@@ -402,8 +411,8 @@ theorem trRep_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
             (by rw [e3]; show 2 ≤ _; omega) (by decide) len15 (by decide) (by decide)
         refine ⟨.ok res, l6, h6, log2, ?_, I6, fun b x => ?_, fun e x => (nomatch x)⟩
         · unfold trRep
-          simp only [v16, ↓reduceIte, runX_bind, run2, DROPBITS_run _ _ _ b64, I2.cst, runX_lift_ok ld, z,
-            Bool.false_eq_true, lensP, runX_lift_ok read0, BITS_run _ _ 2 (by decide), runX_modify,
+          simp only [v16, ↓reduceIte, runX_bind, run2, DROPBITS_run _ _ _ b64, runX_lift_ok ld, z,
+            Bool.false_eq_true, lens, runX_lift_ok read0, BITS_run _ _ 2 (by decide), runX_modify,
             DROPBITS_run _ _ 2 (by decide)]
           exact run6
         · injection x with x

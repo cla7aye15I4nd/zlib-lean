@@ -82,8 +82,8 @@ theorem errText_lit (k : Int) : IsLit (errText k) := by
 
 /-! ### zError -/
 
-theorem zError_eval (err : Int32) :
-    zError err = strLit (errText err.toInt) := by
+theorem errorMessage_eval (err : Int32) :
+    errorMessage err = strLit (errText err.toInt) := by
   funext h
   by_cases hr : err < -6 || err > 2
   · have h1 : err.toInt < -6 ∨ 2 < err.toInt := by
@@ -95,7 +95,7 @@ theorem zError_eval (err : Int32) :
       unfold errText
       split <;> first | omega | rfl
     rw [this]
-    simp [zError, hr, z_errmsg, strLit]
+    simp [errorMessage, hr, z_errmsg, strLit]
   · have h1 : -6 ≤ err.toInt ∧ err.toInt ≤ 2 := by
       simp only [Bool.or_eq_true, decide_eq_true_eq, not_or, Int32.not_lt] at hr
       have a := Int32.le_iff_toInt_le.mp hr.1
@@ -105,6 +105,9 @@ theorem zError_eval (err : Int32) :
       ⟨err.toInt, h1.1, h1.2, (Int32.ofInt_toInt err).symm⟩
     rcases (by omega : k = -6 ∨ k = -5 ∨ k = -4 ∨ k = -3 ∨ k = -2 ∨ k = -1 ∨ k = 0 ∨ k = 1 ∨ k = 2) with
       rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
+
+theorem zError_eval (err : Int32) : zError err = strLit (errText err.toInt) :=
+  errorMessage_eval err
 
 /-- **zError, safety.** For every `int` argument (no restriction: the index is always in `0..9`), `zError` runs
 without undefined behaviour. It returns a string literal and changes nothing, in particular allocates nothing. -/

@@ -93,7 +93,7 @@ theorem exitCodesX_inflate_CODELENS (context : Ctx) :
 run, including its source fallthrough and explicit control exits. -/
 theorem exitCodesX_inflate_LENLENS (context : Ctx) :
     ExitCodesX (inflate_LENLENS context) := by
-  unfold inflate_LENLENS
+  unfold inflate_LENLENS storeOrderedLength
   have continuation0 := exitCodesX_inflate_CODELENS context
   exit_codes_source
 

@@ -1,3 +1,4 @@
+import ZlibF.Proof.ControlFlowFrame
 import ZlibF.Proof.«deflate.c.base»
 import ZlibF.Proof.LibcBorrowLoops
 
@@ -278,6 +279,34 @@ theorem ParM.bind {α β : Type} {keep : Bool} {m : M α} {f : α → M β} (hm 
 theorem ParM.ite {α : Type} {keep : Bool} (p : Prop) [Decidable p] {a b : M α} (ha : ParM keep a)
     (hb : ParM keep b) : ParM keep (if p then a else b) := by
   split <;> assumption
+
+theorem ExactM.cforEverRet {σ ρ : Type} (body : σ → M (LoopStep σ ρ)) (s : σ) (k : σ → M ρ)
+    (hb : ∀ s, ExactM (body s)) (hk : ∀ s, ExactM (k s)) : ExactM (C.cforEverRet body s k) :=
+  Preserves.cforEverRet (R := ExactRel) ExactRel.refl (fun a b => ExactRel.trans a b) body s k hb hk
+
+theorem ExactM.cwhileBrk {σ : Type} (cond : σ → M (Bool × σ)) (body : σ → M (LoopStep σ Empty))
+    (s : σ) (hc : ∀ s, ExactM (cond s)) (hb : ∀ s, ExactM (body s)) :
+    ExactM (C.cwhileBrk cond body s) :=
+  Preserves.cwhileBrk (R := ExactRel) ExactRel.refl (fun a b => ExactRel.trans a b) cond body s hc hb
+
+theorem ExactM.cdoWhileBrk {σ : Type} (body : σ → M (LoopStep σ Empty)) (cond : σ → M (Bool × σ))
+    (s : σ) (hb : ∀ s, ExactM (body s)) (hc : ∀ s, ExactM (cond s)) :
+    ExactM (C.cdoWhileBrk body cond s) :=
+  Preserves.cdoWhileBrk (R := ExactRel) ExactRel.refl (fun a b => ExactRel.trans a b) body cond s hb hc
+
+theorem ParM.cwhileBrk {σ : Type} {keep : Bool} (cond : σ → M (Bool × σ))
+    (body : σ → M (LoopStep σ Empty)) (s : σ)
+    (hc : ∀ s, ParM keep (cond s)) (hb : ∀ s, ParM keep (body s)) :
+    ParM keep (C.cwhileBrk cond body s) :=
+  Preserves.cwhileBrk (R := ParRel keep) (ParRel.refl keep) (fun a b => ParRel.trans a b)
+    cond body s hc hb
+
+theorem ParM.cdoWhileBrk {σ : Type} {keep : Bool} (body : σ → M (LoopStep σ Empty))
+    (cond : σ → M (Bool × σ)) (s : σ)
+    (hb : ∀ s, ParM keep (body s)) (hc : ∀ s, ParM keep (cond s)) :
+    ParM keep (C.cdoWhileBrk body cond s) :=
+  Preserves.cdoWhileBrk (R := ParRel keep) (ParRel.refl keep) (fun a b => ParRel.trans a b)
+    body cond s hb hc
 
 theorem ExactM.cwhile_go {σ : Type} (cond : σ → M (Bool × σ)) (body : σ → M σ)
     (hc : ∀ s, ExactM (cond s)) (hb : ∀ s, ExactM (body s)) (n : Nat) (s : σ) :

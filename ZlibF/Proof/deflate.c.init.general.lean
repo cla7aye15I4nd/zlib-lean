@@ -64,37 +64,9 @@ def tail (strm : ZStreamPtr) (level method windowBits memLevel strategy : Int32)
   zalloc_default strm
   let s ← allocDeflateState
   if s == none then return Z_MEM_ERROR
-  stDeflateState s DeflateState.zeroed
-  zwr strm (fun z => { z with state := StateRef.ofDeflateState s })
-  let w_bits : UInt32 := windowBits.toUInt32
-  let w_size : UInt32 := (← ishl 1 w_bits.toNat).toUInt32
-  let hash_bits : UInt32 := memLevel.toUInt32 + 7
-  let hash_size : UInt32 := (← ishl 1 hash_bits.toNat).toUInt32
-  wr s (fun d => { d with strm := strm, status := INIT_STATE, wrap := wrap, w_bits := w_bits, w_size := w_size,
-                          w_mask := w_size - 1, hash_bits := hash_bits, hash_size := hash_size,
-                          hash_mask := hash_size - 1,
-                          hash_shift := (hash_bits + (MIN_MATCH_u - 1)) / MIN_MATCH_u })
-  let window ← ZALLOC_bytes strm w_size 2
-  wr s (fun d => { d with window })
-  let prev ← ZALLOC_words strm w_size
-  wr s (fun d => { d with prev })
-  let head ← ZALLOC_words strm hash_size
-  wr s (fun d => { d with head })
-  let lit_bufsize : UInt32 := (← ishl 1 (← iadd memLevel 6).toInt.toNat).toUInt32
-  wr s (fun d => { d with high_water := 0, lit_bufsize })
-  let pending_buf ← ZALLOC_bytes strm lit_bufsize 4
-  wr s (fun d => { d with pending_buf, pending_buf_size := lit_bufsize.toUInt64 * 4 })
-  if window == .null || prev == .null || head == .null || pending_buf == .null then
-    wr s (fun d => { d with status := FINISH_STATE })
-    let m ← ERR_MSG Z_MEM_ERROR
-    zwr strm (fun z => { z with msg := m })
-    let _ ← deflateEnd strm
-    return Z_MEM_ERROR
-  let sym_buf ← padd pending_buf lit_bufsize.toNat
-  wr s (fun d => { d with sym_buf, sym_end := (lit_bufsize - 1) * 3 })
-  wr s (fun d => { d with level, strategy, «method» := method.toUInt32.toUInt8 })
-  deflateReset strm
+  initSaved strm s level method windowBits memLevel strategy wrap
 
+set_option maxHeartbeats 800000 in
 /-- After the successful version read, the actual prefix prepares the stream and continues
 with `tail` on the prepared heap, for every argument. -/
 theorem entry_run {h : Heap} {r : ZStreamRef} {z : ZStream} {version : BPtr}
@@ -105,7 +77,7 @@ theorem entry_run {h : Heap} {r : ZStreamRef} {z : ZStream} {version : BPtr}
   obtain ⟨hn, read⟩ := version_load hv
   unfold deflateInit2_ tail
   by_cases hza : z.zalloc = .null <;> by_cases hzf : z.zfree = .null
-  all_goals simp [hn, bind_app, read, sizeof_z_stream, zwr_eq, zrd_eq, hz,
+  all_goals simp [initAllocated_eq_saved, cdecl, M_pure_bind, hn, bind_app, read, sizeof_z_stream, zwr_eq, zrd_eq, hz,
     ZStreamRef.get_put_same hz, ZStreamRef.put_put, preparedStream, hza, hzf]
 
 /-! ## Parameter normalization -/
@@ -130,36 +102,7 @@ def rest (strm : ZStreamPtr) (level wrap wbits method memLevel strategy : Int32)
   zalloc_default strm
   let s ← allocDeflateState
   if s == none then return Z_MEM_ERROR
-  stDeflateState s DeflateState.zeroed
-  zwr strm (fun z => { z with state := StateRef.ofDeflateState s })
-  let w_bits : UInt32 := windowBits.toUInt32
-  let w_size : UInt32 := (← ishl 1 w_bits.toNat).toUInt32
-  let hash_bits : UInt32 := memLevel.toUInt32 + 7
-  let hash_size : UInt32 := (← ishl 1 hash_bits.toNat).toUInt32
-  wr s (fun d => { d with strm := strm, status := INIT_STATE, wrap := wrap, w_bits := w_bits, w_size := w_size,
-                          w_mask := w_size - 1, hash_bits := hash_bits, hash_size := hash_size,
-                          hash_mask := hash_size - 1,
-                          hash_shift := (hash_bits + (MIN_MATCH_u - 1)) / MIN_MATCH_u })
-  let window ← ZALLOC_bytes strm w_size 2
-  wr s (fun d => { d with window })
-  let prev ← ZALLOC_words strm w_size
-  wr s (fun d => { d with prev })
-  let head ← ZALLOC_words strm hash_size
-  wr s (fun d => { d with head })
-  let lit_bufsize : UInt32 := (← ishl 1 (← iadd memLevel 6).toInt.toNat).toUInt32
-  wr s (fun d => { d with high_water := 0, lit_bufsize })
-  let pending_buf ← ZALLOC_bytes strm lit_bufsize 4
-  wr s (fun d => { d with pending_buf, pending_buf_size := lit_bufsize.toUInt64 * 4 })
-  if window == .null || prev == .null || head == .null || pending_buf == .null then
-    wr s (fun d => { d with status := FINISH_STATE })
-    let m ← ERR_MSG Z_MEM_ERROR
-    zwr strm (fun z => { z with msg := m })
-    let _ ← deflateEnd strm
-    return Z_MEM_ERROR
-  let sym_buf ← padd pending_buf lit_bufsize.toNat
-  wr s (fun d => { d with sym_buf, sym_end := (lit_bufsize - 1) * 3 })
-  wr s (fun d => { d with level, strategy, «method» := method.toUInt32.toUInt8 })
-  deflateReset strm
+  initSaved strm s level method windowBits memLevel strategy wrap
 
 /-- The normalization of `deflateInit2_` for every signed argument. -/
 theorem tail_eq (strm : ZStreamPtr) (level method wb mem strategy : Int32) :
@@ -236,7 +179,7 @@ theorem rest_eq (strm : ZStreamPtr) (lv w b method m strategy : Int32)
   subst eb em
   have cb : nb = 8 ∨ nb = 9 ∨ nb = 10 ∨ nb = 11 ∨ nb = 12 ∨ nb = 13 ∨ nb = 14 ∨ nb = 15 := by omega
   have cm : nm = 1 ∨ nm = 2 ∨ nm = 3 ∨ nm = 4 ∨ nm = 5 ∨ nm = 6 ∨ nm = 7 ∨ nm = 8 ∨ nm = 9 := by omega
-  unfold rest alloc
+  unfold rest alloc initSaved
   rcases cb with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
   rcases cm with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
   simp [ishl, chk32, iadd, M_pure_bind, MIN_MATCH_u] <;> rfl

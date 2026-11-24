@@ -77,8 +77,8 @@ theorem separate_later {p q : BPtr} {n m k : Nat} (sep : Separate p n q m) (le :
 def strRead (s : DeflateStatePtr) (sel : GzHeader → BPtr) (st : StrS) : M StrS := do
   let d ← ldDeflateState s
   let gh ← ldGzHeader d.gzhead
-  let b ← index8 (sel gh) d.gzindex.toNat
   wr s (fun d => { d with gzindex := d.gzindex + 1 })
+  let b ← index8 (sel gh) d.gzindex.toNat
   put_byte s b
   pure { st with val := b.toUInt32.toInt32 }
 
@@ -97,6 +97,44 @@ def strBody (strm : ZStreamPtr) (s : DeflateStatePtr) (sel : GzHeader → BPtr) 
 
 def strCond (st : StrS) : M (Bool × StrS) := pure (!st.ret && st.val != 0, st)
 
+private def flaggedStep (s : StrS) : LoopStep StrS Empty :=
+  if s.ret then .brk s else .next s
+
+/-- One source break returns immediately. A continuing iteration reads the same byte and
+consumes the same fuel in either loop. -/
+private theorem string_go (native : StrS → M (LoopStep StrS Empty)) (body : StrS → M StrS)
+    (step : ∀ s, s.ret = false → native s = (body s >>= fun next => pure (flaggedStep next))) :
+    ∀ n s, s.ret = false → ∀ h,
+      (cdoWhileCtrl.go native (fun st => pure (st.val != 0, st)) n s >>= fun
+        | .error e => nomatch e
+        | .ok st => pure st) h = cdoWhile.go body strCond n s h := by
+  intro n
+  induction n with
+  | zero => intros; rfl
+  | succ n ih =>
+    intro st active h
+    simp only [cdoWhileCtrl.go, cdoWhile.go, step st active, bind_app]
+    rcases run : body st h with fault | ⟨st1, h1⟩
+    · rfl
+    · cases stop : st1.ret
+      · by_cases more : st1.val = 0
+        · simp [flaggedStep, stop, strCond, more, pure_app, bind_app]
+        · simpa [flaggedStep, stop, strCond, more, pure_app, bind_app] using ih st1 stop h1
+      · simp [flaggedStep, stop, strCond, pure_app]
+
+private theorem string_loop_controls (native : StrS → M (LoopStep StrS Empty)) (body : StrS → M StrS)
+    (step : ∀ s, s.ret = false → native s = (body s >>= fun next => pure (flaggedStep next)))
+    (st : StrS) (active : st.ret = false) :
+    cdoWhileBrk native (fun s => pure (s.val != 0, s)) st = cdoWhile body strCond st := by
+  funext h
+  apply Eq.trans ?_ (string_go native body step fuel st active h)
+  unfold cdoWhileBrk cdoWhileCtrl
+  apply congrFun (congrArg (Bind.bind (cdoWhileCtrl.go native _ fuel st)) ?_) h
+  funext x
+  cases x with
+  | error e => exact nomatch e
+  | ok val => rfl
+
 theorem string_loop_split (strm : ZStreamPtr) (s : DeflateStatePtr) (sel : GzHeader → BPtr) :
     gz_string_loop strm s sel = (do
       let beg ← rd s (·.pending)
@@ -104,8 +142,21 @@ theorem string_loop_split (strm : ZStreamPtr) (s : DeflateStatePtr) (sel : GzHea
       if st.ret then return true
       HCRC_UPDATE strm s st.beg
       return false) := by
-  delta gz_string_loop strBody strRead strCond
-  exact rfl
+  unfold gz_string_loop
+  apply congrArg (Bind.bind (rd s (·.pending)))
+  funext beg
+  apply congrArg (fun (m : M StrS) => m >>= fun st =>
+    if st.ret then pure true else HCRC_UPDATE strm s st.beg >>= fun _ => pure false)
+  refine string_loop_controls _ (strBody strm s sel) ?_ _ rfl
+  intro st active
+  simp only [strBody, strRead, cdecl, StrategyLoop.assocM, StrategyLoop.pure_bindM]
+  repeat' first
+    | rfl
+    | apply congrArg (Bind.bind _); funext x
+    | split
+    | simp only [flaggedStep, active, Bool.false_eq_true, ↓reduceIte,
+        StrategyLoop.assocM, StrategyLoop.pure_bindM]
+
 
 theorem slice_head {a : Array UInt8} {i n : Nat} {ys : List UInt8} (_fits : i + n ≤ a.size) (pos : 1 ≤ n)
     (slice : ys = (a.toList.drop i).take n) : ys[0]? = a[i]? := by
@@ -143,7 +194,9 @@ theorem str_read {h : Heap} {r : ZStreamRef} {ds pb : Nat} {z : ZStream} {d : De
   have lt : so + d.gzindex.toNat < a.size := by omega
   have head := slice_head fits (by omega) slice
   rw [List.getElem?_drop, Nat.add_zero] at head
-  have readOk := Ptr.index_ok (r := rp) (off := so) (i := d.gzindex.toNat) get lt
+  have updatedGet : Space.get (setD h ds {d with gzindex := d.gzindex + 1}) rp = some a := by
+    exact (byte_view_setD_depth (result := {d with gzindex := d.gzindex + 1}) good.live.hs rfl rp).trans get
+  have readOk := Ptr.index_ok (r := rp) (off := so) (i := d.gzindex.toNat) updatedGet lt
   unfold OkOn at readOk
   obtain ⟨goodW, treesW, buffersW, frameW⟩ := gzindex_engine good trees buffers (d.gzindex + 1)
   obtain ⟨runB, goodB, treesB, buffersB, _, _, countB, sizeB, _⟩ :=

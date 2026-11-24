@@ -1,5 +1,6 @@
 import ZlibF.Proof.«trees.c.heap.pq»
 import ZlibF.Proof.«trees.c.heap.ord»
+import ZlibF.Proof.«trees.c.monad»
 
 /-!
 # trees.c: `pqdownheap` keeps the heap order
@@ -246,7 +247,8 @@ theorem ws_pqremove {h0 : Heap} {id : Nat} (tk : TK) (d : DeflateState) (len : N
         PermOn (fun i => hp'[i]!) (Hm (fun i => d.heap[i]!) len) (len - 1) ∧
         HeapOK (sm (tk.arr d) d.depth) (fun i => hp'[i]!) (len - 1) 0) := by
   have kOK := sm_ok (tk.arr d) d.depth
-  unfold pqremove
+  unfold pqremove heapReplaceRoot
+  simp only [M_bind_assoc]
   refine WS.bind' (ws_heapAt 1 (by decide) (by show (1 : Int) < d.heap.size; omega)) fun top d1 ⟨htop, hd1⟩ => ?_
   subst d1
   refine WS.bind' ws_rd fun l d1 ⟨hl, hd1⟩ => ?_

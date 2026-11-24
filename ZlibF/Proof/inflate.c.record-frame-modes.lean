@@ -95,14 +95,14 @@ theorem recordFrameX_inflate_TYPE (r : ZStreamRef) (context : Ctx) (root : conte
 
 theorem recordFrameX_inflate_DICT (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     RecordFrameX r context.st (inflate_DICT context) := by
-  unfold inflate_DICT
+  rw [DICT_previous]
   try rw [root]
   have continuation0 := recordFrameX_inflate_TYPE r context root
   record_frame_mode r, context.st, root
 
 theorem recordFrameX_inflate_DICTID (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     RecordFrameX r context.st (inflate_DICTID context) := by
-  unfold inflate_DICTID
+  rw [DICTID_previous]
   try rw [root]
   have continuation0 := recordFrameX_inflate_DICT r context root
   record_frame_mode r, context.st, root

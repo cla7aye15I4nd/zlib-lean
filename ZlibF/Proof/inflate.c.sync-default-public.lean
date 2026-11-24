@@ -36,10 +36,10 @@ theorem syncsearch_public_readable {h : Heap} {p : BPtr} {len : UInt32}
 
 /-- The pointer advance after a real bounded search is defined on the
 same caller byte object. Zero-length null input takes the zero advance. -/
-theorem sync_public_input_add {h : Heap} {p : BPtr} {len used : UInt32}
+theorem sync_input_add_of_views {h ready : Heap} {p : BPtr} {len used : UInt32}
     (range : p = .null ∨ ∃ xs, Bytes h p len.toNat xs) (nonnull : p = .null → len = 0)
-    (bound : used.toNat ≤ len.toNat) (zs : Nat) (state : InflateState) :
-    ∃ next, Ptr.add p (used.toNat : Int) (setI h zs state) = .ok (next, setI h zs state) := by
+    (bound : used.toNat ≤ len.toNat) (views : ∀ ref : BRef, Space.get ready ref = Space.get h ref) :
+    ∃ next, Ptr.add p (used.toNat : Int) ready = .ok (next, ready) := by
   rcases range with null | ⟨xs, bytes⟩
   · subst p
     have zero := nonnull rfl
@@ -53,7 +53,13 @@ theorem sync_public_input_add {h : Heap} {p : BPtr} {len used : UInt32}
       rw [usedZero]
       exact ⟨.null, rfl⟩
     · subst p
-      exact ⟨.ref ref (off + used.toNat), Ptr.add_nat_ok (by simpa only [byte_view_get_setI] using get) (by omega)⟩
+      exact ⟨.ref ref (off + used.toNat), Ptr.add_nat_ok (by simpa only [views] using get) (by omega)⟩
+
+theorem sync_public_input_add {h : Heap} {p : BPtr} {len used : UInt32}
+    (range : p = .null ∨ ∃ xs, Bytes h p len.toNat xs) (nonnull : p = .null → len = 0)
+    (bound : used.toNat ≤ len.toNat) (zs : Nat) (state : InflateState) :
+    ∃ next, Ptr.add p (used.toNat : Int) (setI h zs state) = .ok (next, setI h zs state) :=
+  sync_input_add_of_views range nonnull bound (byte_view_get_setI h zs state)
 
 /-- Restoring held bytes writes only the fresh local block. Every original
 readable input object, including static and embedded byte views, survives. -/

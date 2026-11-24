@@ -19,42 +19,21 @@ set_option autoImplicit false
 
 /-- The code of `case HEAD` after `NEEDBITS(16)`, as in the translation. -/
 def headAfterBits (c : Ctx) : X Unit := do
-  let l ← get
   let s ← ldInflateState c.st
-  if (s.wrap &&& 2) != 0 && l.hold == 0x8b1f then
+  -- if ((state->wrap & 2) && hold == 0x8b1f) {  /* gzip header */
+  if (s.wrap &&& 2) != 0 && (← get).hold == 0x8b1f then
+    -- if (state->wbits == 0) state->wbits = 15;
+    let s ← ldInflateState c.st
     if s.wbits == 0 then wrS c.st fun s => { s with wbits := 15 }
-    let v ← crc32 0 .null 0
-    wrS c.st fun s => { s with check := v }
+    -- state->check = crc32(0L, Z_NULL, 0); CRC2(state->check, hold); INITBITS(); state->mode = FLAGS; break;
+    resetHeaderCheck c.st
     CRC2 c
     INITBITS
     setMode c.st FLAGS
     return
-  if s.head != none then
-    let g ← ldGzHeader s.head
-    stGzHeader s.head { g with done := -1 }
-  let b8 ← BITS 8
-  if (s.wrap &&& 1) == 0 || ((b8 <<< 8).toUInt64 + (l.hold >>> 8)) % 31 != 0 then
-    badMode c "incorrect header check"
-    return
-  if (← BITS 4) != i2u Z_DEFLATED then
-    badMode c "unknown compression method"
-    return
-  DROPBITS 4
-  let len := (← BITS 4) + 8
-  modify fun l => { l with len := len }
-  let s ← ldInflateState c.st
-  if len > 15 || (s.wbits != 0 && len > s.wbits) then
-    badMode c "invalid window size"
-    return
-  if s.wbits == 0 then wrS c.st fun s => { s with wbits := len }
-  let dm ← shl32 1 len
-  wrS c.st fun s => { s with dmax := dm, flags := 0 }
-  let v ← adler32 0 .null 0
-  wrS c.st fun s => { s with check := v }
-  wrZ c.strm fun z => { z with adler := v }
-  let l ← get
-  setMode c.st (if (l.hold &&& 0x200) != 0 then DICTID else TYPE)
-  INITBITS
+  -- if (state->head != Z_NULL) state->head->done = -1;
+  updateHeader c.st fun _ _ g => { g with done := -1 }
+  headZlibChecks c
 
 theorem inflate_HEAD_split (c : Ctx) : inflate_HEAD c = (do
     if (← rdS c.st (·.wrap)) == 0 then
@@ -192,12 +171,15 @@ theorem headAfterBits_gzip {c : Ctx} {h : Heap} {r : ZStreamRef} {zs : Nat} {z :
     (gzip : (s.wrap &&& 2) ≠ 0) (magic : l.hold = 0x8b1f) :
     runX (headAfterBits c) l h = .ok ((.ok (), { l with hold := 0, bits := 0 }),
       setI (Space.put h (BRef.blk b) (crc2Bytes a l.hold)) zs (headGzipState s l.hold)) := by
+  have crc : (liftM (resetHeaderCheck c.st) : X Unit) = (do
+      let v ← crc32 0 .null 0
+      wrS c.st fun s => { s with check := v }) := by
+    unfold resetHeaderCheck
+    exact liftHeapBind _ _
   unfold headAfterBits
-  rw [runX_bind, runX_get]
-  simp only []
-  rw [runX_bind, runX_ldS E]
+  rw [crc]
   have branch : ((s.wrap &&& 2) != 0 && l.hold == 0x8b1f) = true := by simp [gzip, magic]
-  simp only [branch, ↓reduceIte]
+  simp only [runX_bind, runX_ldS E, runX_get, branch, ↓reduceIte, x_bind_assoc]
   by_cases zero : s.wbits = 0
   · simp only [zero, beq_self_eq_true, ↓reduceIte]
     rw [runX_bind, runX_wrS E]
@@ -239,15 +221,12 @@ theorem headAfterBits_zlib {c : Ctx} {h : Heap} {r : ZStreamRef} {zs : Nat} {z :
     (notMagic : ((s.wrap &&& 2) != 0 && l.hold == 0x8b1f) = false)
     (record : ∀ i, s.head = some (.tab i) → (h.gzheaders i).isSome) :
     runX (headAfterBits c) l h = runX (headDefaultCheck c s l) l (headDoneHeap h s.head) := by
-  unfold headAfterBits
-  rw [runX_bind, runX_get]
-  simp only []
-  rw [runX_bind, runX_ldS E]
-  simp only [notMagic, Bool.false_eq_true, ↓reduceIte]
+  unfold headAfterBits updateHeader
+  simp only [x_bind_assoc,runX_bind,runX_ldS E,runX_get,notMagic,Bool.false_eq_true,↓reduceIte]
   cases hh : s.head with
   | none =>
     simp only [bne_self_eq_false, Bool.false_eq_true, ↓reduceIte, headDoneHeap]
-    rfl
+    exact headZlibChecks_eq E l
   | some ref =>
     cases ref with
     | tab i =>
@@ -256,9 +235,9 @@ theorem headAfterBits_zlib {c : Ctx} {h : Heap} {r : ZStreamRef} {zs : Nat} {z :
       simp only [attached, ↓reduceIte]
       rw [runX_bind, runX_lift_ok (ldGzHeader_tab hg)]
       simp only []
-      rw [runX_bind, runX_lift_ok (stGzHeader_tab hg)]
+      rw [runX_lift_ok (stGzHeader_tab hg)]
       simp only [headDoneHeap, hg]
-      rfl
+      simpa only [headDoneHeap,hg] using headZlibChecks_eq (E.headDone (some (.tab i))) l
 
 #print axioms headAfterBits_zlib
 

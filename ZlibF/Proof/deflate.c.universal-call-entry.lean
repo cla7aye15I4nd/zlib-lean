@@ -144,6 +144,6 @@ theorem entry_accepted_pending {h : Heap} {r : ZStreamRef} {ds pb : Nat} {z : ZS
     refine ⟨zero, fun k => ?_⟩
     have stA : ¬ d'.status = FINISH_STATE := by
       rw [statusA]; rcases status with st | st <;> rw [st] <;> decide
-    simp [zrd_eq, zAfter, full, rdD_eq, dAfter, stA, bind_app]
+    simp [zAfter, full, ldDeflateState_tab dAfter, ldZStream_ok zAfter, stA, bind_app]
 
 end Zlib.Deflate.Universal.Call

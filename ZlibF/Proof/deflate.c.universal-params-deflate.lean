@@ -20,7 +20,7 @@ theorem exact_deflateStateCheck (p : ZStreamPtr) : ExactM (deflateStateCheck p) 
   unfold deflateStateCheck; x_steps
 
 theorem exact_zError (err : Int32) : ExactM (Zlib.Zutil.zError err) := by
-  unfold Zlib.Zutil.zError Zlib.Zutil.strLit
+  unfold Zlib.Zutil.zError Zlib.Zutil.errorMessage Zlib.Zutil.strLit
   dsimp only
   split
   · exact exact_strLitRef _
@@ -184,6 +184,8 @@ macro "par_step" : tactic => `(tactic|
     | par_join
     | (apply ExactM.par; first | deflate_exact | x_leaf)
     | ((with_reducible apply par_wr) <;> intro _ <;> same_tac)
+    | with_reducible apply ParM.cwhileBrk
+    | with_reducible apply ParM.cdoWhileBrk
     | with_reducible apply ParM.cwhile
     | with_reducible apply ParM.cdoWhile
     | with_reducible apply ParM.ite
@@ -197,12 +199,35 @@ in the sense of `ParRel`, not exactly. -/
 theorem par_gz_string_loop (p : ZStreamPtr) (s : DeflateStatePtr) (sel : GzHeader → BPtr) :
     ParM true (gz_string_loop p s sel) := by
   unfold gz_string_loop
+  simp only [cdecl_eq]
+  repeat' par_step
+
+open Zlib.Deflate.Phases
+
+private theorem par_entryPhase (p : ZStreamPtr) (flush : Int32) (k : DeflateStatePtr → M Int32)
+    (hk : ∀ s, ParM true (k s)) : ParM true (entryPhase p flush k) := by
+  unfold entryPhase
+  simp only [cinline]
+  repeat' first | exact hk _ | par_step
+
+private theorem par_headerPhase (p : ZStreamPtr) (s : DeflateStatePtr) (flush : Int32)
+    (k : M Int32) (hk : ParM true k) : ParM true (headerPhase p s flush k) := by
+  unfold headerPhase
+  repeat' first | exact hk | with_reducible exact par_gz_string_loop _ _ _ | par_step
+
+private theorem par_strategyPhase (p : ZStreamPtr) (s : DeflateStatePtr) (flush : Int32)
+    (k : M Int32) (hk : ParM true k) : ParM true (strategyPhase p s flush k) := by
+  unfold strategyPhase
+  repeat' first | exact hk | par_step
+
+private theorem par_trailerPhase (p : ZStreamPtr) (s : DeflateStatePtr) (flush : Int32) :
+    ParM true (trailerPhase p s flush) := by
+  unfold trailerPhase
   repeat' par_step
 
 theorem par_deflate (p : ZStreamPtr) (flush : Int32) : ParM true (deflate p flush) := by
   unfold deflate
-  repeat' first
-    | with_reducible exact par_gz_string_loop _ _ _
-    | par_step
+  exact par_entryPhase _ _ _ fun s =>
+    par_headerPhase _ s _ _ (par_strategyPhase _ s _ _ (par_trailerPhase _ s _))
 
 end Zlib.Deflate.Universal.Params

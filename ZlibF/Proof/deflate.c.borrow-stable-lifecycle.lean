@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.init.source»
 import ZlibF.Proof.«deflate.c.borrow-stable-publish»
 import ZlibF.Proof.«deflate.c.borrow-stable-allocation»
 
@@ -35,6 +36,7 @@ theorem stable_deflateInit2_ (p : ZStreamPtr) (level method windowBits memLevel 
     (version : BPtr) (stream_size : Int32) :
     StableM (deflateInit2_ p level method windowBits memLevel strategy version stream_size) := by
   unfold deflateInit2_
+  simp only [Zlib.Deflate.Proofs.initAllocated_eq_saved, Zlib.Deflate.Proofs.initSaved, cdecl]
   repeat' first
     | with_reducible exact stable_zalloc_default _
     | with_reducible exact stable_allocDeflateState

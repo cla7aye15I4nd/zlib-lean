@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.window-stream»
 import ZlibF.Proof.«inflate.c.completes-keep-modes»
 
 /-!
@@ -544,7 +545,9 @@ theorem CallM.window_exit (strm : ZStreamPtr) (e : BPtr) (copy : UInt32) (st : I
               exact ⟨s0, g0, c0.head, c0.sync, fun m => Or.inl (c0.mem m), c0.win, c0.fresh, c0.dict⟩
 
 theorem call_inflate_leave (c : Ctx) (l : IL) : CallM (inflate_leave c l) := by
-  unfold inflate_leave
+  rw [Zlib.Inflate.Proofs.WindowStream.inflate_leave_eq_saved]
+  unfold leaveWindow leaveAccounting
+  simp only [Zlib.Inflate.Proofs.WindowStream.savedOutput_bind]
   repeat' first
     | with_reducible exact CallM.pure _
     | with_reducible apply CallM.window_exit

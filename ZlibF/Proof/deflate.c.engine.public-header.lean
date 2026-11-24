@@ -98,7 +98,7 @@ theorem public_default_header_run {h : Heap} {r : ZStreamRef} {ds pb ob oo : Nat
   have da : after.dstates ds = some (pendingState (zlibHeaderState d) (.ref (.blk pb) n.toNat) n) := by
     simp [after, zlibHeaderFlushed, n]
   unfold publicZlibHeader
-  simp only [bind_app, rdD_eq, hd, status, wrap]
+  simp only [bind_app, ldDeflateState_tab hd, status, wrap]
   simp only [show (INIT_STATE == INIT_STATE) = true from rfl, show ((1 : Int32) == 0) = false from rfl,
     Bool.and_false, Bool.false_eq_true, ite_false, ite_true, bind_app,
     rdD_eq, hd, status, ldDeflateState_tab hd, level, strategy, window, start]

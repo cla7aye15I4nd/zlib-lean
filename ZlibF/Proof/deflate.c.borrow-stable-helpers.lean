@@ -6,18 +6,25 @@ namespace Zlib.Deflate.BorrowProofs
 open C C.LibcBorrow Zlib.Deflate
 set_option autoImplicit false
 
+theorem stable_put_symbol_byte (p : DeflateStatePtr) (v : UInt8) :
+    StableM (Zlib.Trees.put_symbol_byte p v) := by
+  unfold Zlib.Trees.put_symbol_byte
+  exact StableM.bind (stable_ldDeflateState p) (fun _ =>
+    StableM.bind (stable_ptr_add _ _) (fun _ =>
+      StableM.bind (stable_wr _ _) (fun _ => stable_store8 _ _)))
+
 theorem stable_tally_lit (p : DeflateStatePtr) (c : UInt8) : StableM (tally_lit p c) := by
   cases p with
   | none =>
     unfold tally_lit
     repeat' first
-      | exact stable_store_at _ _ _
+      | exact stable_put_symbol_byte _ _
       | deflate_borrow_step
   | some ref =>
     cases ref
     unfold tally_lit
     repeat' first
-      | exact stable_store_at _ _ _
+      | exact stable_put_symbol_byte _ _
       | exact stable_freq_inc _ _
       | deflate_borrow_step
 
@@ -27,13 +34,13 @@ theorem stable_tally_dist (p : DeflateStatePtr) (dist len : UInt32) :
   | none =>
     unfold tally_dist
     repeat' first
-      | exact stable_store_at _ _ _
+      | exact stable_put_symbol_byte _ _
       | deflate_borrow_step
   | some ref =>
     cases ref
     unfold tally_dist
     repeat' first
-      | exact stable_store_at _ _ _
+      | exact stable_put_symbol_byte _ _
       | exact stable_freq_inc _ _
       | exact stable_d_code _
       | deflate_borrow_step

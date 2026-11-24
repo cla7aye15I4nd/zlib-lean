@@ -32,7 +32,12 @@ theorem slide_hash_unfold (s : DeflateStatePtr) : slide_hash s = (do
     let n : UInt32 := wsize
     let p : WPtr ← padd d.prev n.toNat
     let (_, _) ← cdoWhile (slBody wsize) slCond (n, p)
-    wr s (fun d => { d with slid := 1 })) := rfl
+    wr s (fun d => { d with slid := 1 })) := by
+  have narrow (m w : UInt32) : (if m ≥ w then m - w else 0).toUInt16 =
+      (if m ≥ w then (m - w).toUInt16 else 0) := by
+    split <;> rfl
+  simp only [slide_hash, narrow]
+  rfl
 
 
 theorem slideVal_eq (wsize : UInt32) (m : UInt16) :

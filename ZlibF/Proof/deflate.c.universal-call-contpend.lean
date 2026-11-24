@@ -54,14 +54,8 @@ theorem entry_pending_eval {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} 
     wrD_eq, good.live.hs, show (d.pending != 0) = true from bne_iff_ne.mpr pending, ite_true, run]
   by_cases full : z'.avail_out = 0
   · simp [hz, full, wrD_eq, hs, bind_app]
-  · by_cases c : d'.status = FINISH_STATE ∧ z'.avail_in ≠ 0
-    · simp [zrd_eq, hz, full, rdD_eq, hs, bind_app, c.1, c.2]
-    · rw [ite_eq_right full, ite_eq_right c]
-      simp [zrd_eq, hz, full, rdD_eq, hs, bind_app]
-      split
-      · rename_i t
-        exact absurd ⟨t.1, t.2⟩ c
-      · rfl
+  · by_cases finished : d'.status = FINISH_STATE ∧ z'.avail_in ≠ 0 <;>
+      simp [hz, full, bind_app, ldDeflateState_tab hs, ldZStream_ok hz, finished]
 
 /-- **The state after the entry flush keeps the invariant** from the state before the call, with
 `last_flush := v` for a value in range that is a reset value in the header states that need one.

@@ -1,3 +1,6 @@
+import ZlibF.Proof.«deflate.c.slow.source»
+import ZlibF.Proof.«deflate.c.huff.source»
+import ZlibF.Proof.«deflate.c.rle.source»
 import ZlibF.Proof.«deflate.c.universal-call-strategy-pars»
 
 /-!
@@ -111,19 +114,26 @@ theorem post_loop (body : LoopS → M LoopS) (hb : ∀ st, LoopRange st → Post
     PostM LoopRange (C.cwhile forever body {}) :=
   PostM.cwhile forever body (fun st hst => PostM.pure hst) hb {} (fun r e => by cases e)
 
+private theorem post_after {loop : M LoopS} (hl : PostM LoopRange loop) (tail : M block_state)
+    (ht : PostM BlockRange tail) : PostM BlockRange (do
+      let st ← loop
+      if let some r := st.ret then return r
+      tail) := by
+  refine PostM.bind hl ?_
+  intro st hst
+  split
+  · rename_i r e
+    exact PostM.pure (hst r e)
+  · exact ht
+
 /-- The end of the loop strategies: a pending return, or the tail. -/
 theorem post_after_loop (body : LoopS → M LoopS) (hb : ∀ st, LoopRange st → PostM LoopRange (body st))
     (tail : M block_state) (ht : PostM BlockRange tail) :
     PostM BlockRange (do
       let st ← C.cwhile forever body {}
       if let some r := st.ret then return r
-      tail) := by
-  refine PostM.bind (post_loop body hb) ?_
-  intro st hst
-  split
-  · rename_i r e
-    exact PostM.pure (hst r e)
-  · exact ht
+      tail) :=
+  post_after (post_loop body hb) tail ht
 
 theorem post_deflate_fast_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS) (hst : LoopRange st) :
     PostM LoopRange (deflate_fast_body s flush st) := by
@@ -145,32 +155,94 @@ theorem post_deflate_huff_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS
   unfold deflate_huff_body
   body_steps
 
-theorem post_deflate_fast (s : DeflateStatePtr) (flush : Int32) : PostM BlockRange (deflate_fast s flush) := by
-  unfold deflate_fast
-  exact post_after_loop _ (post_deflate_fast_body s flush) _
-    (PostM.bind_any (fun _ => post_finish_tail s flush))
+private def StepRange {σ : Type} : LoopStep σ block_state → Prop
+  | .ret r => BlockRange r
+  | _ => True
 
+private def ExitRange {σ : Type} : Except block_state σ → Prop
+  | .error r => BlockRange r
+  | .ok _ => True
+
+private theorem post_native_loop {σ : Type} (body : σ → M (LoopStep σ block_state))
+    (each : ∀ x, PostM StepRange (body x)) (n : Nat) (x : σ) :
+    PostM ExitRange (cforEver.go body n x) := by
+  induction n generalizing x with
+  | zero => exact ⟨fun _ _ _ run => by cases run⟩
+  | succ n ih =>
+    rw [cforEver.go]
+    apply PostM.bind (each x)
+    intro step rel
+    cases step with
+    | next x | cont x => exact ih x
+    | brk x => exact PostM.pure trivial
+    | ret r => exact PostM.pure rel
+
+set_option maxHeartbeats 1200000 in
+theorem post_deflate_fast (s : DeflateStatePtr) (flush : Int32) : PostM BlockRange (deflate_fast s flush) := by
+  have each (x : UInt32 × Bool) : PostM StepRange (deflate_fast_step s flush x) := by
+    unfold deflate_fast_step
+    repeat' first
+      | (refine PostM.bind (post_FLUSH_BLOCK _ _) ?_; intro _ _)
+      | intro _
+      | (apply PostM.pure; simp_all [StepRange, BlockRange]; done)
+      | with_reducible apply PostM.ite
+      | with_reducible apply PostM.bind_any
+      | split
+      | dsimp only
+  unfold deflate_fast cforEverRet cforEver
+  apply PostM.bind (post_native_loop _ each _ _)
+  intro stop range
+  cases stop with
+  | error r => exact PostM.pure range
+  | ok x =>
+    rw [SlowProofs.finish_hash_eq]
+    exact PostM.bind_any (fun _ => post_finish_tail s flush)
+
+set_option maxHeartbeats 1200000 in
 theorem post_deflate_slow (s : DeflateStatePtr) (flush : Int32) : PostM BlockRange (deflate_slow s flush) := by
-  unfold deflate_slow
-  refine post_after_loop _ (post_deflate_slow_body s flush) _ ?_
-  repeat' first
-    | exact post_finish_tail s flush
-    | intro _
-    | with_reducible apply PostM.ite
-    | with_reducible apply PostM.bind_any
-    | split
-    | dsimp only
+  have each (x : UInt32 × Bool) : PostM StepRange (deflate_slow_step s flush x) := by
+    unfold deflate_slow_step
+    repeat' first
+      | (refine PostM.bind (post_FLUSH_BLOCK _ _) ?_; intro _ _)
+      | intro _
+      | (apply PostM.pure; simp_all [StepRange, BlockRange]; done)
+      | with_reducible apply PostM.ite
+      | with_reducible apply PostM.bind_any
+      | split
+      | dsimp only
+  unfold deflate_slow cforEverRet cforEver
+  apply PostM.bind (post_native_loop _ each _ _)
+  intro stop range
+  cases stop with
+  | error r => exact PostM.pure range
+  | ok x =>
+    unfold slowFinish
+    rw [SlowProofs.finish_hash_eq]
+    repeat' first
+      | exact post_finish_tail s flush
+      | intro _
+      | with_reducible apply PostM.ite
+      | with_reducible apply PostM.bind_any
+      | split
+      | dsimp only
 
 theorem post_deflate_rle (s : DeflateStatePtr) (flush : Int32) : PostM BlockRange (deflate_rle s flush) := by
-  unfold deflate_rle
-  exact post_after_loop _ (post_deflate_rle_body s flush) _
-    (PostM.bind_any (fun _ => post_finish_tail s flush))
+  have bound : PostM BlockRange (RleProofs.legacy (fuel+1) s flush) := by
+    rw [RleProofs.legacy_unfold]
+    apply post_after _ _ (PostM.bind_any (fun _ => post_finish_tail s flush))
+    exact PostM.cwhile_go forever _ (fun _ hs => PostM.pure hs) (post_deflate_rle_body s flush)
+      _ {} (fun _ eq => by cases eq)
+  exact ⟨fun _ _ _ run => bound.run _ _ _ (RleProofs.to_legacy_ok run)⟩
 
 theorem post_deflate_huff (s : DeflateStatePtr) (flush : Int32) : PostM BlockRange (deflate_huff s flush) := by
-  unfold deflate_huff
-  exact post_after_loop _ (post_deflate_huff_body s flush) _
-    (PostM.bind_any (fun _ => post_finish_tail s flush))
+  have bound : PostM BlockRange (HuffProofs.legacy (fuel+1) s flush) := by
+    rw [HuffProofs.legacy_unfold]
+    apply post_after _ _ (PostM.bind_any (fun _ => post_finish_tail s flush))
+    exact PostM.cwhile_go forever _ (fun _ hs => PostM.pure hs) (post_deflate_huff_body s flush)
+      _ {} (fun _ eq => by cases eq)
+  exact ⟨fun _ _ _ run => bound.run _ _ _ (HuffProofs.to_legacy_ok run)⟩
 
+set_option maxHeartbeats 1200000 in
 theorem post_deflate_stored (s : DeflateStatePtr) (flush : Int32) : PostM BlockRange (deflate_stored s flush) := by
   unfold deflate_stored
   post_steps

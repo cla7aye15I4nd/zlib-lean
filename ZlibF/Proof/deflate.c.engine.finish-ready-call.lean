@@ -39,7 +39,7 @@ theorem deflate_slow_finish_ready {h : Heap} {r : ZStreamRef} {ds ob oo origin b
   rcases stopped with returned | ⟨running, broke⟩
   · refine ⟨used, produced, need_more, loopHeap, loopZ, loopD, loopBase, loopSymbols, extended, nextOrigin,
       ?_, stateL, endL, buffersL, accountL, agreesL, endpointL, baseL, (fun impossible => False.elim (impossible rfl)), Or.inl ⟨rfl, stopOutput returned⟩⟩
-    rw [deflate_slow_eof_tail_source, bind_app, loop]
+    rw [deflate_slow_eof_tail_source loop]
     simp only [returned]
     rfl
   · have eof := stopInput broke
@@ -88,7 +88,7 @@ theorem deflate_slow_finish_ready {h : Heap} {r : ZStreamRef} {ds ob oo origin b
     refine ⟨used, produced + tailProduced, if z'.avail_out == 0 then finish_started else finish_done,
       after, z', result, loopBase + represented tailSymbols, [], extended, nextOrigin,
       ?_, stateA, endA, buffersA, ?_, agreesL, ?_, Nat.le_trans baseL (Nat.le_add_right _ _), (fun _ => zeroA), ?_⟩
-    · rw [deflate_slow_eof_tail_source, bind_app, loop]
+    · rw [deflate_slow_eof_tail_source loop]
       simp only [running]
       exact tailRun
     · simpa only [Nat.add_zero] using stream_accounting_trans accountL accountA

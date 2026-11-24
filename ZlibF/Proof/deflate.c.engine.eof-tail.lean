@@ -14,14 +14,11 @@ def slowEofTail (s : DeflateStatePtr) (flush : Int32) : M block_state := do
   wr s eofInsert
   finish_tail s flush
 
-/-- The complete translated slow function reaches exactly this tail. -/
-theorem deflate_slow_eof_tail_source (s : DeflateStatePtr) (flush : Int32) :
-    deflate_slow s flush = (do
-      let st ← cwhile forever (deflate_slow_body s flush) {}
-      if let some r := st.ret then return r
-      slowEofTail s flush) := by
-  rw [deflate_slow_eof_source]
-  rfl
+/-- A returning slow loop selects the same EOF continuation and heap. -/
+theorem deflate_slow_eof_tail_source {s : DeflateStatePtr} {flush : Int32} {h after : Heap} {st : LoopS}
+    (loop : cwhile forever (deflate_slow_body s flush) {} h = .ok (st,after)) :
+    deflate_slow s flush h = (match st.ret with | some r => pure r | none => slowEofTail s flush) after :=
+  deflate_slow_eof_source loop
 
 /-- At actual EOF the final deferred literal, pending-key reset and final
 block publication all execute in source order. Zero/short output room is

@@ -115,6 +115,9 @@ macro "keep_step" : tactic => `(tactic|
   first
     | keep_leaf
     | with_reducible apply keep_cfor
+    | with_reducible apply KeepM.cforEverRet
+    | with_reducible apply KeepM.cdoWhileBrk
+    | with_reducible apply KeepM.cwhileBrk
     | with_reducible apply KeepM.cwhile
     | with_reducible apply KeepM.cdoWhile
     | with_reducible apply KeepM.ite

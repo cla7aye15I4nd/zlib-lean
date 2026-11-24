@@ -1,4 +1,5 @@
 import ZlibF.Runtime.Alloc
+import ZlibF.Runtime.CAbi
 import ZlibF.Runtime.Tables
 
 /-!
@@ -217,6 +218,23 @@ def i2us (x : Int32) : UInt16 := UInt16.ofNat (x.toInt % 65536).toNat
 def cfor {σ : Type} (cond : σ → M Bool) (step : σ → M σ) (body : σ → M σ) (s : σ) : M σ :=
   cwhile (fun s => do pure (← cond s, s)) (fun s => do step (← body s)) s
 
+/-- A signed `for (i = initial; i <= last; i++)` loop. The body may update
+    any of the locals, including the index, before the checked increment. -/
+def cforIntLe {σ : Type} (last : Int32) (body : Int32 × σ → M (Int32 × σ))
+    (initial : Int32 × σ) : M (Int32 × σ) :=
+  cfor (fun (i, _) => pure (decide (i.toInt ≤ last.toInt)))
+    (fun (i, rest) => do pure (← iadd i 1, rest)) body initial
+
+/-- A checked ascending loop with an exclusive signed bound. -/
+def cforIntLt {σ : Type} (limit : Int32) (body : Int32 × σ → M (Int32 × σ))
+    (initial : Int32 × σ) : M (Int32 × σ) :=
+  cfor (fun (i, _) => pure (decide (i.toInt < limit.toInt)))
+    (fun (i, rest) => do pure (← iadd i 1, rest)) body initial
+
+/-- A checked descending loop with an inclusive signed bound. -/
+def cforIntGe (limit : Int32) (body : Int32 → M Int32) (initial : Int32) : M Int32 :=
+  cfor (fun i => pure (decide (i.toInt ≥ limit.toInt))) (fun i => isub i 1) body initial
+
 /-- `s` is a live deflate state; its block number. -/
 def sid (s : DeflateStatePtr) : M Nat := do
   let _ ← ldDeflateState s
@@ -255,6 +273,26 @@ def heapAt (s : DeflateStatePtr) (i : Int32) : M Int32 := do Ptr.index (← pHea
 /-- `s->heap[i] = v` -/
 def heapSet (s : DeflateStatePtr) (i : Int32) (v : Int32) : M Unit := do setAt (← pHeap s) i.toInt v
 
+/-- Append a node at `s->heap[++s->heap_len]`. -/
+def heapPush (s : DeflateStatePtr) (node : Int32) : M Unit := do
+  let index ← iadd (← rd s).heap_len 1
+  md s fun d => { d with heap_len := index }
+  heapSet s index node
+
+/-- Save a node at `s->heap[--s->heap_max]`. -/
+def heapSave (s : DeflateStatePtr) (node : Int32) : M Unit := do
+  let index ← isub (← rd s).heap_max 1
+  md s fun d => { d with heap_max := index }
+  heapSet s index node
+
+/-- Move the last live heap entry to its root and shorten the heap. -/
+def heapReplaceRoot (s : DeflateStatePtr) : M Unit := do
+  let len := (← rd s).heap_len
+  let last ← heapAt s len
+  let len' ← isub len 1
+  md s fun d => { d with heap_len := len' }
+  heapSet s 1 last
+
 /-- `tree[i].Freq` / `.Code` -/
 def getFc (tree : CtDataPtr) (i : Int) : M UInt16 := do pure (← Ptr.index tree i).fc
 /-- `tree[i].Dad` / `.Len` -/
@@ -278,10 +316,11 @@ def blOrder (i : Int) : M UInt8 :=
 
 /-- `put_byte(s, c)`: `{s->pending_buf[s->pending++] = (Bytef)(c);}` -/
 def put_byte (s : DeflateStatePtr) (c : UInt8) : M Unit := do
+  let byte ← cdecl c
   let d ← rd s
   let p ← Ptr.add d.pending_buf (d.pending.toNat : Int)
-  store8 p c
   md s fun d => { d with pending := d.pending + 1 }
+  store8 p byte
 
 /-- `put_short(s, w)`: `{ put_byte(s, (uch)((w) & 0xff)); put_byte(s, (uch)((ush)(w) >> 8)); }` -/
 def put_short (s : DeflateStatePtr) (w : UInt16) : M Unit := do
@@ -304,11 +343,11 @@ def send_bits (s : DeflateStatePtr) (value : Int32) (length : Int32) : M Unit :=
   -- int len = length;
   let len := length
   let d ← rd s
-  if d.bi_valid > (← isub Buf_size len) then
+  if d.bi_valid > (← cinline (isub Buf_size len)) then
     -- int val = (int)value;
     let val := value
     -- s->bi_buf |= (ush)val << s->bi_valid;
-    let sh ← shlUs val d.bi_valid
+    let sh ← cinline (shlUs val d.bi_valid)
     md s fun d => { d with bi_buf := UInt16.ofNat (d.bi_buf.toNat ||| sh) }
     -- put_short(s, s->bi_buf);
     put_short s (← rd s).bi_buf
@@ -322,7 +361,7 @@ def send_bits (s : DeflateStatePtr) (value : Int32) (length : Int32) : M Unit :=
     md s fun d => { d with bi_valid := nv }
   else
     -- s->bi_buf |= (ush)(value) << s->bi_valid;
-    let sh ← shlUs value d.bi_valid
+    let sh ← cinline (shlUs value d.bi_valid)
     md s fun d => { d with bi_buf := UInt16.ofNat (d.bi_buf.toNat ||| sh) }
     -- s->bi_valid += len;
     let nv ← iadd (← rd s).bi_valid len
@@ -331,8 +370,8 @@ def send_bits (s : DeflateStatePtr) (value : Int32) (length : Int32) : M Unit :=
 /-- `send_code(s, c, tree)`: `send_bits(s, tree[c].Code, tree[c].Len)`. -/
 def send_code (s : DeflateStatePtr) (c : Int) (tree : CtDataPtr) : M Unit := do
   let len := u16i (← getDl tree c)
-  let code := u16i (← getFc tree c)
-  send_bits s code len
+  let code ← cinline (getFc tree c)
+  send_bits s (u16i code) len
 
 /-- `d_code(dist)`: `((dist) < 256 ? _dist_code[dist] : _dist_code[256+((dist)>>7)])`, `dist` unsigned. -/
 def d_code (dist : UInt32) : M UInt8 :=
@@ -353,7 +392,7 @@ def smaller (tree : CtDataPtr) (n m : Int32) (depth : BPtr) : M Bool := do
 /-! ## Functions -/
 
 /-- `local unsigned bi_reverse(unsigned code, int len)` -/
-def bi_reverse (code : UInt32) (len : Int32) : M UInt32 := do
+def bi_reverse (code : UInt32) (len : Int32) : M (CStatic UInt32) := do
   -- unsigned res = 0;
   -- do { res |= code & 1; code >>= 1, res <<= 1; } while (--len > 0);
   let (_, res, _) ← cdoWhile (σ := UInt32 × UInt32 × Int32)
@@ -367,7 +406,7 @@ def bi_reverse (code : UInt32) (len : Int32) : M UInt32 := do
   return res >>> 1
 
 /-- `local void bi_flush(deflate_state *s)` -/
-def bi_flush (s : DeflateStatePtr) : M Unit := do
+def bi_flush (s : DeflateStatePtr) : M (CStatic Unit) := do
   let d ← rd s
   if d.bi_valid == 16 then
     put_short s (← rd s).bi_buf
@@ -380,7 +419,7 @@ def bi_flush (s : DeflateStatePtr) : M Unit := do
     md s fun d => { d with bi_valid := nv }
 
 /-- `local void bi_windup(deflate_state *s)` -/
-def bi_windup (s : DeflateStatePtr) : M Unit := do
+def bi_windup (s : DeflateStatePtr) : M (CStatic Unit) := do
   let d ← rd s
   if d.bi_valid > 8 then
     put_short s (← rd s).bi_buf
@@ -393,8 +432,20 @@ def bi_windup (s : DeflateStatePtr) : M Unit := do
   md s fun d => { d with bi_buf := 0 }
   md s fun d => { d with bi_valid := 0 }
 
+/-- Read the old value of `next_code[len]` before the post-increment. -/
+def readNextCode (codes : Array UInt16) (i : Nat) : M UInt16 := do
+  let some value := codes[i]? | ub "next_code index outside its array"
+  pure value
+
+theorem readNextCode_eq (codes : Array UInt16) (i : Nat) :
+    readNextCode codes i =
+      (if codes.size ≤ i then ub "next_code index outside its array" else pure codes[i]!) := by
+  by_cases hi : i < codes.size
+  · simp [readNextCode, getElem?_pos, getElem!_pos, hi, Nat.not_le.mpr hi]
+  · simp [readNextCode, getElem?_neg, hi, Nat.le_of_not_gt hi]
+
 /-- `local void gen_codes(ct_data *tree, int max_code, ushf *bl_count)` -/
-def gen_codes (tree : CtDataPtr) (max_code : Int32) (bl_count : WPtr) : M Unit := do
+def gen_codes (tree : CtDataPtr) (max_code : Int32) (bl_count : WPtr) : M (CStatic Unit) := do
   -- ush next_code[MAX_BITS+1]; unsigned code = 0;
   let next_code0 : Array UInt16 := Array.replicate 16 0
   -- for (bits = 1; bits <= MAX_BITS; bits++) { code = (code + bl_count[bits - 1]) << 1; next_code[bits] = (ush)code; }
@@ -405,7 +456,8 @@ def gen_codes (tree : CtDataPtr) (max_code : Int32) (bl_count : WPtr) : M Unit :
       let b ← Ptr.index bl_count (← isub bits 1).toInt
       let code := (code + b.toUInt32) <<< 1
       if bits.toInt < 0 ∨ nc.size ≤ bits.toInt.toNat then ub "next_code index outside its array"
-      pure (bits, code, nc.set! bits.toInt.toNat code.toUInt16))
+      let nc ← pure (nc.set! bits.toInt.toNat code.toUInt16)
+      pure (bits, code, nc))
     (1, 0, next_code0)
   -- for (n = 0; n <= max_code; n++) { int len = tree[n].Len; if (len == 0) continue;
   --   tree[n].Code = (ush)bi_reverse(next_code[len]++, len); }
@@ -415,10 +467,8 @@ def gen_codes (tree : CtDataPtr) (max_code : Int32) (bl_count : WPtr) : M Unit :
     (fun (n, nc) => do
       let len := u16i (← getDl tree n.toInt)
       if len == 0 then return (n, nc)
-      let li := len.toInt.toNat
-      if nc.size ≤ li then ub "next_code index outside its array"
-      let old := nc[li]!
-      let nc := nc.set! li (old + 1)
+      let old ← readNextCode nc len.toInt.toNat
+      let nc ← pure (nc.set! len.toInt.toNat (old + 1))
       let r ← bi_reverse old.toUInt32 len
       setFc tree n.toInt r.toUInt16
       pure (n, nc))
@@ -429,7 +479,7 @@ false in the default build, so the function is empty. -/
 def tr_static_init : M Unit := pure ()
 
 /-- `local void init_block(deflate_state *s)` -/
-def init_block (s : DeflateStatePtr) : M Unit := do
+def init_block (s : DeflateStatePtr) : M (CStatic Unit) := do
   -- for (n = 0; n < L_CODES; n++) s->dyn_ltree[n].Freq = 0;
   let _ ← cfor (σ := Int32) (fun n => pure (decide (n.toInt < L_CODES.toInt))) (fun n => iadd n 1)
     (fun n => do setFc (← pLtree s) n.toInt 0; pure n) 0
@@ -447,7 +497,7 @@ def init_block (s : DeflateStatePtr) : M Unit := do
   md s fun d => { d with sym_next := 0 }
 
 /-- `void ZLIB_INTERNAL _tr_init(deflate_state *s)` -/
-def «_tr_init» (s : DeflateStatePtr) : M Unit := do
+def «_tr_init» (s : DeflateStatePtr) : M (CHidden Unit) := do
   tr_static_init
   let id ← sid s
   md s fun d => { d with l_desc := { d.l_desc with dyn_tree := .ref (.dstate_dyn_ltree id) 0 } }
@@ -463,7 +513,7 @@ def «_tr_init» (s : DeflateStatePtr) : M Unit := do
   init_block s
 
 /-- `local void pqdownheap(deflate_state *s, ct_data *tree, int k)` -/
-def pqdownheap (s : DeflateStatePtr) (tree : CtDataPtr) (k : Int32) : M Unit := do
+def pqdownheap (s : DeflateStatePtr) (tree : CtDataPtr) (k : Int32) : M (CStatic Unit) := do
   -- int v = s->heap[k]; int j = k << 1;
   let v ← heapAt s k
   let j ← shl1 k
@@ -476,9 +526,9 @@ def pqdownheap (s : DeflateStatePtr) (tree : CtDataPtr) (k : Int32) : M Unit := 
       let mut jj := j
       -- if (j < s->heap_len && smaller(tree, s->heap[j + 1], s->heap[j], s->depth)) j++;
       if jj.toInt < (← rd s).heap_len.toInt then
-        let a ← heapAt s (← iadd jj 1)
-        let b ← heapAt s jj
-        if ← smaller tree a b (← pDepth s) then jj ← iadd jj 1
+        let a ← cinline (heapAt s (← cinline (iadd jj 1)))
+        let b ← cinline (heapAt s jj)
+        if ← cinline (smaller tree a b (← cinline (pDepth s))) then jj ← iadd jj 1
       -- if (smaller(tree, v, s->heap[j], s->depth)) break;
       let hj ← heapAt s jj
       if ← smaller tree v hj (← pDepth s) then return (k, jj, true)
@@ -496,22 +546,37 @@ pqdownheap(s, tree, SMALLEST); }`; returns `top`. -/
 def pqremove (s : DeflateStatePtr) (tree : CtDataPtr) : M Int32 := do
   let top ← heapAt s 1
   -- s->heap[SMALLEST] = s->heap[s->heap_len--];
-  let hl := (← rd s).heap_len
-  let v ← heapAt s hl
-  let hl' ← isub hl 1
-  md s fun d => { d with heap_len := hl' }
-  heapSet s 1 v
+  heapReplaceRoot s
   pqdownheap s tree 1
   return top
 
+/-- Internal nodes are skipped. A leaf consumes one slot at the requested length. -/
+def reassignLeafStep (s : DeflateStatePtr) (tree : CtDataPtr) (max_code bits : Int32) :
+    Int32 × Int32 → M (LoopStep (Int32 × Int32) Empty) :=
+  fun (n, h) => do
+    let h ← isub h 1
+    let m ← heapAt s h
+    if m.toInt > max_code.toInt then return .cont (n, h)
+    let lm ← getDl tree m.toInt
+    if lm.toUInt32 != i2u bits then
+      let fm ← cinline (getFc tree m.toInt)
+      md s fun d => { d with opt_len := d.opt_len + (i2ul bits - lm.toUInt64) * fm.toUInt64 }
+      setDl tree m.toInt (i2us bits)
+    return .next (← isub n 1, h)
+
+/-- Walk backwards through the heap until `n` leaves have been assigned a length. -/
+def reassignLeaves (s : DeflateStatePtr) (tree : CtDataPtr) (max_code bits n h : Int32) :
+    M (Int32 × Int32) :=
+  cwhileBrk (fun (n, h) => pure (n != 0, (n, h))) (reassignLeafStep s tree max_code bits) (n, h)
+
 /-- `local void gen_bitlen(deflate_state *s, tree_desc *desc)` -/
-def gen_bitlen (s : DeflateStatePtr) (desc : TreeDescPtr) : M Unit := do
+def gen_bitlen (s : DeflateStatePtr) (desc : TreeDescPtr) : M (CStatic Unit) := withScopedLocals do
   let dd ← ldTreeDesc desc
   let tree := dd.dyn_tree
   let max_code := dd.max_code
   let sd ← ldStaticTreeDesc dd.stat_desc
-  let stree := sd.static_tree
-  let extra := sd.extra_bits
+  let stree : ConstCtDataPtr := sd.static_tree
+  let extra : ConstIPtr := sd.extra_bits
   let base := sd.extra_base
   let max_length := sd.max_length
   -- for (bits = 0; bits <= MAX_BITS; bits++) s->bl_count[bits] = 0;
@@ -538,7 +603,7 @@ def gen_bitlen (s : DeflateStatePtr) (desc : TreeDescPtr) : M Unit := do
       -- if (n > max_code) continue;
       if n.toInt > max_code.toInt then return (h, overflow)
       -- s->bl_count[bits]++;
-      let bc ← pBlCount s
+      let bc ← cinline (pBlCount s)
       setAt bc bits.toInt ((← Ptr.index bc bits.toInt) + 1)
       -- xbits = 0; if (n >= base) xbits = extra[n - base];
       let mut xbits : Int32 := 0
@@ -560,9 +625,9 @@ def gen_bitlen (s : DeflateStatePtr) (desc : TreeDescPtr) : M Unit := do
   let _ ← cdoWhile (σ := Int32)
     (fun overflow => do
       let bits ← isub max_length 1
-      let bc ← pBlCount s
+      let bc ← cinline (pBlCount s)
       let bits ← cwhile (σ := Int32)
-        (fun b => do pure (decide ((← Ptr.index bc b.toInt) == 0), b))
+        (fun b => do pure (decide ((← cinline (Ptr.index bc b.toInt)) == 0), b))
         (fun b => isub b 1) bits
       setAt bc bits.toInt ((← Ptr.index bc bits.toInt) - 1)
       let b1 ← iadd bits 1
@@ -576,49 +641,35 @@ def gen_bitlen (s : DeflateStatePtr) (desc : TreeDescPtr) : M Unit := do
     (fun (bits, _) => pure (bits != 0))
     (fun (bits, h) => do pure (← isub bits 1, h))
     (fun (bits, h) => do
-      let n0 := u16i (← Ptr.index (← pBlCount s) bits.toInt)
-      let (_, h) ← cwhile (σ := Int32 × Int32)
-        (fun (n, h) => pure (n != 0, (n, h)))
-        (fun (n, h) => do
-          -- m = s->heap[--h];
-          let h ← isub h 1
-          let m ← heapAt s h
-          -- if (m > max_code) continue;
-          if m.toInt > max_code.toInt then return (n, h)
-          -- if ((unsigned) tree[m].Len != (unsigned) bits) {...}
-          let lm ← getDl tree m.toInt
-          if lm.toUInt32 != i2u bits then
-            -- s->opt_len += ((ulg)bits - tree[m].Len) * tree[m].Freq;
-            let fm ← getFc tree m.toInt
-            md s fun d => { d with opt_len := d.opt_len + (i2ul bits - lm.toUInt64) * fm.toUInt64 }
-            setDl tree m.toInt (i2us bits)
-          -- n--;
-          pure (← isub n 1, h))
-        (n0, h)
+      let n0 := u16i (← Ptr.index (← cinline (pBlCount s)) bits.toInt)
+      let (_, h) ← reassignLeaves s tree max_code bits n0 h
       pure (bits, h))
     (max_length, h)
 
+/-- `code < limit ? ++code : 0`, returning both the updated local and the expression value. -/
+def nextCodeBelow (code limit : Int32) : M (Int32 × Int32) := do
+  if code.toInt < limit.toInt then
+    let next ← iadd code 1
+    return (next, next)
+  return (code, 0)
+
 /-- `local void build_tree(deflate_state *s, tree_desc *desc)` -/
-def build_tree (s : DeflateStatePtr) (desc : TreeDescPtr) : M Unit := do
+def build_tree (s : DeflateStatePtr) (desc : TreeDescPtr) : M (CStatic Unit) := withScopedLocals do
   let dd ← ldTreeDesc desc
   let tree := dd.dyn_tree
   let sd ← ldStaticTreeDesc dd.stat_desc
-  let stree := sd.static_tree
+  let stree : ConstCtDataPtr := sd.static_tree
   let elems := sd.elems
   -- int max_code = -1;
   -- s->heap_len = 0, s->heap_max = HEAP_SIZE;
   md s fun d => { d with heap_len := 0 }
   md s fun d => { d with heap_max := HEAP_SIZE }
   -- for (n = 0; n < elems; n++) { if (tree[n].Freq != 0) {...} else tree[n].Len = 0; }
-  let max_code ← cfor (σ := Int32 × Int32)
-    (fun (n, _) => pure (decide (n.toInt < elems.toInt)))
-    (fun (n, mc) => do pure (← iadd n 1, mc))
+  let max_code ← cforIntLt elems
     (fun (n, mc) => do
       if (← getFc tree n.toInt) != 0 then
         -- s->heap[++(s->heap_len)] = max_code = n;
-        let hl ← iadd (← rd s).heap_len 1
-        md s fun d => { d with heap_len := hl }
-        heapSet s hl n
+        heapPush s n
         -- s->depth[n] = 0;
         setAt (← pDepth s) n.toInt 0
         pure (n, n)
@@ -632,14 +683,8 @@ def build_tree (s : DeflateStatePtr) (desc : TreeDescPtr) : M Unit := do
     (fun mc => do pure (decide ((← rd s).heap_len.toInt < 2), mc))
     (fun mc => do
       -- node = s->heap[++(s->heap_len)] = (max_code < 2 ? ++max_code : 0);
-      let mut mc := mc
-      let mut val : Int32 := 0
-      if mc.toInt < 2 then
-        mc ← iadd mc 1
-        val := mc
-      let hl ← iadd (← rd s).heap_len 1
-      md s fun d => { d with heap_len := hl }
-      heapSet s hl val
+      let (mc, val) ← nextCodeBelow mc 2
+      heapPush s val
       let node := val
       -- tree[node].Freq = 1; s->depth[node] = 0;
       setFc tree node.toInt 1
@@ -655,7 +700,7 @@ def build_tree (s : DeflateStatePtr) (desc : TreeDescPtr) : M Unit := do
   -- desc->max_code = max_code;
   stTreeDesc desc { (← ldTreeDesc desc) with max_code := max_code }
   -- for (n = s->heap_len/2; n >= 1; n--) pqdownheap(s, tree, n);
-  let _ ← cfor (σ := Int32) (fun n => pure (decide (n.toInt ≥ 1))) (fun n => isub n 1)
+  let _ ← cforIntGe 1
     (fun n => do pqdownheap s tree n; pure n) ((← rd s).heap_len / 2)
   -- node = elems;
   -- do { ... } while (s->heap_len >= 2);
@@ -665,12 +710,8 @@ def build_tree (s : DeflateStatePtr) (desc : TreeDescPtr) : M Unit := do
       let n ← pqremove s tree
       let m ← heapAt s 1
       -- s->heap[--(s->heap_max)] = n;  s->heap[--(s->heap_max)] = m;
-      let hm ← isub (← rd s).heap_max 1
-      md s fun d => { d with heap_max := hm }
-      heapSet s hm n
-      let hm ← isub (← rd s).heap_max 1
-      md s fun d => { d with heap_max := hm }
-      heapSet s hm m
+      heapSave s n
+      heapSave s m
       -- tree[node].Freq = tree[n].Freq + tree[m].Freq;
       let fn ← getFc tree n.toInt
       let fm ← getFc tree m.toInt
@@ -693,63 +734,60 @@ def build_tree (s : DeflateStatePtr) (desc : TreeDescPtr) : M Unit := do
     elems
   -- s->heap[--(s->heap_max)] = s->heap[SMALLEST];
   let top ← heapAt s 1
-  let hm ← isub (← rd s).heap_max 1
-  md s fun d => { d with heap_max := hm }
-  heapSet s hm top
+  heapSave s top
   -- gen_bitlen(s, (tree_desc *)desc);
   gen_bitlen s desc
   -- gen_codes ((ct_data *)tree, max_code, s->bl_count);
   gen_codes tree max_code (← pBlCount s)
 
+/-- Finish a code-length run and choose the thresholds for the next one. -/
+def finishTreeRun (n curlen nextlen : Int32) :
+    M (Int32 × Int32 × Int32 × Int32 × Int32 × Int32 × Int32) := do
+  if nextlen == 0 then return (n, curlen, nextlen, 0, 138, 3, 0)
+  if curlen == nextlen then return (n, curlen, nextlen, 0, 6, 3, 0)
+  return (n, curlen, nextlen, 0, 7, 4, 0)
+
 /-- `local void scan_tree(deflate_state *s, ct_data *tree, int max_code)` -/
-def scan_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int32) : M Unit := do
+def scan_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int32) : M (CStatic Unit) := do
   -- locals: n, prevlen, curlen, nextlen, count, max_count, min_count
   let nextlen0 := u16i (← getDl tree 0)
-  let (mx0, mn0) : Int32 × Int32 := if nextlen0 == 0 then (138, 3) else (7, 4)
+  let (mn0, mx0) : Int32 × Int32 := if nextlen0 == 0 then (3, 138) else (4, 7)
   -- tree[max_code + 1].Len = (ush)0xffff;
   setDl tree (← iadd max_code 1).toInt 0xffff
-  let _ ← cfor (σ := Int32 × Int32 × Int32 × Int32 × Int32 × Int32 × Int32)
-    (fun (n, _) => pure (decide (n.toInt ≤ max_code.toInt)))
-    (fun (n, r) => do pure (← iadd n 1, r))
+  let _ ← cforIntLe (σ := Int32 × Int32 × Int32 × Int32 × Int32 × Int32) max_code
     (fun (n, prevlen, nextlen, count, max_count, min_count, _) => do
       -- curlen = nextlen; nextlen = tree[n + 1].Len;
       let curlen := nextlen
-      let nextlen := u16i (← getDl tree (← iadd n 1).toInt)
+      let nextlen := u16i (← cinline (getDl tree (← cinline (iadd n 1)).toInt))
       -- if (++count < max_count && curlen == nextlen) continue;
       let count ← iadd count 1
       if count.toInt < max_count.toInt ∧ curlen == nextlen then
         return (n, prevlen, nextlen, count, max_count, min_count, 0)
-      let blt ← pBltree s
+      let blt ← cinline (pBltree s)
       if count.toInt < min_count.toInt then
         -- s->bl_tree[curlen].Freq += (ush)count;
-        setFc blt curlen.toInt ((← getFc blt curlen.toInt) + i2us count)
+        setFc blt curlen.toInt ((← cinline (getFc blt curlen.toInt)) + i2us count)
       else if curlen != 0 then
         -- if (curlen != prevlen) s->bl_tree[curlen].Freq++;
-        if curlen != prevlen then setFc blt curlen.toInt ((← getFc blt curlen.toInt) + 1)
-        setFc blt REP_3_6.toInt ((← getFc blt REP_3_6.toInt) + 1)
+        if curlen != prevlen then setFc blt curlen.toInt ((← cinline (getFc blt curlen.toInt)) + 1)
+        setFc blt REP_3_6.toInt ((← cinline (getFc blt REP_3_6.toInt)) + 1)
       else if count.toInt ≤ 10 then
-        setFc blt REPZ_3_10.toInt ((← getFc blt REPZ_3_10.toInt) + 1)
+        setFc blt REPZ_3_10.toInt ((← cinline (getFc blt REPZ_3_10.toInt)) + 1)
       else
-        setFc blt REPZ_11_138.toInt ((← getFc blt REPZ_11_138.toInt) + 1)
+        setFc blt REPZ_11_138.toInt ((← cinline (getFc blt REPZ_11_138.toInt)) + 1)
       -- count = 0; prevlen = curlen;
-      let count : Int32 := 0
-      let prevlen := curlen
-      let (max_count, min_count) : Int32 × Int32 :=
-        if nextlen == 0 then (138, 3) else if curlen == nextlen then (6, 3) else (7, 4)
-      return (n, prevlen, nextlen, count, max_count, min_count, 0))
+      finishTreeRun n curlen nextlen)
     (0, -1, nextlen0, 0, mx0, mn0, 0)
 
 /-- `local void send_tree(deflate_state *s, ct_data *tree, int max_code)` -/
-def send_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int32) : M Unit := do
+def send_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int32) : M (CStatic Unit) := do
   let nextlen0 := u16i (← getDl tree 0)
   -- /* tree[max_code + 1].Len = -1; */  /* guard already set */
   let (mx0, mn0) : Int32 × Int32 := if nextlen0 == 0 then (138, 3) else (7, 4)
-  let _ ← cfor (σ := Int32 × Int32 × Int32 × Int32 × Int32 × Int32 × Int32)
-    (fun (n, _) => pure (decide (n.toInt ≤ max_code.toInt)))
-    (fun (n, r) => do pure (← iadd n 1, r))
+  let _ ← cforIntLe (σ := Int32 × Int32 × Int32 × Int32 × Int32 × Int32) max_code
     (fun (n, prevlen, nextlen, count, max_count, min_count, _) => do
       let curlen := nextlen
-      let nextlen := u16i (← getDl tree (← iadd n 1).toInt)
+      let nextlen := u16i (← cinline (getDl tree (← cinline (iadd n 1)).toInt))
       let mut count ← iadd count 1
       if count.toInt < max_count.toInt ∧ curlen == nextlen then
         return (n, prevlen, nextlen, count, max_count, min_count, 0)
@@ -764,23 +802,19 @@ def send_tree (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int32) : M Un
           send_code s curlen.toInt (← pBltree s)
           count ← isub count 1
         send_code s REP_3_6.toInt (← pBltree s)
-        send_bits s (← isub count 3) 2
+        send_bits s (← cinline (isub count 3)) 2
       else if count.toInt ≤ 10 then
         send_code s REPZ_3_10.toInt (← pBltree s)
-        send_bits s (← isub count 3) 3
+        send_bits s (← cinline (isub count 3)) 3
       else
         send_code s REPZ_11_138.toInt (← pBltree s)
-        send_bits s (← isub count 11) 7
+        send_bits s (← cinline (isub count 11)) 7
       -- count = 0; prevlen = curlen;
-      count := 0
-      let prevlen := curlen
-      let (max_count, min_count) : Int32 × Int32 :=
-        if nextlen == 0 then (138, 3) else if curlen == nextlen then (6, 3) else (7, 4)
-      return (n, prevlen, nextlen, count, max_count, min_count, 0))
+      finishTreeRun n curlen nextlen)
     (0, -1, nextlen0, 0, mx0, mn0, 0)
 
 /-- `local int build_bl_tree(deflate_state *s)` -/
-def build_bl_tree (s : DeflateStatePtr) : M Int32 := do
+def build_bl_tree (s : DeflateStatePtr) : M (CStatic Int32) := do
   -- scan_tree(s, (ct_data *)s->dyn_ltree, s->l_desc.max_code);
   scan_tree s (← pLtree s) (← rd s).l_desc.max_code
   scan_tree s (← pDtree s) (← rd s).d_desc.max_code
@@ -798,10 +832,10 @@ def build_bl_tree (s : DeflateStatePtr) : M Int32 := do
   return mb
 
 /-- `local void send_all_trees(deflate_state *s, int lcodes, int dcodes, int blcodes)` -/
-def send_all_trees (s : DeflateStatePtr) (lcodes dcodes blcodes : Int32) : M Unit := do
-  send_bits s (← isub lcodes 257) 5
-  send_bits s (← isub dcodes 1) 5
-  send_bits s (← isub blcodes 4) 4
+def send_all_trees (s : DeflateStatePtr) (lcodes dcodes blcodes : Int32) : M (CStatic Unit) := do
+  send_bits s (← cinline (isub lcodes 257)) 5
+  send_bits s (← cinline (isub dcodes 1)) 5
+  send_bits s (← cinline (isub blcodes 4)) 4
   -- for (rank = 0; rank < blcodes; rank++) send_bits(s, s->bl_tree[bl_order[rank]].Len, 3);
   let _ ← cfor (σ := Int32) (fun r => pure (decide (r.toInt < blcodes.toInt))) (fun r => iadd r 1)
     (fun r => do
@@ -812,7 +846,7 @@ def send_all_trees (s : DeflateStatePtr) (lcodes dcodes blcodes : Int32) : M Uni
   send_tree s (← pDtree s) (← isub dcodes 1)
 
 /-- `void ZLIB_INTERNAL _tr_stored_block(deflate_state *s, charf *buf, ulg stored_len, int last)` -/
-def «_tr_stored_block» (s : DeflateStatePtr) (buf : BPtr) (stored_len : UInt64) (last : Int32) : M Unit := do
+def «_tr_stored_block» (s : DeflateStatePtr) (buf : CStr) (stored_len : UInt64) (last : Int32) : M (CHidden Unit) := do
   -- send_bits(s, (STORED_BLOCK<<1) + last, 3);
   send_bits s (← iadd (STORED_BLOCK <<< 1) last) 3
   bi_windup s
@@ -826,33 +860,33 @@ def «_tr_stored_block» (s : DeflateStatePtr) (buf : BPtr) (stored_len : UInt64
   md s fun d => { d with pending := d.pending + stored_len }
 
 /-- `void ZLIB_INTERNAL _tr_flush_bits(deflate_state *s)` -/
-def «_tr_flush_bits» (s : DeflateStatePtr) : M Unit := bi_flush s
+def «_tr_flush_bits» (s : DeflateStatePtr) : M (CHidden Unit) := bi_flush s
 
 /-- `void ZLIB_INTERNAL _tr_align(deflate_state *s)` -/
-def «_tr_align» (s : DeflateStatePtr) : M Unit := do
+def «_tr_align» (s : DeflateStatePtr) : M (CHidden Unit) := do
   send_bits s (STATIC_TREES <<< 1) 3
   send_code s END_BLOCK.toInt (.ref .st_static_ltree 0)
   bi_flush s
 
 /-- `local void compress_block(deflate_state *s, const ct_data *ltree, const ct_data *dtree)` -/
-def compress_block (s : DeflateStatePtr) (ltree dtree : CtDataPtr) : M Unit := do
-  let lcp : BPtr := .ref .st_length_code 0
+def compress_block (s : DeflateStatePtr) (ltree dtree : ConstCtDataPtr) : M (CStatic Unit) := do
+  let lcp : ConstBPtr := .ref .st_length_code 0
   -- if (s->sym_next != 0) do { ... } while (sx < s->sym_next);
   if (← rd s).sym_next != 0 then
     let _ ← cdoWhile (σ := UInt32)
       (fun sx => do
         -- dist = s->sym_buf[sx++] & 0xff;
         let sb := (← rd s).sym_buf
+        let sx1 := sx + 1
         let b0 ← Ptr.index sb sx.toNat
-        let sx := sx + 1
         let dist : UInt32 := b0.toUInt32 &&& 0xff
         -- dist += (unsigned)(s->sym_buf[sx++] & 0xff) << 8;
-        let b1 ← Ptr.index sb sx.toNat
-        let sx := sx + 1
+        let sx2 := sx1 + 1
+        let b1 ← Ptr.index sb sx1.toNat
         let dist := dist + ((b1.toUInt32 &&& 0xff) <<< 8)
         -- lc = s->sym_buf[sx++];
-        let b2 ← Ptr.index sb sx.toNat
-        let sx := sx + 1
+        let next := sx2 + 1
+        let b2 ← Ptr.index sb sx2.toNat
         let lc := u8i b2
         if dist == 0 then
           send_code s lc.toInt ltree
@@ -875,14 +909,14 @@ def compress_block (s : DeflateStatePtr) (ltree dtree : CtDataPtr) : M Unit := d
           if extra != 0 then
             let dist := dist - (i2u (← Ptr.index (.ref .st_base_dist 0 : IPtr) code.toNat))
             send_bits s (u2i dist) extra
-        pure sx)
+        pure next)
       (fun sx => do pure (decide (sx < (← rd s).sym_next), sx))
       0
   -- send_code(s, END_BLOCK, ltree);
   send_code s END_BLOCK.toInt ltree
 
 /-- `local int detect_data_type(deflate_state *s)` -/
-def detect_data_type (s : DeflateStatePtr) : M Int32 := do
+def detect_data_type (s : DeflateStatePtr) : M (CStatic Int32) := do
   -- unsigned long block_mask = 0xf3ffc07fUL;
   -- for (n = 0; n <= 31; n++, block_mask >>= 1) if ((block_mask & 1) && ...Freq != 0) return Z_BINARY;
   let (_, _, r) ← cwhile (σ := Int32 × UInt64 × Option Int32)
@@ -905,21 +939,40 @@ def detect_data_type (s : DeflateStatePtr) : M Int32 := do
   if let some v := r then return v
   return Z_BINARY
 
+/-- C's two early-return loops and short-circuiting frequency tests. -/
+def detect_data_type_c (s : DeflateStatePtr) : M (CStaticAs "detect_data_type" Int32) :=
+  cwhileRet (σ := Int32 × UInt64)
+    (fun (n, mask) => pure (decide (n ≤ 31), (n, mask)))
+    (fun (n, mask) => do
+      if (mask &&& 1) != 0 then
+        if (← getFc (← pLtree s) n.toInt) != 0 then return .ret Z_BINARY
+      return .next (← iadd n 1, mask >>> 1))
+    (0, 0xf3ffc07f) fun _ => do
+      if (← getFc (← pLtree s) 9) != 0 then return Z_TEXT
+      if (← getFc (← pLtree s) 10) != 0 then return Z_TEXT
+      if (← getFc (← pLtree s) 13) != 0 then return Z_TEXT
+      cwhileRet (σ := Int32)
+        (fun n => pure (decide (n < LITERALS), n))
+        (fun n => do
+          if (← cinline (getFc (← cinline (pLtree s)) n.toInt)) != 0 then return .ret Z_TEXT
+          return .next (← cinline (iadd n 1)))
+        32 fun _ => pure Z_BINARY
+
 /-- `void ZLIB_INTERNAL _tr_flush_block(deflate_state *s, charf *buf, ulg stored_len, int last)` -/
-def «_tr_flush_block» (s : DeflateStatePtr) (buf : BPtr) (stored_len : UInt64) (last : Int32) : M Unit := do
+def «_tr_flush_block» (s : DeflateStatePtr) (buf : CStr) (stored_len : UInt64) (last : Int32) : M (CHidden Unit) := do
   -- int max_blindex = 0;
   let mut max_blindex : Int32 := 0
   let mut opt_lenb : UInt64 := 0
   let mut static_lenb : UInt64 := 0
   if (← rd s).level.toInt > 0 then
     -- if (s->strm->data_type == Z_UNKNOWN) s->strm->data_type = detect_data_type(s);
-    let strm := (← rd s).strm
+    let strm ← cinline (do pure (← rd s).strm)
     if (← ldZStream strm).data_type == Z_UNKNOWN then
-      let t ← detect_data_type s
+      let t ← cinline (detect_data_type s)
       stZStream strm { (← ldZStream strm) with data_type := t }
-    build_tree s (← pLdesc s)
-    build_tree s (← pDdesc s)
-    max_blindex ← build_bl_tree s
+    build_tree s (← cinline (pLdesc s))
+    build_tree s (← cinline (pDdesc s))
+    max_blindex ← cinline (build_bl_tree s)
     -- opt_lenb = (s->opt_len + 3 + 7) >> 3; static_lenb = (s->static_len + 3 + 7) >> 3;
     opt_lenb := ((← rd s).opt_len + 3 + 7) >>> 3
     static_lenb := ((← rd s).static_len + 3 + 7) >>> 3
@@ -943,16 +996,18 @@ def «_tr_flush_block» (s : DeflateStatePtr) (buf : BPtr) (stored_len : UInt64)
   -- if (last) bi_windup(s);
   if last != 0 then bi_windup s
 
+/-- Store at the old index in `s->sym_buf[s->sym_next++] = v`. -/
+def put_symbol_byte (s : DeflateStatePtr) (v : UInt8) : M Unit := do
+  let d ← rd s
+  let p ← Ptr.add d.sym_buf d.sym_next.toNat
+  md s fun d => { d with sym_next := d.sym_next + 1 }
+  store8 p v
+
 /-- `int ZLIB_INTERNAL _tr_tally(deflate_state *s, unsigned dist, unsigned lc)` -/
-def «_tr_tally» (s : DeflateStatePtr) (dist lc : UInt32) : M Int32 := do
-  -- s->sym_buf[s->sym_next++] = (uch)dist;  (uch)(dist >> 8);  (uch)lc;
-  let put (v : UInt8) : M Unit := do
-    let d ← rd s
-    setAt d.sym_buf d.sym_next.toNat v
-    md s fun d => { d with sym_next := d.sym_next + 1 }
-  put dist.toUInt8
-  put (dist >>> 8).toUInt8
-  put lc.toUInt8
+def «_tr_tally» (s : DeflateStatePtr) (dist lc : UInt32) : M (CHidden Int32) := do
+  put_symbol_byte s dist.toUInt8
+  put_symbol_byte s (dist >>> 8).toUInt8
+  put_symbol_byte s lc.toUInt8
   if dist == 0 then
     -- s->dyn_ltree[lc].Freq++;
     let lt ← pLtree s
@@ -962,9 +1017,9 @@ def «_tr_tally» (s : DeflateStatePtr) (dist lc : UInt32) : M Int32 := do
     let dist := dist - 1
     -- s->dyn_ltree[_length_code[lc] + LITERALS + 1].Freq++;
     let lcode ← Ptr.index (.ref .st_length_code 0 : BPtr) lc.toNat
-    let idx := (u8i lcode).toInt + LITERALS.toInt + 1
+    let idx ← iadd (← iadd (u8i lcode) LITERALS) 1
     let lt ← pLtree s
-    setFc lt idx ((← getFc lt idx) + 1)
+    setFc lt idx.toInt ((← getFc lt idx.toInt) + 1)
     -- s->dyn_dtree[d_code(dist)].Freq++;
     let dc ← d_code dist
     let dt ← pDtree s

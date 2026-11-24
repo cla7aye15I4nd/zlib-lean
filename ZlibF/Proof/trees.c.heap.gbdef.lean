@@ -1,5 +1,6 @@
 import ZlibF.Proof.«trees.c.heap.pq»
 import ZlibF.Proof.«trees.c.heap.gbtree»
+import ZlibF.Proof.«trees.c.monad»
 
 /-!
 # trees.c: `gen_bitlen` cut into its loops
@@ -86,6 +87,47 @@ def gbInner (s : DeflateStatePtr) (tree : CtDataPtr) (max_code bits : Int32) : I
       setDl tree m.toInt (i2us bits)
     pure (← isub n 1, h)
 
+private theorem bindIf {α β : Type} (p : Prop) [Decidable p] (a b : M α) (k : α → M β) :
+    ((if p then a else b) >>= k) = (if p then a >>= k else b >>= k) := by
+  split <;> rfl
+
+private theorem reassignLeaf_bind {α : Type} (s : DeflateStatePtr) (tree : CtDataPtr)
+    (max_code bits : Int32) (st : Int32 × Int32)
+    (ctrl : LoopStep (Int32 × Int32) Empty → M α) (next : Int32 × Int32 → M α)
+    (hn : ∀ v, ctrl (.next v) = next v) (hc : ∀ v, ctrl (.cont v) = next v) :
+    (reassignLeafStep s tree max_code bits st >>= ctrl) =
+      (gbInner s tree max_code bits st >>= next) := by
+  rcases st with ⟨n, h⟩
+  simp only [reassignLeafStep, gbInner, cinline, M_bind_assoc, bindIf, M_pure_bind, hn, hc]
+
+/-- The explicit C continue repeats the ordinary loop on exactly the same heap and locals.
+Both loops count the final false test and preserve all fault results. -/
+theorem reassignLeaves_eq (s : DeflateStatePtr) (tree : CtDataPtr) (max_code bits n h : Int32) :
+    reassignLeaves s tree max_code bits n h =
+      cwhile (fun (n, h) => pure (n != 0, (n, h))) (gbInner s tree max_code bits) (n, h) := by
+  let test : Int32 × Int32 → M (Bool × (Int32 × Int32)) := fun (n, h) => pure (n != 0, (n, h))
+  let body := reassignLeafStep s tree max_code bits
+  let plain := gbInner s tree max_code bits
+  let wrap : Int32 × Int32 → M (Except Empty (Int32 × Int32)) := fun p => pure (.ok p)
+  have go (k : Nat) (st : Int32 × Int32) :
+      cwhileCtrl.go test body k st = (cwhile.go test plain k st >>= wrap) := by
+    induction k generalizing st with
+    | zero => funext hp; rfl
+    | succ k ih =>
+      rcases st with ⟨n, h⟩
+      rw [cwhileCtrl.go, cwhile.go]
+      simp only [test, M_pure_bind, bindIf, M_bind_assoc]
+      split
+      · apply reassignLeaf_bind
+        · exact ih
+        · exact ih
+      · rfl
+  change (cwhileCtrl.go test body fuel (n, h) >>= _) = cwhile.go test plain fuel (n, h)
+  rw [go]
+  funext hp
+  simp only [bind_app]
+  cases hv : cwhile.go test plain fuel (n, h) hp <;> rfl
+
 /-- The outer loop body of the reassignment. -/
 def gbOuter (s : DeflateStatePtr) (tree : CtDataPtr) (max_code : Int32) : Int32 × Int32 → M (Int32 × Int32) :=
   fun (bits, h) => do
@@ -117,7 +159,9 @@ def gbTop (s : DeflateStatePtr) (desc : TreeDescPtr) : M Unit := do
     (gbOuter s tree max_code)
     (max_length, h)
 
-theorem gen_bitlen_eq (s : DeflateStatePtr) (desc : TreeDescPtr) : gen_bitlen s desc = gbTop s desc := rfl
+theorem gen_bitlen_eq (s : DeflateStatePtr) (desc : TreeDescPtr) : gen_bitlen s desc = gbTop s desc := by
+  simp only [gen_bitlen, withScopedLocals, reassignLeaves_eq]
+  rfl
 
 
 /-! ### The loop `cfor` as a `cwhile` rule -/

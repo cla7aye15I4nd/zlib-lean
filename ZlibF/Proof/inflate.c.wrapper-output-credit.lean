@@ -676,7 +676,7 @@ theorem inflate_public_close_body
     rw [bind_app, allocLocalB_run h initial.good.fresh]
     simp only []
     rw [bind_app]
-    simp only [bind_app, stateCheck_live allocated.good.live, bne_self_eq_false, Bool.false_eq_true,
+    simp only [bind_app, pure_app, stateCheck_live allocated.good.live, bne_self_eq_false, Bool.false_eq_true,
       ite_false, ldZStream_ok allocated.good.live.hz, entry, allocated.good.live.zst, castI]
     rw [bind_app] at bodyRun
     unfold runX at bodyRun

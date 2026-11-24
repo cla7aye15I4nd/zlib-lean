@@ -24,10 +24,8 @@ theorem public_busy_no_flush_resuming_entry {h : Heap} {r : ZStreamRef} {ds : Na
   have header : publicZlibHeader (some r) (some (.tab ds))
       (publicDataTail (some r) (some (.tab ds)) Z_NO_FLUSH)
       (setD h ds { d with last_flush := Z_NO_FLUSH }) =
-      publicDataTail (some r) (some (.tab ds)) Z_NO_FLUSH (setD h ds { d with last_flush := Z_NO_FLUSH }) := by
-    unfold publicZlibHeader
-    simp only [bind_app, rdD_eq, setD_dstates_same, status,
-      show (BUSY_STATE == INIT_STATE) = false from rfl, Bool.false_and, Bool.false_eq_true, ite_false]
+      publicDataTail (some r) (some (.tab ds)) Z_NO_FLUSH (setD h ds { d with last_flush := Z_NO_FLUSH }) :=
+    public_busy_no_flush_header_skip good0 status
   have inputs : (z.avail_in != 0 && z.next_in == .null) = false := by
     by_cases empty : z.avail_in = 0
     · simp [empty]
@@ -46,7 +44,8 @@ theorem public_busy_no_flush_resuming_entry {h : Heap} {r : ZStreamRef} {ds : Na
       simp only [show decide ((0 : Int32) ≤ -4) = false from rfl, Bool.and_false, Bool.false_and]
   have checked := stateCheck_live good.live
   have rankFinish : RANK Z_NO_FLUSH = pure 0 := by rfl
-  rw [public_deflate_source]
+  rw [public_deflate_source, entryPhase_eq_previousPublicEntry good.live _ (by decide) ⟨lower, upper⟩]
+  unfold previousPublicEntry
   simp only [bind_app, pure_app, checked, show ((0 : Int32) != 0) = false from rfl,
     show (Z_NO_FLUSH > Z_BLOCK) = False from by decide, show (Z_NO_FLUSH < 0) = False from by decide,
     decide_false, Bool.false_or, Bool.false_eq_true, ite_false,

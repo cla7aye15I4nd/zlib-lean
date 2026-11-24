@@ -79,12 +79,11 @@ theorem fill_window_slide_empty {h : Heap} {r : ZStreamRef} {ds w p q b top orig
     have wsz := good.inv.wsz
     omega
   have noSlide : ¬ slid.strstart ≥ slid.w_size + (slid.w_size - MIN_LOOKAHEAD_u) := geometry.2.2.2.2.2.2.2.2
-  have loop := do_once (fill_body_no_input goodS empty noSlide) (fill_cond_break (some (.tab ds)) hs)
   have pad := fill_high_water_complete goodS winS getS (window_writable goodS winS) rangeS
   have run : fill_window (some (.tab ds)) hs = .ok ((), after) := by
-    rw [fill_window_source]
-    simp only [bind_app, rdD_eq, goodS.live.hs, loop]
-    exact pad
+    apply (fill_window_no_input (ldDeflateState_tab goodS.live.hs) _ noSlide empty).trans pad
+    rw [goodS.live.back]
+    exact ldZStream_ok goodS.live.hz
   have historyS : LazyHistory input (origin + d.w_size.toNat) slid :=
     slide_lazy_history good env.win env.wbytes range taken history
   have balanceS : BlockBalance slid xs credit :=

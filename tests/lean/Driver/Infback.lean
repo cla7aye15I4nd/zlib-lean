@@ -60,23 +60,60 @@ def readBytes (p : BPtr) (n : Nat) : M (Array UInt8) := do
 def hexs (bs : Array UInt8) : String :=
   bs.foldl (fun (acc : String) (b : UInt8) => acc ++ hexDigit (b >>> 4) ++ hexDigit (b &&& 15)) ""
 
+private def nestedRedirect (outer : BPtrCell) (replacement : BPtr) : PointerLocalM Unit := do
+  let data ← allocBytes #[1, 1, 0, 254, 255, 78, 19, 47]
+  let desc ← allocBytes (Array.replicate 4 0)
+  let input : CInCb := fun d cell => do
+    if cell == outer then liftM (ub "nested decoder reused an active address")
+    set32 d 0 cell.id.toUInt32
+    cell.write data
+    return 8
+  let output : COutCb := fun d buf len => do
+    let cell := BPtrCell.mk (← get32 d 0).toNat
+    unless len == 1 && (← load8 buf) == 78 && (← cell.read) == (← data.add 6) do
+      liftM (ub "unexpected nested output or input cursor")
+    outer.write replacement
+    cell.write (← data.add 1)
+    return 0
+  let strm ← allocZStream
+  stZStream strm ZStream.zeroed
+  let window ← allocB 256
+  let version ← allocBytesRO ("1.4".toUTF8.data.push 0)
+  unless (← inflateBackInit_ strm 8 window version 112) == Z_OK do
+    liftM (ub "nested initialization failed")
+  let rc ← inflateBack_c strm input desc output desc
+  let z ← ldZStream strm
+  unless rc == Z_STREAM_END && z.next_in == (← data.add 1) && z.avail_in == 2 &&
+      (← outer.read) == replacement && (← inflateBackEnd strm) == Z_OK do
+    liftM (ub "unexpected nested decoder result")
+
 def runCase (wb : Int32) (inch : Nat) (opts : Nat) (input : Array UInt8) : M String := do
   let inb ← allocBytes (input ++ #[0])        -- one spare byte: a valid pointer for the empty input
+  let alternate ← if opts &&& 8 != 0 then do
+      let bytes := if h : 261 < input.size then input.set 261 (input[261] ^^^ 64) else input
+      allocBytes (bytes ++ #[0])
+    else pure .null
   let obuf ← allocBytes (Array.replicate (1 <<< 20) 0)
   let ctl ← allocBytes (Array.replicate 128 0)
   set32 ctl 4 input.size.toUInt32
   set32 ctl 5 (if inch == 0 then 1 else inch).toUInt32
   set32 ctl 6 opts.toUInt32
-  let inCb : InCb := fun d _buf => do
+  let inCb : CInCb := fun d cell => do
     flatten
     let pos ← get32 d 0
     let len ← get32 d 4
     let inch ← get32 d 5
-    set32 d 1 ((← get32 d 1) + 1)
+    let nin ← get32 d 1
+    if opts &&& 8 != 0 then
+      if nin != 0 && (← get32 d 24).toNat != cell.id then
+        liftM (ub "the input callback received a different pointer variable")
+      set32 d 24 cell.id.toUInt32
+    set32 d 1 (nin + 1)
     let n := if len - pos < inch then len - pos else inch
     set32 d 0 (pos + n)
-    return (n, ← inb.add pos.toNat)
-  let outCb : OutCb := fun d buf len => do
+    cell.write (← inb.add pos.toNat)
+    return n
+  let outCb : COutCb := fun d buf len => do
     flatten
     let nout ← get32 d 2
     if nout < 16 then set32 d (7 + nout.toNat) len
@@ -85,6 +122,11 @@ def runCase (wb : Int32) (inch : Nat) (opts : Nat) (input : Array UInt8) : M Str
     memcpyB (← obuf.add olen.toNat) buf len.toNat
     set32 d 3 (olen + len)
     let opts ← get32 d 6
+    if opts &&& 8 != 0 && (← get32 d 1) != 0 then
+      let cell := BPtrCell.mk (← get32 d 24).toNat
+      if let .ref _ off := ← cell.read then
+        let replacement ← alternate.add off
+        if opts &&& 16 != 0 then nestedRedirect cell replacement else cell.write replacement
     if opts &&& 2 != 0 && nout + 1 == 1 then return 1
     if opts &&& 1 != 0 && nout + 1 == 2 then return 1
     return 0
@@ -99,12 +141,15 @@ def runCase (wb : Int32) (inch : Nat) (opts : Nat) (input : Array UInt8) : M Str
       let k := min input.size 5
       wrZ strm fun z => { z with next_in := inb, avail_in := k.toUInt32 }
       set32 ctl 0 k.toUInt32
-    let ret ← inflateBack strm inCb ctl outCb ctl
+    let (ret, _) ← (inflateBack_c strm inCb ctl outCb ctl).run {}
     let z ← ldZStream strm
     line := line ++ s!" rc={ret.toInt} ain={z.avail_in.toNat} nin="
     line := line ++ (match z.next_in with
       | .null => "null"
-      | .ref _ off => toString off)
+      | .ref ref off =>
+        let origin := if opts &&& 8 == 0 then "" else
+          if alternate == .ref ref 0 then "alternate+" else "input+"
+        origin ++ toString off)
     let nin ← get32 ctl 1
     let nout ← get32 ctl 2
     line := line ++ s!" calls={nin.toNat},{nout.toNat} olens="

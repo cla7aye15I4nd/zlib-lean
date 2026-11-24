@@ -150,6 +150,9 @@ theorem inflateCopy_fixed_window_framed
       .ok ((), dest.put afterWindow { z with state := some (.inflate h.nextBlk) }) := by
     simp [wrZ_eq, destAfterWindow]
   let finished := dest.put afterWindow { z with state := some (.inflate h.nextBlk) }
+  have originalAfterNext : afterNext.istates zs = some s := by
+    rw [setI_istates_ne _ _ _ _ distinct]
+    exact sourceAfterBacklink
   have run : C.run (inflateCopy (some dest) (some source)) h =
       .ok (Z_OK, finished) := by
     change (inflateCopy (some dest) (some source)) h = _
@@ -157,7 +160,8 @@ theorem inflateCopy_fixed_window_framed
       good.live.zst, castI, firstRun, zeroRun,
       ldInflateState_tab stateZero, window, shift,
       windowRun, copyZRun, copyIRun, backlinkRun,
-      ldInflateState_tab sourceAfterBacklink, codesP, fixed.1, nextPtr,
+      ldInflateState_tab sourceAfterBacklink,
+      ldInflateState_tab originalAfterNext, codesP, fixed.1, nextPtr,
       nextDiff, nextToInt, nextAdd,
       nextRun, memcpyRun, windowWrite, destWrite,
       StateRef.ofInflateState, finished]

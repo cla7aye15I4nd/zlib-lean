@@ -1,9 +1,10 @@
 import ZlibF.Spec.Common.Streams
 import ZlibF.Proof.«deflate.c.engine.initial»
 import ZlibF.Proof.«deflate.c.engine.symbol-ledger»
-import ZlibF.Proof.«deflate.c.engine.block-initial»
+import ZlibF.Proof.«deflate.c.engine.block-clear»
 import ZlibF.Proof.«deflate.c.engine.chains»
 import ZlibF.Spec.Functional.Api.Compress
+import ZlibF.Proof.«deflate.c.engine.entry-correspondence»
 
 /-!
 # deflate.c: the universal invariant of a deflate stream
@@ -209,6 +210,13 @@ structure DInv (h : Heap) (r : ZStreamRef) (ds : Nat) (z : ZStream) (d : Deflate
   symbols : Symbols h d
 
 /-! ## 2. Interface of the invariant -/
+
+/-- The stream invariant supplies the stored-flush bound for the complete entry correspondence. -/
+theorem DInv.entry_eq_previous {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : DeflateState}
+    (inv : DInv h r ds z d) (flush : Int32) (requested : 0 ≤ flush.toInt ∧ flush.toInt ≤ 5)
+    (k : DeflateStatePtr → M Int32) :
+    Phases.entryPhase (some r) flush k h = previousPublicEntry (some r) flush k h :=
+  entryPhase_eq_previousPublicEntry inv.good.live flush requested inv.shape.lastFlush k
 
 theorem DInv.dgood {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d : DeflateState}
     (inv : DInv h r ds z d) : DGood h r ds z d := inv.good

@@ -1,6 +1,7 @@
 import Lean
 import ZlibF.Runtime.Schema
 import ZlibF.Runtime.CAbi
+import ZlibF.Runtime.PointerLocals
 import ZlibF.Runtime.Address
 import ZlibF.Runtime.Alloc
 import ZlibF.Zlib.gzfs
@@ -93,7 +94,23 @@ elab "abiAllLayouts%" : term => do let env ← getEnv; return toExpr ((← commo
 def arrayDecl (ty name : String) (vals : List String) : String :=
   s!"static const {ty} {name}[{vals.length}] = \{\n    " ++ String.intercalate ", " vals ++ "\n};\n"
 
-inductive Linkage where | «export» | exportAs (cname : String) | hidden | «static» | staticInline deriving Inhabited, BEq
+inductive Linkage where
+  | «export»
+  | exportAs (cname : String)
+  | hidden
+  | hiddenAs (cname : String)
+  | «static»
+  | staticAs (cname : String)
+  | staticInline
+  deriving Inhabited, BEq
+
+def Linkage.customCName? : Linkage → Option String
+  | .exportAs s | .hiddenAs s | .staticAs s => some s
+  | _ => none
+
+def Linkage.needsProto : Linkage → Bool
+  | .static | .staticAs _ | .staticInline | .hidden | .hiddenAs _ => true
+  | _ => false
 inductive OutKind where | codePtr | uint32 deriving Inhabited, BEq
 structure FnMeta where
   leanName : Name
@@ -113,24 +130,30 @@ def isBytePtrCType (ct : String) : Bool := ct ∈ ["unsigned char *", "const uns
 def stripOutType (ct : String) : Option OutKind → String | some .codePtr => "code *" | some .uint32 => "unsigned" | none => ct
 
 private def cTypeHeadTable : List (Name × String × Option OutKind) :=
-  [(``C.ConstBPtr, "const unsigned char *", none), (``C.CStr, "char *", none), (``C.ConstCStr, "const char *", none),
+   [(`Zlib.Deflate.CompressFunc, "compress_func", none), (`Zlib.Deflate.Config, "config", none),
+    (``C.ConstBPtr, "const unsigned char *", none), (``C.CStr, "char *", none), (``C.ConstCStr, "const char *", none),
+   (``C.BPtrCell, "unsigned char **", none), (`Zlib.Infback.CInCb, "in_func", none), (`Zlib.Infback.COutCb, "out_func", none),
    (``C.VoidPtr, "void *", none), (``C.ConstVoidPtr, "const void *", none), (``C.ConstWPtr, "const unsigned short *", none),
-   (``C.ConstCodePtr, "const code *", none), (``C.ConstUPtr, "const unsigned *", none), (``C.PtrU64, "unsigned long *", none),
-   (``C.OutCodePtr, "code **", some .codePtr), (``C.OutUInt32, "unsigned *", some .uint32), (``C.OutInt32, "int *", none),
+   (``C.ConstWTable, "const unsigned short *", none),
+   (``C.ConstCodePtr, "const code *", none), (``C.ConstUPtr, "const unsigned *", none), (``C.PtrU32, "unsigned *", none), (``C.PtrU64, "unsigned long *", none),
+   (``Zlib.GzFs.CVaList, "va_list", none), (``Zlib.GzFs.CVarArgs, "...", none),
+   (``C.UInt32Cell, "unsigned *", none), (``C.OutCodePtr, "code **", some .codePtr), (``C.OutUInt32, "unsigned *", some .uint32), (``C.OutInt32, "int *", none),
    (``C.ZOffT, "z_off_t", none), (``C.ZOff64T, "z_off64_t", none), (``C.CodeType, "codetype", none), (``C.ZCrcT, "z_crc_t", none),
    (``C.ZWordT, "z_word_t", none), (``C.StackStream, "z_streamp", none), (``C.StackScalar64, "unsigned long *", none),
    (``UInt8, "unsigned char", none), (``UInt16, "unsigned short", none), (``UInt32, "unsigned", none), (``UInt64, "unsigned long", none),
    (``Int32, "int", none), (``Int64, "long", none), (``Bool, "int", none), (``Unit, "void", none), (``PUnit, "void", none),
-   (``C.BPtr, "unsigned char *", none), (``C.WPtr, "unsigned short *", none), (``C.IPtr, "const int *", none), (``C.UPtr, "const unsigned *", none),
+   (``C.BPtr, "unsigned char *", none), (``C.WPtr, "unsigned short *", none), (``C.IPtr, "int *", none), (``C.ConstIPtr, "const int *", none), (``C.UPtr, "const unsigned *", none),
    (``C.CodePtr, "code *", none), (``C.GzFilePtr, "gzFile", none), (``C.GzStatePtr, "gz_statep", none), (``C.ZStreamPtr, "z_streamp", none),
    (``C.InflateStatePtr, "struct inflate_state *", none), (``C.DeflateStatePtr, "deflate_state *", none),
+   (``C.CtDataPtr, "ct_data *", none), (``C.ConstCtDataPtr, "const ct_data *", none), (``C.TreeDescPtr, "tree_desc *", none),
+   (``C.StaticTreeDescPtr, "const static_tree_desc *", none),
    (``C.Code, "code", none), (``C.CtData, "ct_data", none), (``C.ZStream, "z_stream", none)]
 def cTypeHead? (t : Expr) : Option (String × Option OutKind) := t.getAppFn.constName?.bind fun n => cTypeHeadTable.lookup n
 def optPtrRefName? (t : Expr) : Option Name :=
   if t.isAppOfArity ``Option 1 then let i := t.getAppArgs[0]!; (if i.isAppOfArity ``C.Ptr 1 then i.getAppArgs[0]! else i).getAppFn.constName? else none
 private def optPtrTable : List (Name × String) :=
-  [(``C.BRef, "unsigned char *"), (``C.WRef, "unsigned short *"), (``C.IRef, "const int *"), (``C.URef, "const unsigned *"), (``C.CodeRef, "code *"),
-   (``C.GzFileRef, "gzFile"), (``C.GzStateRef, "gz_statep"), (``C.ZStreamRef, "z_streamp"), (``C.InflateStateRef, "struct inflate_state *"), (``C.DeflateStateRef, "deflate_state *")]
+  [(``C.CtDataRef, "ct_data *"), (``C.BRef, "unsigned char *"), (``C.WRef, "unsigned short *"), (``C.IRef, "int *"), (``C.URef, "const unsigned *"), (``C.CodeRef, "code *"),
+   (``C.GzFileRef, "gzFile"), (``C.GzStateRef, "gz_statep"), (``C.ZStreamRef, "z_streamp"), (``C.GzHeaderRef, "gz_headerp"), (``C.InflateStateRef, "struct inflate_state *"), (``C.DeflateStateRef, "deflate_state *")]
 def optPtrCType? (n : Name) : Option String := optPtrTable.lookup n
 
 private def posixNames : List String :=
@@ -145,36 +168,55 @@ def linkageTable : List (Name × Linkage × Bool × Bool × Bool) :=
    (``C.CGlobalConstStrArray, .«export», false, true, false), (``C.CLocalConst, .«static», false, false, true)]
 def natIntCasts : List Name := [``UInt8.toNat, ``UInt16.toNat, ``UInt32.toNat, ``UInt64.toNat, ``Int.toNat, ``Int32.toInt, ``Int64.toInt, ``Int32.ofInt, ``Int64.ofInt, ``Int64.ofNat]
 def pureIntCasts : List Name := natIntCasts ++ [``UInt8.toUInt32, ``UInt16.toUInt32, ``UInt32.toUInt64, ``UInt8.toUInt64, ``UInt16.toUInt64, ``Int64.toUInt64]
-def pureIntOps : List (Name × (Int → Int → Int)) := [(``HAdd.hAdd, (· + ·)), (``HSub.hSub, (· - ·)), (``HMul.hMul, (· * ·)), (``HShiftLeft.hShiftLeft, fun l r => l.toNat <<< r.toNat)]
+def pureIntOps : List Name := [``HAdd.hAdd, ``HSub.hSub, ``HMul.hMul, ``HDiv.hDiv, ``HShiftLeft.hShiftLeft, ``HShiftRight.hShiftRight]
 def castMap : List (Name × String) :=
-  [(``UInt16.toUInt8, "unsigned char"), (``UInt32.toUInt8, "unsigned char"), (``UInt64.toUInt8, "unsigned char"), (``UInt8.toUInt16, "unsigned short"),
+  [(``Int32.toInt16, "short"), (``Int16.toUInt16, "unsigned short"), (``UInt16.toUInt8, "unsigned char"), (``UInt32.toUInt8, "unsigned char"), (``UInt64.toUInt8, "unsigned char"), (``UInt8.toUInt16, "unsigned short"),
    (``UInt32.toUInt16, "unsigned short"), (``UInt64.toUInt16, "unsigned short"), (``Int32.toUInt32, "unsigned"), (``UInt64.toUInt32, "unsigned"),
    (``UInt8.toUInt32, "unsigned"), (``UInt16.toUInt32, "unsigned"), (``UInt8.toInt8, "signed char"), (``Int8.toInt32, "int"), (``Int64.toInt32, "int"),
    (``UInt32.toInt32, "int"), (``Int32.toInt64, "z_off64_t"), (``UInt32.toUInt64, "unsigned long"), (``UInt8.toUInt64, "unsigned long"),
-   (``Int64.toUInt64, "unsigned long"), (``UInt16.toUInt64, "unsigned long"), (``Nat.toUInt8, "unsigned char"), (``Nat.toUInt16, "unsigned short"),
-   (``Nat.toUInt32, "unsigned"), (``Nat.toUInt64, "unsigned long"), (``Nat.toInt32, "int"), (``Nat.toInt64, "z_off64_t"), (``C.ByteAddress.address, "unsigned long")]
+   (``Int64.toUInt64, "unsigned long"), (``UInt64.toInt64, "z_off64_t"), (``UInt16.toUInt64, "unsigned long"), (``Nat.toUInt8, "unsigned char"), (``Nat.toUInt16, "unsigned short"),
+   (``Nat.toUInt32, "unsigned"), (``Nat.toUInt64, "unsigned long"), (``UInt16.ofNat, "unsigned short"), (``UInt64.toUInt16, "unsigned short"),
+   (``Nat.toInt32, "int"), (``Nat.toInt64, "z_off64_t"), (``C.ByteAddress.address, "unsigned long")]
 def passThroughFns : List Name := natIntCasts ++ [``Nat.cast, ``Zlib.GzFs.strLit, ``Zlib.GzFs.cstring, ``C.strLitRef, ``ForInStep.yield, ``ForInStep.done]
 def binOps : List (Name × String) :=
   [(``HAdd.hAdd, "+"), (``HSub.hSub, "-"), (``HMul.hMul, "*"), (``HDiv.hDiv, "/"), (``HMod.hMod, "%"), (``HAnd.hAnd, "&"), (``HOr.hOr, "|"),
    (``HXor.hXor, "^"), (``HShiftLeft.hShiftLeft, "<<"), (``HShiftRight.hShiftRight, ">>"), (``LT.lt, "<"), (``LE.le, "<="), (``GT.gt, ">"),
-   (``GE.ge, ">="), (``BEq.beq, "=="), (``Eq, "=="), (``bne, "!="), (``Bool.and, "&&"), (``Bool.or, "||")]
+   (``GE.ge, ">="), (``BEq.beq, "=="), (``Eq, "=="), (``bne, "!="), (``Bool.and, "&&"), (``Bool.or, "||"), (``And, "&&"), (``Or, "||"),
+   (``C.Ptr.lt, "<"), (``C.Ptr.gt, ">"), (``C.Ptr.le, "<=")]
 def zeroOps : List (Name × String) :=
   [(``Inhabited.default, "{0}"), (``Array.empty, "0"), (``Array.emptyWithCapacity, "0"), (``Array.mkEmpty, "0"), (``C.Ptr.null, "0"),
-   (``C.FnPtr.null, "0"), (``Option.none, "0"), (``Unit.unit, "0"), (``PUnit.unit, "0"), (``Zlib.GzFs.zstrerror, "strerror(errno)"),
+   (``C.FnPtr.null, "0"), (``Option.none, "0"), (``Unit.unit, "0"), (``PUnit.unit, "0"), (``Zlib.GzFs.zstrerror, "strerror(errno)"), (``Zlib.GzFs.getErrno, "errno"),
    (``C.allocGzState, "(gz_statep)malloc(sizeof(gz_state))")]
 def unaryExprOps : List (Name × String × String) :=
   [(``Bool.not, "(!", ")"), (``Not, "(!", ")"), (``Complement.complement, "(~", ")"), (``Neg.neg, "(-", ")"),
    (``Option.isNone, "(", " == 0)"), (``Option.isSome, "(", " != 0)"), (``C.Ptr.load, "(*", ")"), (``C.load8, "(*", ")"),
    (``C.allocB, "malloc(", ")"), (``C.ByteAddress.address, "((unsigned long)(", "))"), (``C.strlenB, "strlen((const char *)", ")"),
-   (``Zlib.GzFs.fsClose, "close(", ")")]
-def ptrWidthType? : Name → Option String | ``C.load64 | ``C.store64 => some "unsigned long *" | ``C.load32 | ``C.store32 => some "int *" | _ => none
+   (``Zlib.GzFs.fsClose, "close(", ")"), (``C.castInflateState, "((struct inflate_state *)(", "))"),
+   (``C.castDeflateState, "((deflate_state *)(", "))"), (``C.StateRef.ofInflateState, "((struct internal_state *)(", "))"),
+   (``C.StateRef.ofDeflateState, "((struct internal_state *)(", "))")]
+def ptrWidthType? : Name → Option String
+  | ``C.load64 | ``C.store64 => some "unsigned long *"
+  | ``C.load32 | ``C.store32 | ``C.storeI32 => some "int *"
+  | ``C.loadU32 | ``C.storeU32 => some "unsigned *"
+  | _ => none
 def structAct? : Name → Option (Bool × Name)
+  | ``C.ldGzHeader => some (false, ``C.GzHeader) | ``C.stGzHeader => some (true, ``C.GzHeader)
+  | ``C.ldTreeDesc => some (false, ``C.TreeDesc) | ``C.stTreeDesc => some (true, ``C.TreeDesc)
+  | ``C.ldStaticTreeDesc => some (false, ``C.StaticTreeDesc)
+  | ``C.ldDeflateState => some (false, ``C.DeflateState) | ``C.stDeflateState => some (true, ``C.DeflateState)
   | ``C.stGzState => some (true, ``C.GzState) | ``C.stZStream => some (true, ``C.ZStream) | ``C.stInflateState => some (true, ``C.InflateState)
   | ``C.ldGzState => some (false, ``C.GzState) | ``C.ldZStream => some (false, ``C.ZStream) | ``C.ldInflateState => some (false, ``C.InflateState) | _ => none
 
+def hiddenVisibility : Linkage → String
+  | .hidden | .hiddenAs _ => "__attribute__((visibility(\"hidden\"))) "
+  | _ => ""
+
 def fmtProto (fn : FnMeta) : String :=
-  let link := match fn.link with | .static => "static " | .staticInline => "static inline " | .hidden => "__attribute__((visibility(\"hidden\"))) " | _ => ""
-  let ps := if fn.params.isEmpty then "void" else String.intercalate ", " (fn.params.map fun (p, ct, _) => if ct.endsWith "*" then s!"{ct}{p}" else s!"{ct} {p}")
+  let link := match fn.link with
+    | .static | .staticAs _ => "static "
+    | .staticInline => "static inline "
+    | link => hiddenVisibility link
+  let ps := if fn.params.isEmpty then "void" else String.intercalate ", " (fn.params.map fun (p, ct, _) => if ct == "..." then ct else if ct.endsWith "*" then s!"{ct}{p}" else s!"{ct} {p}")
   s!"{link}{fn.retCTy} {fn.cName}({ps})"
 
 partial def extractListExprs (e : Expr) : Option (List Expr) := match e.consumeMData with

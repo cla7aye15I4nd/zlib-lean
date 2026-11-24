@@ -21,7 +21,7 @@ def subVal (ca : Array Code) (off : Nat) (last : Code) (hold : Nat) : Code :=
   ca.getD (off + last.val.toNat + hold % 2 ^ (last.bits.toNat + last.op.toNat) / 2 ^ last.bits.toNat) default
 
 /-- The body of the second-level lookup loop. -/
-def lk2Body (c : BCtx) (dist : Bool) : X Bool := do
+def lk2Body (c : DecoderCtx) (dist : Bool) : X Bool := do
   let s ← ldInflateState c.st
   let tab := if dist then s.distcode else s.lencode
   let last := (← get).last
@@ -33,10 +33,10 @@ def lk2Body (c : BCtx) (dist : Bool) : X Bool := do
   Zlib.Infback.PULLBYTE c
   return false
 
-theorem lookup2_eq (c : BCtx) (dist : Bool) : Zlib.Infback.lookup2 c dist = xloopBrk (lk2Body c dist) := rfl
+theorem lookup2_eq (c : DecoderCtx) (dist : Bool) : Zlib.Infback.lookup2 c dist = xloopBrk (lk2Body c dist) := rfl
 
 /-- One trip of the second-level loop. -/
-theorem lk2Body_run (c : BCtx) {i : Nat} (dist : Bool) {h : Heap} {s : InflateState} (l : IL)
+theorem lk2Body_run (c : DecoderCtx) {i : Nat} (dist : Bool) {h : Heap} {s : InflateState} (l : IL)
     (hc : c.st = some (.tab i)) (hs : h.istates i = some s) {ref : CodeRef} {off : Nat} {ca : Array Code}
     {P : Nat → Code → Prop} (tab : (if dist then s.distcode else s.lencode) = .ref ref off)
     (get : Space.get h ref = some ca) (link : LinkOK P ca off l.last) :

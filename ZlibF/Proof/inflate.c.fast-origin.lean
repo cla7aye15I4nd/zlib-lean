@@ -26,7 +26,7 @@ theorem inflate_LEN_fast_raw_bit_budget_run {c : Ctx} {l : IL} {h : Heap} {r : Z
       (setI (r.put h (leaveStream z l)) zs (leaveState s l)) = .ok ((), heap1) := by
     simpa only [C.run, heapEq, strmEq, startEq] using call
   have cut : runX (inflate_LEN c) l h = runX (inflateAfterFast c) l heap1 := by
-    unfold inflate_LEN
+    rw [LEN_previous]
     rw [runX_bind, runX_get]
     simp only [fast, ↓reduceIte]
     rw [runX_bind, RESTORE_pending_run E]

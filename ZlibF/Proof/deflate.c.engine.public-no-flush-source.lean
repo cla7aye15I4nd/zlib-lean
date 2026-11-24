@@ -22,8 +22,8 @@ theorem public_busy_no_flush_slow_source {h : Heap} {r : ZStreamRef} {ds : Nat}
     rcases active with input | look
     · simp [input]
     · simp [look]
-  unfold publicDataTail publicStrategyReturn publicFinishTail zlibTrailer
-  simp only [M_bind_assoc]
+  unfold publicDataTail Phases.strategyPhase publicStrategyReturn
+  simp only [trailerPhase_eq_publicFinishTail, Zlib.Deflate.StrategyLoop.wr_reset_history_then]
   simp only [bind_app, pure_app, rdD_eq, hs, status,
     show (BUSY_STATE == GZIP_STATE) = false from by decide,
     show (BUSY_STATE == EXTRA_STATE) = false from by decide,

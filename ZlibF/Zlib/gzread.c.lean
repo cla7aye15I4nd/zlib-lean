@@ -68,8 +68,42 @@ def gz_load (state : GzStatePtr) (buf : BPtr) (len : UInt32) : G (Int32 × UInt3
   if l.ret == 0 then updS state fun s => { s with eof := 1 }
   return (0, l.«have»)
 
+/-- C ABI form of gz_load, including every store through the output pointer. -/
+def gz_load_c (state : GzStatePtr) (buf : BPtr) (len : UInt32) (count : UInt32Cell) :
+    G (CStaticAs "gz_load" Int32) := do
+  let max : UInt32 := (((0 : UInt32) - 1) >>> 2) + 1
+  updS state fun s => { s with again := 0 }
+  setErrno 0
+  count.write 0
+  let ret ← gdoWhileBrk (fun _ => do
+    let remaining := len - (← count.read)
+    let request := if remaining > max then max else remaining
+    let s ← ldS state
+    let p ← cinline (do buf.add (← count.read).toNat)
+    let ret := (← fsReadInto s.fd p request.toUInt64).toInt32
+    if ret ≤ 0 then return .brk ret
+    count.write ((← count.read) + ret.toUInt32)
+    return .next ret)
+    (fun ret => do return ((← count.read) < len, ret)) (0 : Int32)
+  if ret < 0 then
+    if BLOCKED (← getErrno) then
+      updS state fun s => { s with again := 1 }
+      if (← count.read) != 0 then return 0
+    gz_error state Z_ERRNO (← zstrerror)
+    return -1
+  if ret == 0 then updS state fun s => { s with eof := 1 }
+  return 0
+
+/-- Call gz_load with a private automatic output cell. -/
+private def loadLocal (state : GzStatePtr) (buf : BPtr) (len : UInt32) : G (Int32 × UInt32) := do
+  let got ← allocLocal32
+  let ret ← gz_load_c state buf len (.bytes got)
+  let n ← (UInt32Cell.bytes got).read
+  freeB got
+  return (ret, n)
+
 /-- `local int gz_avail(gz_statep state)` -/
-def gz_avail (state : GzStatePtr) : G Int32 := do
+def gz_avail (state : GzStatePtr) : G (CStatic Int32) := do
   let strm := strmOf state
   let s ← ldS state
   -- if (state->err != Z_OK && state->err != Z_BUF_ERROR) return -1;
@@ -104,9 +138,39 @@ def gz_avail (state : GzStatePtr) : G Int32 := do
     updZ strm fun z => { z with avail_in := z.avail_in + got, next_in := s.«in» }
   return 0
 
+def gz_avail_c (state : GzStatePtr) : G (CStaticAs "gz_avail" Int32) := do
+  let strm := strmOf state
+  let s ← ldS state
+  if s.err != Z_OK && s.err != Z_BUF_ERROR then return -1
+  if s.eof == 0 then
+    let z ← ldZ strm
+    if z.avail_in != 0 then
+      let p := s.«in»
+      let q := z.next_in
+      if q != p then
+        let _ ← cdoWhile (fun (st : BPtr × BPtr × UInt32) => do
+          let (p, q) ← copyBytePostInc st.1 st.2.1
+          return (p, q, st.2.2)) (fun st => do
+          let n := st.2.2 - 1
+          return (n != 0, (st.1, st.2.1, n))) (p, q, z.avail_in)
+    let s ← ldS state
+    let z ← ldZ strm
+    let got ← allocLocal32
+    let buf ← cinline (s.«in».add z.avail_in.toNat)
+    let rc ← ginline (gz_load_c state buf (s.size - z.avail_in) (.bytes got))
+    if rc == -1 then
+      freeB got
+      return -1
+    let count ← cinline ((UInt32Cell.bytes got).read)
+    updZ strm fun z => { z with avail_in := z.avail_in + count }
+    freeB got
+    let s ← ldS state
+    updZ strm fun z => { z with next_in := s.«in» }
+  return 0
+
 /-- `local unsigned gz_room(gz_statep state, unsigned max)` (patch 0003). `GZ_OFF_MAX - state->x.pos < max`
 compares in `z_off64_t` (the `unsigned` operand converts to `long`). -/
-def gz_room (state : GzStatePtr) (max : UInt32) : M UInt32 := do
+def gz_room (state : GzStatePtr) (max : UInt32) : M (CStatic UInt32) := do
   -- if (state->x.pos > 0 && GZ_OFF_MAX - state->x.pos < max) return (unsigned)(GZ_OFF_MAX - state->x.pos);
   let s ← ldS state
   if s.x.pos > 0 then
@@ -115,8 +179,14 @@ def gz_room (state : GzStatePtr) (max : UInt32) : M UInt32 := do
   -- return max;
   return max
 
+def gz_room_c (state : GzStatePtr) (max : UInt32) : M (CStaticAs "gz_room" UInt32) := do
+  let s ← ldS state
+  if s.x.pos > 0 && GZ_OFF_MAX - s.x.pos < u32ToI64 max then
+    return (← i64sub GZ_OFF_MAX s.x.pos).toUInt64.toUInt32
+  return max
+
 /-- `local int gz_look(gz_statep state)` -/
-def gz_look (state : GzStatePtr) : G Int32 := do
+def gz_look (state : GzStatePtr) : G (CStatic Int32) := do
   let strm := strmOf state
   let s ← ldS state
   -- if (state->size == 0) { allocate read buffers and inflate memory }
@@ -191,12 +261,79 @@ def gz_look (state : GzStatePtr) : G Int32 := do
   updS state fun s => { s with how := GZ_COPY }
   return 0
 
+/-- Inspect at most four bytes. Each index is reached only after the previous test succeeds. -/
+private def hasGzipHeader (z : ZStream) : M Bool := do
+  if z.avail_in ≤ 3 then return false
+  if (← index8 z.next_in 0) != 31 then return false
+  if (← index8 z.next_in 1) != 139 then return false
+  if (← index8 z.next_in 2) != 8 then return false
+  return (← index8 z.next_in 3) < 32
+
+def gz_look_c (state : GzStatePtr) : G (CStaticAs "gz_look" Int32) := do
+  let strm := strmOf state
+  let s ← ldS state
+  if s.size == 0 then
+    let input ← ginline (allocB s.want.toNat : G BPtr)
+    updS state fun s => { s with «in» := input }
+    let s ← ldS state
+    let output ← ginline (allocB (s.want <<< 1).toNat : G BPtr)
+    updS state fun s => { s with out := output }
+    let s ← ldS state
+    if s.«in» == .null || s.out == .null then
+      freeB s.out
+      freeB s.«in»
+      gz_error state Z_MEM_ERROR (← strLit "out of memory")
+      return -1
+    updS state fun s => { s with size := s.want }
+    updZ strm fun z => { z with zalloc := .null }
+    updZ strm fun z => { z with zfree := .null }
+    updZ strm fun z => { z with «opaque» := .null }
+    updZ strm fun z => { z with avail_in := 0 }
+    updZ strm fun z => { z with next_in := .null }
+    if (← inflateInit2_ strm 31 (← strLit ZLIB_VERSION) 112) != Z_OK then
+      let s ← ldS state
+      freeB s.out
+      freeB s.«in»
+      updS state fun s => { s with size := 0 }
+      gz_error state Z_MEM_ERROR (← strLit "out of memory")
+      return -1
+  let s ← ldS state
+  if s.direct == -1 || s.junk == 0 then
+    if s.junk == 0 && (← ldZ strm).avail_in == 0 then
+      if (← gz_avail_c state) == -1 then return -1
+      if (← ldZ strm).avail_in == 0 then return 0
+    let _ ← inflateReset strm
+    updS state fun s => { s with how := GZIP }
+    updS state fun s => { s with junk := if s.junk != -1 then 1 else 0 }
+    updS state fun s => { s with direct := 0 }
+    return 0
+  if (← gz_avail_c state) == -1 then return -1
+  let z ← ldZ strm
+  let s ← ldS state
+  if z.avail_in == 0 || (s.again != 0 && z.avail_in < 4) then return 0
+  let isGzip ← cinline (hasGzipHeader z)
+  if isGzip then
+    let _ ← inflateReset strm
+    updS state fun s => { s with how := GZIP }
+    updS state fun s => { s with junk := 0 }
+    updS state fun s => { s with direct := 0 }
+    return 0
+  updX state fun x => { x with next := s.out }
+  memcpyB (← ldS state).x.next z.next_in z.avail_in.toNat
+  let room ← gz_room_c state z.avail_in
+  updX state fun x => { x with «have» := room }
+  if (← ldS state).x.«have» < (← ldZ strm).avail_in then
+    gz_error state Z_DATA_ERROR (← strLit "position overflow")
+  updZ strm fun z => { z with avail_in := 0 }
+  updS state fun s => { s with how := GZ_COPY }
+  return 0
+
 structure DecompLoop where
   ret : Int32
   brk : Bool
 
 /-- `local int gz_decomp(gz_statep state)` -/
-def gz_decomp (state : GzStatePtr) : G Int32 := do
+private def decompWith (markEof : GzStatePtr → M Unit) (state : GzStatePtr) : G Int32 := do
   let strm := strmOf state
   -- int ret = Z_OK; had = strm->avail_out;
   let had := (← ldZ strm).avail_out
@@ -225,7 +362,7 @@ def gz_decomp (state : GzStatePtr) : G Int32 := do
         -- if (state->junk == 1) { trailing garbage is ok }
         if (← ldS state).junk == 1 then
           updZ strm fun z => { z with avail_in := 0 }
-          updS state fun s => { s with eof := 1, how := LOOK }
+          markEof state
           return { ret := Z_OK, brk := true }
         let z ← ldZ strm
         let msg ← if z.msg == .null then strLit "compressed data error" else pure z.msg
@@ -250,10 +387,17 @@ def gz_decomp (state : GzStatePtr) : G Int32 := do
   -- return ret != Z_OK ? -1 : 0;
   return if ret != Z_OK then -1 else 0
 
+def gz_decomp (state : GzStatePtr) : G (CStatic Int32) :=
+  decompWith (fun p => updS p fun s => { s with eof := 1, how := LOOK }) state
+
+def gz_decomp_c (state : GzStatePtr) : G (CStaticAs "gz_decomp" Int32) := decompWith (fun p => do
+  updS p fun s => { s with eof := 1 }
+  updS p fun s => { s with how := LOOK }) state
+
 /-- `local int gz_fetch(gz_statep state)`. With patch 0003, see the file comment. The
 control tag of the loop is the result (`some r`: return `r`). The local `unsigned room` is assigned before each
 read. -/
-def gz_fetch (state : GzStatePtr) : G Int32 := do
+def gz_fetch (state : GzStatePtr) : G (CStatic Int32) := do
   let strm := strmOf state
   -- if (state->err != Z_OK && state->err != Z_BUF_ERROR && !state->again) return -1;
   let s ← ldS state
@@ -300,9 +444,41 @@ def gz_fetch (state : GzStatePtr) : G Int32 := do
     none
   return r.getD 0
 
+/-- Read the next output chunk using the buffered count as an addressable C field. -/
+def gz_fetch_c (state : GzStatePtr) : G (CStaticAs "gz_fetch" Int32) := do
+  let strm := strmOf state
+  let s ← ldS state
+  if s.err != Z_OK && s.err != Z_BUF_ERROR && s.again == 0 then return -1
+  gdoWhileBrk (fun _ => do
+    let s ← ldS state
+    if s.how == LOOK then
+      if (← gz_look state) == -1 then return .brk (-1)
+      if (← ldS state).how == LOOK then return .brk 0
+      return .next 0
+    else if s.how == GZ_COPY then
+      let room ← gz_room state (s.size <<< 1)
+      updX state fun x => { x with next := s.out }
+      let rc ← gz_load_c state s.out (if room != 0 then room else 1) (.gzHave state)
+      if rc == -1 then return .brk (-1)
+      return .brk 0
+    else if s.how == GZIP then
+      let room ← gz_room state (s.size <<< 1)
+      updZ strm fun z => { z with avail_out := if room != 0 then room else 1 }
+      updZ strm fun z => { z with next_out := s.out }
+      if (← gz_decomp state) == -1 then return .brk (-1)
+      return .next 0
+    else
+      gz_error state Z_STREAM_ERROR (← strLit "state corrupt")
+      return .brk (-1))
+    (fun rc => do
+      let s ← ldS state
+      if s.x.«have» != 0 then return (false, rc)
+      if s.eof == 0 then return (true, rc)
+      return ((← ldZ strm).avail_in != 0, rc)) (0 : Int32)
+
 /-- `local void gz_skip_have(gz_statep state)`. `x.next += n` with `n = 0` on a never-written or dangling `x.next`
 is accepted by the runtime. -/
-def gz_skip_have (state : GzStatePtr) : M Unit := do
+def gz_skip_have (state : GzStatePtr) : M (CStatic Unit) := do
   let s ← ldS state
   -- n = GT_OFF(state->x.have) || (z_off64_t)state->x.have > state->skip ? (unsigned)state->skip : state->x.have;
   let n : UInt32 ← if (← GT_OFF s.x.«have») || u32ToI64 s.x.«have» > s.skip then pure s.skip.toUInt64.toUInt32
@@ -322,7 +498,7 @@ def gz_skip_have (state : GzStatePtr) : M Unit := do
   updS state fun s => { s with skip := sk }
 
 /-- `local int gz_skip(gz_statep state)`; the loop tag `some r` means break (`0`) or `return -1`. -/
-def gz_skip (state : GzStatePtr) : G Int32 := do
+def gz_skip (state : GzStatePtr) : G (CStatic Int32) := do
   let strm := strmOf state
   let r ← gdoWhile
     (fun (_ : Option Int32) => do
@@ -348,6 +524,23 @@ def gz_skip (state : GzStatePtr) : G Int32 := do
     none
   return r.getD 0
 
+def gz_skip_c (state : GzStatePtr) : G (CStaticAs "gz_skip" Int32) := do
+  let strm := strmOf state
+  gdoWhileBrk (fun _ => do
+    let s ← ldS state
+    if s.x.«have» != 0 then
+      gz_skip_have state
+    else if s.eof != 0 && (← ldZ strm).avail_in == 0 then
+      if s.how == GZIP && s.err == Z_OK then
+        gz_error state Z_BUF_ERROR (← strLit "unexpected end of file")
+      updS state fun s => { s with skip := 0 }
+      updS state fun s => { s with past := 1 }
+      return .brk 0
+    else if (← gz_fetch_c state) == -1 && (← ldS state).x.«have» == 0 then
+      return .brk (-1)
+    return .next 0)
+    (fun rc => do return ((← ldS state).skip != 0, rc)) (0 : Int32)
+
 structure ReadLoop where
   got : UInt64
   len : UInt64
@@ -357,7 +550,7 @@ structure ReadLoop where
 
 /-- `local z_size_t gz_read(gz_statep state, voidp buf, z_size_t len)`. The direct decompression into the user's
 buffer leaves `x.next` pointing into it (a later `x.next += 0` is accepted by the runtime). -/
-def gz_read (state : GzStatePtr) (buf : BPtr) (len : UInt64) : G UInt64 := do
+def gz_read (state : GzStatePtr) (buf : VoidPtr) (len : UInt64) : G (CStatic UInt64) := do
   let strm := strmOf state
   -- if (len == 0) return 0;
   if len == 0 then return 0
@@ -419,8 +612,64 @@ def gz_read (state : GzStatePtr) (buf : BPtr) (len : UInt64) : G UInt64 := do
   if l.len != 0 && (← ldS state).eof != 0 then updS state fun s => { s with past := 1 }
   return l.got
 
+structure ReadLocalsC where
+  len : UInt64
+  buf : VoidPtr
+  got : UInt64
+  err : Int32
+
+def gz_read_c (state : GzStatePtr) (buf : VoidPtr) (len : UInt64) : G (CStaticAs "gz_read" UInt64) := do
+  if len == 0 then return 0
+  if (← ldS state).skip != 0 then
+    if (← gz_skip_c state) == -1 then return 0
+  let l ← gdecl ({ len, buf, got := 0, err := 0 } : ReadLocalsC)
+  let l ← gdoWhileBrk (fun l => do
+    let mut l := l
+    let mut n : UInt32 := 0xffffffff
+    if n.toUInt64 > l.len then n := l.len.toUInt32
+    n ← gz_room_c state n
+    let s ← ldS state
+    if n == 0 && s.x.«have» != 0 then
+      updX state fun x => { x with «have» := 0 }
+      gz_error state Z_DATA_ERROR (← strLit "position overflow")
+      return .brk l
+    let s ← ldS state
+    if s.x.«have» != 0 then
+      if s.x.«have» < n then n := s.x.«have»
+      memcpyB l.buf s.x.next n.toNat
+      let next ← s.x.next.add n.toNat
+      updX state fun x => { x with next }
+      updX state fun x => { x with «have» := x.«have» - n }
+      if (← ldS state).err != Z_OK then l := { l with err := -1 }
+    else if s.eof != 0 && (← ldZ (strmOf state)).avail_in == 0 then
+      if s.how == GZIP && s.err == Z_OK then
+        gz_error state Z_BUF_ERROR (← strLit "unexpected end of file")
+      return .brk l
+    else if s.how == LOOK || n < (s.size <<< 1) then
+      if (← gz_fetch_c state) == -1 && (← ldS state).x.«have» == 0 then l := { l with err := -1 }
+      return .cont l
+    else if s.how == GZ_COPY then
+      let (rc, count) ← loadLocal state l.buf n
+      l := { l with err := rc }
+      n := count
+    else
+      let strm := strmOf state
+      updZ strm fun z => { z with avail_out := n }
+      updZ strm fun z => { z with next_out := l.buf }
+      let rc ← gz_decomp_c state
+      l := { l with err := rc }
+      n := (← ldS state).x.«have»
+      updX state fun x => { x with «have» := 0 }
+    let next ← cinline (l.buf.add n.toNat)
+    let advanced ← gdecl { l with len := l.len - n.toUInt64, buf := next, got := l.got + n.toUInt64 }
+    let pos ← i64add (← ldS state).x.pos (u32ToI64 n)
+    updX state fun x => { x with pos }
+    return .next advanced) (fun l => pure (l.len != 0 && l.err == 0, l)) l
+  if l.len != 0 && (← ldS state).eof != 0 then updS state fun s => { s with past := 1 }
+  return l.got
+
 /-- `int ZEXPORT gzread(gzFile file, voidp buf, unsigned len)` -/
-def gzread (file : GzFilePtr) (buf : BPtr) (len : UInt32) : G Int32 := do
+def gzread (file : GzFilePtr) (buf : VoidPtr) (len : UInt32) : G (CExport Int32) := do
   if file.isNone then return -1
   let state := castState file
   let s ← ldS state
@@ -447,7 +696,7 @@ def gzread (file : GzFilePtr) (buf : BPtr) (len : UInt32) : G Int32 := do
   return len.toInt32
 
 /-- `z_size_t ZEXPORT gzfread(voidp buf, z_size_t size, z_size_t nitems, gzFile file)` -/
-def gzfread (buf : BPtr) (size nitems : UInt64) (file : GzFilePtr) : G UInt64 := do
+def gzfread (buf : VoidPtr) (size nitems : UInt64) (file : GzFilePtr) : G (CExport UInt64) := do
   if file.isNone then return 0
   let state := castState file
   let s ← ldS state
@@ -465,7 +714,7 @@ def gzfread (buf : BPtr) (size nitems : UInt64) (file : GzFilePtr) : G UInt64 :=
   if len != 0 then return (← gz_read state buf len) / size else return 0
 
 /-- `int ZEXPORT gzgetc(gzFile file)` -/
-def gzgetc (file : GzFilePtr) : G Int32 := do
+def gzgetc (file : GzFilePtr) : G (CExport Int32) := do
   -- unsigned char buf[1];
   if file.isNone then return -1
   let state := castState file
@@ -479,23 +728,19 @@ def gzgetc (file : GzFilePtr) : G Int32 := do
     updX state fun x => { x with «have» := x.«have» - 1 }
     let np ← i64add s.x.pos 1
     updX state fun x => { x with pos := np }
-    let s ← ldS state
-    let b ← load8 s.x.next
-    let nx ← s.x.next.add 1
-    updX state fun x => { x with next := nx }
-    return b.toUInt32.toInt32
+    return ← loadNextPostInc state
   -- return gz_read(state, buf, 1) < 1 ? -1 : buf[0];
-  let buf ← allocLocal 1
+  let buf ← allocLocalByte
   let got ← gz_read state buf 1
   let r ← if got < 1 then pure (-1 : Int32) else do pure (← load8 buf).toUInt32.toInt32
   freeB buf
   return r
 
 /-- `int ZEXPORT gzgetc_(gzFile file)` -/
-def gzgetc_ (file : GzFilePtr) : G Int32 := gzgetc file
+def gzgetc_ (file : GzFilePtr) : G (CExport Int32) := gzgetc file
 
 /-- `int ZEXPORT gzungetc(int c, gzFile file)` -/
-def gzungetc (c : Int32) (file : GzFilePtr) : G Int32 := do
+def gzungetc (c : Int32) (file : GzFilePtr) : G (CExport Int32) := do
   if file.isNone then return -1
   let state := castState file
   let s ← ldS state
@@ -536,7 +781,7 @@ def gzungetc (c : Int32) (file : GzFilePtr) : G Int32 := do
     -- while (src > state->out) *--dest = *--src;
     let (_, dest) ← cwhile
       (fun (st : BPtr × BPtr) => do
-        pure (← Ptr.lt s.out st.1, st))
+        pure (← Ptr.gt st.1 s.out, st))
       (fun (st : BPtr × BPtr) => do
         let dest ← st.2.add (-1)
         let src ← st.1.add (-1)
@@ -563,7 +808,7 @@ structure GetsLoop where
   brk : Bool
 
 /-- `char * ZEXPORT gzgets(gzFile file, char *buf, int len)` -/
-def gzgets (file : GzFilePtr) (buf : BPtr) (len : Int32) : G BPtr := do
+def gzgets (file : GzFilePtr) (buf : CStr) (len : Int32) : G (CExport CStr) := do
   -- if (file == NULL || buf == NULL || len < 1) return NULL;
   if file.isNone || buf == .null || len < 1 then return .null
   let state := castState file
@@ -624,7 +869,7 @@ def gzgets (file : GzFilePtr) (buf : BPtr) (len : Int32) : G BPtr := do
   return str
 
 /-- `int ZEXPORT gzdirect(gzFile file)` -/
-def gzdirect (file : GzFilePtr) : G Int32 := do
+def gzdirect (file : GzFilePtr) : G (CExport Int32) := do
   if file.isNone then return 0
   let state := castState file
   let s ← ldS state

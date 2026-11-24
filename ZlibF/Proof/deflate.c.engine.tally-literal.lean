@@ -1,10 +1,11 @@
+import ZlibF.Proof.«deflate.c.engine.lminner»
 import ZlibF.Proof.«deflate.c.engine.initial»
 import ZlibF.Proof.«trees.c.tally»
 
 /-! # The actual inline literal tally used by the strategies
 
-This proves tally_lit itself. The translation does not call _tr_tally;
-the two implementations write their intermediate fields differently.
+This proves tally_lit itself. The inline macro and `_tr_tally` share the post-increment byte store.
+The arithmetic and tree updates of the macro are proved here.
 -/
 
 namespace Zlib.Deflate.Engine.Proofs
@@ -47,6 +48,65 @@ theorem store_symbol_byte {h : Heap} {b off i : Nat} {buf : Array UInt8} (v : UI
   rw [bind_app, add]
   exact put
 
+theorem put_symbol_byte_run {h : Heap} {ds b off : Nat} {d : DeflateState} {buf : Array UInt8}
+    (v : UInt8) (state : h.dstates ds = some d) (sym : d.sym_buf = .ref (.blk b) off)
+    (get : h.bytes b = some buf) (writeable : h.ro b = false) (fit : off + d.sym_next.toNat < buf.size) :
+    Zlib.Trees.put_symbol_byte (some (.tab ds)) v h =
+      .ok ((), Zlib.Trees.Proofs.Out.setD (Zlib.Trees.Proofs.Out.setB h b (buf.set! (off + d.sym_next.toNat) v)) ds {d with sym_next := d.sym_next + 1}) := by
+  let d' := {d with sym_next := d.sym_next + 1}
+  have add : Ptr.add (.ref (.blk b) off : BPtr) d.sym_next.toNat h = .ok (.ref (.blk b) (off + d.sym_next.toNat), h) := Ptr.add_nat_ok (off := off) (n := d.sym_next.toNat)
+    (show Space.get h (BRef.blk b) = some buf from get) (by omega)
+  have store := Ptr.store_ok (T := UInt8) (r := BRef.blk b) (h := Zlib.Trees.Proofs.Out.setD h ds d')
+    (off := off + d.sym_next.toNat) (v := v) (a := buf) get writeable fit
+  have address : Ptr.add d.sym_buf d.sym_next.toNat h = .ok (.ref (.blk b) (off + d.sym_next.toNat), h) := by rw [sym]; exact add
+  unfold Zlib.Trees.put_symbol_byte
+  simp only [bind_app, Zlib.Trees.Proofs.Out.rd_run state, address, Zlib.Trees.Proofs.Out.md_run state]
+  exact store
+
+
+/-- Under the actual strategy's bounds, the three post-increments pack exactly three
+bytes and preserve every other heap entry. -/
+theorem put_three_symbol_bytes_run {h : Heap} {ds b : Nat} {d : DeflateState} {buf : Array UInt8}
+    (base : TreesBase h ds d b buf) (room : d.sym_next.toNat + 3 ≤ d.sym_end.toNat)
+    (v0 v1 v2 : UInt8) :
+    (do Zlib.Trees.put_symbol_byte (some (.tab ds)) v0
+        Zlib.Trees.put_symbol_byte (some (.tab ds)) v1
+        Zlib.Trees.put_symbol_byte (some (.tab ds)) v2) h =
+      .ok ((), Zlib.Trees.Proofs.Out.setD (Zlib.Trees.Proofs.Out.setB h b (((buf.set! (d.lit_bufsize.toNat + d.sym_next.toNat) v0).set!
+        (d.lit_bufsize.toNat + (d.sym_next.toNat + 1)) v1).set!
+        (d.lit_bufsize.toNat + (d.sym_next.toNat + 2)) v2)) ds {d with sym_next := d.sym_next + 3}) := by
+  let off := d.lit_bufsize.toNat
+  let n := d.sym_next.toNat
+  let a1 := buf.set! (off + n) v0
+  let a2 := a1.set! (off + (n+1)) v1
+  let d1 := {d with sym_next := d.sym_next + 1}
+  let d2 := {d with sym_next := d.sym_next + 1 + 1}
+  let h1 := Zlib.Trees.Proofs.Out.setD (Zlib.Trees.Proofs.Out.setB h b a1) ds d1
+  let h2 := Zlib.Trees.Proofs.Out.setD (Zlib.Trees.Proofs.Out.setB h b a2) ds d2
+  have cap := base.size
+  have end_ := base.sym_end
+  have lim := base.lit_hi
+  have one : d1.sym_next.toNat = n + 1 := by
+    exact Zlib.Trees.Proofs.Out.toNat_add_one_u32 (by omega)
+  have two : d2.sym_next.toNat = n + 2 := by
+    change (d1.sym_next + 1).toNat = n + 2
+    rw [Zlib.Trees.Proofs.Out.toNat_add_one_u32 (by omega), one]
+  have step0 : Zlib.Trees.put_symbol_byte (some (.tab ds)) v0 h = .ok ((), h1) :=
+    put_symbol_byte_run v0 base.dstate base.sym base.bytes base.rw (by omega)
+  have step1 := put_symbol_byte_run (h := h1) (ds := ds) (d := d1) (off := off) (buf := a1) v1
+    (Zlib.Trees.Proofs.Out.setD_dstates_same _ _ _) base.sym (by simp [h1]) (by simpa [h1] using base.rw)
+    (by rw [one]; simp [a1, off, n]; omega)
+  have step1' : Zlib.Trees.put_symbol_byte (some (.tab ds)) v1 h1 = .ok ((), h2) := by
+    simpa only [one, h1, h2, a2, Zlib.Trees.Proofs.Out.setB_setD,
+      Zlib.Trees.Proofs.Out.setB_setB, Zlib.Trees.Proofs.Out.setD_setD] using step1
+  have step2 := put_symbol_byte_run (h := h2) (ds := ds) (d := d2) (off := off) (buf := a2) v2
+    (Zlib.Trees.Proofs.Out.setD_dstates_same _ _ _) base.sym (by simp [h2]) (by simpa [h2] using base.rw)
+    (by rw [two]; simp [a2, a1, off, n]; omega)
+  rw [two] at step2
+  simp only [bind_app, step0, step1']
+  simpa only [h2, Zlib.Trees.Proofs.Out.setB_setD, Zlib.Trees.Proofs.Out.setB_setB,
+    Zlib.Trees.Proofs.Out.setD_setD, d2, UInt32.add_assoc, UInt32.reduceAdd] using step2
+
 theorem increment_literal_frequency {h : Heap} {ds : Nat} {d : DeflateState} {i : Nat}
     (state : h.dstates ds = some d) (bound : i < d.dyn_ltree.size) :
     freq_inc (.dstate_dyn_ltree ds) i h =
@@ -67,83 +127,34 @@ theorem increment_literal_frequency {h : Heap} {ds : Nat} {d : DeflateState} {i 
   simp [setD, bumpFc, bound]
 
 /-- `_tr_tally_lit(s, c, flush)`.
-The actual inline macro writes the three symbol bytes, advances sym_next
-once by three, increments the literal frequency and returns the full flag.
+The actual inline macro writes the three symbol bytes, increments sym_next
+after selecting each byte address, increments the literal frequency and returns the full flag.
 Room follows from the strategy's strict symbol-count invariant. -/
 theorem tally_literal_run {h : Heap} {ds b : Nat} {d : DeflateState} {buf : Array UInt8}
     (base : TreesBase h ds d b buf) (c : UInt8)
     (room : d.sym_next.toNat + 3 ≤ d.sym_end.toNat) :
     tally_lit (some (.tab ds)) c h = .ok (d.sym_next + 3 == d.sym_end,
       setD (Zlib.Trees.Proofs.Out.setB h b (literalBytes buf d c)) ds (literalState d c)) := by
-  let h0 := Zlib.Trees.Proofs.Out.setB h b (buf.set! (d.lit_bufsize.toNat + d.sym_next.toNat) 0)
-  let h1 := Zlib.Trees.Proofs.Out.setB h b ((buf.set! (d.lit_bufsize.toNat + d.sym_next.toNat) 0).set!
-    (d.lit_bufsize.toNat + (d.sym_next.toNat + 1)) 0)
   let hb := Zlib.Trees.Proofs.Out.setB h b (literalBytes buf d c)
   let dn := { d with sym_next := d.sym_next + 3 }
   let hn := setD hb ds dn
-  have cap := base.size
-  have end_ := base.sym_end
-  have litMax := base.lit_hi
-  have one : (d.sym_next + 1).toNat = d.sym_next.toNat + 1 := by
-    rw [UInt32.toNat_add]
-    simp only [show (1 : UInt32).toNat = 1 from rfl]
-    exact Nat.mod_eq_of_lt (by omega)
-  have two : (d.sym_next + 2).toNat = d.sym_next.toNat + 2 := by
-    rw [UInt32.toNat_add]
-    simp only [show (2 : UInt32).toNat = 2 from rfl]
-    exact Nat.mod_eq_of_lt (by omega)
-  have first := store_symbol_byte (h := h) (off := d.lit_bufsize.toNat) (i := d.sym_next.toNat)
-    0 base.bytes base.rw (by omega)
-  have second := store_symbol_byte (h := h0) (b := b)
-    (buf := buf.set! (d.lit_bufsize.toNat + d.sym_next.toNat) 0)
-    (off := d.lit_bufsize.toNat) (i := d.sym_next.toNat + 1)
-    0 (by simp [h0]) (by simpa [h0] using base.rw) (by simp; omega)
-  have third := store_symbol_byte (h := h1) (b := b)
-    (buf := (buf.set! (d.lit_bufsize.toNat + d.sym_next.toNat) 0).set! (d.lit_bufsize.toNat + (d.sym_next.toNat + 1)) 0)
-    (off := d.lit_bufsize.toNat) (i := d.sym_next.toNat + 2)
-    c (by simp [h1]) (by simpa [h1] using base.rw) (by simp; omega)
-  have state : hb.dstates ds = some d := by simpa [hb] using base.dstate
-  have write : stDeflateState (some (.tab ds)) dn hb = .ok ((), hn) :=
-    stDeflateState_tab state
   have inc := increment_literal_frequency (h := hn) (ds := ds) (d := dn) (i := c.toNat)
     (by simp [hn]) (by change c.toNat < d.dyn_ltree.size; rw [base.wf.1]; have := c.toNat_lt; omega)
-  have first' : store_at d.sym_buf d.sym_next.toNat 0 h = .ok ((), h0) := by rw [base.sym]; exact first
-  have second' : store_at d.sym_buf (d.sym_next.toNat + 1) 0 h0 = .ok ((), h1) := by
-    rw [base.sym]
-    simpa only [h0, h1, Zlib.Trees.Proofs.Out.setB_setB] using second
-  have third' : store_at d.sym_buf (d.sym_next.toNat + 2) c h1 = .ok ((), hb) := by
-    rw [base.sym]
-    simpa only [h1, hb, literalBytes, Zlib.Trees.Proofs.Out.setB_setB] using third
-  unfold tally_lit
-  rw [bind_app, ldDeflateState_tab base.dstate]
-  simp only [one, two, bind_app, first']
-  change (do
-    store_at d.sym_buf (d.sym_next.toNat + 1) 0
-    store_at d.sym_buf (d.sym_next.toNat + 2) c
-    stDeflateState (some (.tab ds)) dn
+  have packed := put_three_symbol_bytes_run base room 0 0 c
+  let tail : Unit → M Bool := fun _ => do
     freq_inc (.dstate_dyn_ltree ds) c.toNat
-    let d ← ldDeflateState (some (.tab ds))
-    pure (d.sym_next == d.sym_end)) h0 = _
-  rw [bind_app, second']
-  simp only
-  change (do
-    store_at d.sym_buf (d.sym_next.toNat + 2) c
-    stDeflateState (some (.tab ds)) dn
-    freq_inc (.dstate_dyn_ltree ds) c.toNat
-    let d ← ldDeflateState (some (.tab ds))
-    pure (d.sym_next == d.sym_end)) h1 = _
-  rw [bind_app, third']
-  simp only
-  change (do
-    stDeflateState (some (.tab ds)) dn
-    freq_inc (.dstate_dyn_ltree ds) c.toNat
-    let d ← ldDeflateState (some (.tab ds))
-    pure (d.sym_next == d.sym_end)) hb = _
-  rw [bind_app, write]
-  simp only []
-  rw [bind_app, inc]
-  simp only [bind_app, ldDeflateState_tab (setD_dstates_same _ _ _)]
+    let state ← ldDeflateState (some (.tab ds))
+    return state.sym_next == state.sym_end
+  have source : tally_lit (some (.tab ds)) c = (do
+      Zlib.Trees.put_symbol_byte (some (.tab ds)) 0
+      Zlib.Trees.put_symbol_byte (some (.tab ds)) 0
+      Zlib.Trees.put_symbol_byte (some (.tab ds)) c) >>= tail := by
+    simp only [tally_lit, tail, M_bind_assoc]
+  rw [source, bind_app, packed]
+  change tail () hn = _
+  simp only [tail, bind_app, inc, ldDeflateState_tab (setD_dstates_same _ _ _)]
   simp [hn, hb, dn, literalState, setD_setD]
+
 
 theorem literalState_tally (d : DeflateState) (c : UInt8) :
     literalState d c = Zlib.Trees.Proofs.Out.tallyRec d 0 c.toUInt32 := by

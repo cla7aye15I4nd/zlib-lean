@@ -1281,7 +1281,7 @@ theorem loadWord_ok (h : Heap) (ref : BRef) (off : Nat) (bs : Array UInt8) (hb :
     OkOn h (loadWord (.ref ref off))
       (wob bs[off + 0]! bs[off + 1]! bs[off + 2]! bs[off + 3]!) := by
   apply okOn_iff_triple.mpr
-  unfold loadWord
+  unfold loadWord C.memcpyLoad32
   simp only [forIn, Std.Legacy.Range.forIn'_eq_forIn'_range', Std.Legacy.Range.size,
     List.range'_succ, List.range'_zero, List.forIn'_cons, List.forIn'_nil]
   vcgen [Ptr.index_spec ref off _ bs (· = h)] with finish [wob]
@@ -2436,7 +2436,7 @@ theorem pureH_idx2 {α : Type} (t : Array (Array α)) (k i : Nat) : PureH (Zlib.
     | some _ => simp [hk, hi] at hr; exact hr.2.symm
 
 theorem pureH_loadWord (p : BPtr) : PureH (Zlib.Crc32.loadWord p) := by
-  unfold Zlib.Crc32.loadWord
+  unfold Zlib.Crc32.loadWord C.memcpyLoad32
   simp only [forIn, Std.Legacy.Range.forIn'_eq_forIn'_range', Std.Legacy.Range.size]
   refine pureH_bind (pureH_list_forIn _ _ (fun _ _ _ => ?_) _) (fun _ => pureH_pure _)
   exact pureH_bind (pureH_ptr_index _ _) (fun _ => pureH_pure _)

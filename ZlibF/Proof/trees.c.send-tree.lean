@@ -57,8 +57,8 @@ theorem send_tree_eq (s : DeflateStatePtr) (tree : CtDataPtr) (mc : Int32) :
       let (mx0, mn0) : Int32 × Int32 := if nextlen0 == 0 then (138, 3) else (7, 4)
       let _ ← stLoop s tree mc (0, -1, nextlen0, 0, mx0, mn0, 0)
       pure ()) := by
-  unfold send_tree stLoop stBody stSend stRepeat stCode scTail
-  simp only [M_bind_assoc, M_pure_bind, merge_ite_bind]
+  unfold send_tree cforIntLe cinline stLoop stBody stSend stRepeat stCode
+  simp only [finishTreeRun_eq, M_bind_assoc, M_pure_bind, merge_ite_bind]
 
 /-- Scalar checked arithmetic used by the actual output loops. -/
 theorem st_isub (a b : Int32) (hlo : -2147483648 ≤ a.toInt - b.toInt)

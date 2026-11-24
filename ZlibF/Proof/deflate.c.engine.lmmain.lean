@@ -23,7 +23,11 @@ def lmCond (prev : WPtr) (wmask limit : UInt32) : LMState → M (Bool × LMState
     return (cl != 0, { st with chain_length := cl })
   return (false, st)
 
-theorem longest_match_unfold (s : DeflateStatePtr) (cur_match : UInt32) : longest_match s cur_match = (do
+/-- The earlier loop re-forms the same window limit inside the search body. -/
+def legacyLongestMatch (s : DeflateStatePtr) (cur_match : UInt32) : M UInt32 :=
+  searchMatches (fun _ => lm_body s) s cur_match
+
+theorem legacy_longest_match_unfold (s : DeflateStatePtr) (cur_match : UInt32) : legacyLongestMatch s cur_match = (do
   let d ← ldDeflateState s
   let mut chain_length : UInt32 := d.max_chain_length
   let scan ← padd d.window d.strstart.toNat
@@ -39,6 +43,27 @@ theorem longest_match_unfold (s : DeflateStatePtr) (cur_match : UInt32) : longes
   if d.prev_length ≥ d.good_match then chain_length := chain_length >>> 2
   if nice_match.toUInt32 > d.lookahead then nice_match := d.lookahead.toInt32
   let st ← cdoWhile (lm_body s) (lmCond prev wmask limit)
+    { cur_match, chain_length, best_len, nice_match, scan, scan_end1, scan_end, brk := false }
+  let lookahead ← rd s (·.lookahead)
+  if st.best_len.toUInt32 ≤ lookahead then return st.best_len.toUInt32
+  return lookahead) := rfl
+
+theorem longest_match_unfold (s : DeflateStatePtr) (cur_match : UInt32) : longest_match s cur_match = (do
+  let d ← ldDeflateState s
+  let mut chain_length : UInt32 := d.max_chain_length
+  let scan ← padd d.window d.strstart.toNat
+  let best_len : Int32 := d.prev_length.toInt32
+  let mut nice_match : Int32 := d.nice_match
+  let maxd : UInt32 := d.w_size - MIN_LOOKAHEAD_u
+  let limit : UInt32 := if d.strstart > maxd then d.strstart - maxd else 0
+  let prev := d.prev
+  let wmask := d.w_mask
+  let strend ← padd (← padd d.window d.strstart.toNat) MAX_MATCH_u.toNat
+  let scan_end1 ← index8 scan (← isub best_len 1).toInt
+  let scan_end ← index8 scan best_len.toInt
+  if d.prev_length ≥ d.good_match then chain_length := chain_length >>> 2
+  if nice_match.toUInt32 > d.lookahead then nice_match := d.lookahead.toInt32
+  let st ← cdoWhile (lm_body_with (fun _ => pure strend) (fun limit => compareMatchBytes limit 8) s) (lmCond prev wmask limit)
     { cur_match, chain_length, best_len, nice_match, scan, scan_end1, scan_end, brk := false }
   let lookahead ← rd s (·.lookahead)
   if st.best_len.toUInt32 ≤ lookahead then return st.best_len.toUInt32
@@ -72,16 +97,42 @@ theorem i32_toUInt32_toNat (x : Int32) (b : Nat) (hx : x.toInt = (b : Int)) (hb 
   rw [this]
   split at h1 <;> omega
 
+private theorem loop_corresponds {σ : Type} {a b : σ → M σ} {cond : σ → M (Bool × σ)}
+    (Inv : σ → Heap → Prop) (μ : σ → Nat) (Post : σ → Heap → Prop)
+    (same : ∀ st h, Inv st h → a st h = b st h)
+    (step : ∀ st h, Inv st h → ∃ s₁ h₁ c s₂ h₂, b st h = .ok (s₁,h₁) ∧
+      cond s₁ h₁ = .ok ((c,s₂),h₂) ∧ (c = false → Post s₂ h₂) ∧
+      (c = true → Inv s₂ h₂ ∧ μ s₂ < μ st))
+    {s : σ} {h : Heap} (inv : Inv s h) (bound : μ s < fuel) :
+    cdoWhile a cond s h = cdoWhile b cond s h ∧
+      ∃ final after, cdoWhile b cond s h = .ok (final,after) ∧ Post final after := by
+  refine ⟨?_, cdoWhile_measure Inv μ Post step inv bound⟩
+  suffices ∀ n st heap, Inv st heap →
+      cdoWhile.go a cond n st heap = cdoWhile.go b cond n st heap from this fuel s h inv
+  intro n
+  induction n with
+  | zero => intros; rfl
+  | succ n ih =>
+    intro st heap valid
+    obtain ⟨s₁,h₁,c,s₂,h₂,body,test,_,next⟩ := step st heap valid
+    simp only [cdoWhile.go, bind_app, same st heap valid, body, test]
+    cases c with
+    | false => rfl
+    | true => exact ih s₂ h₂ (next rfl).1
+
 /-- **The loop.** From a state with the invariant and `brk = false`, the loop does not fault and ends in a state
 that satisfies `LMOut`. The measure is `cur_match`, which falls at every step because `prev[p & wmask] < p` (H). -/
-theorem lm_loop_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array UInt8} {pa : Array UInt16} {c : UInt32}
+theorem lm_loop_source {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array UInt8} {pa : Array UInt16} {c : UInt32}
     (E : LMEnv h0 sr d wb pb wa pa c) (limit : UInt32) (hlimit : limit.toNat = lmLimit d.strstart.toNat (d.w_size.toNat - 262))
     (st : LMState) (h : Heap) (hbrk : st.brk = false) (hI : LMInv h0 sr d wb pb wa pa c st h) :
+    cdoWhile (lm_body_with (fun _ => pure (.ref (.blk wb) (d.strstart.toNat + 258)))
+      (fun limit => compareMatchBytes limit 8) (some (.tab sr))) (lmCond d.prev d.w_mask limit) st h =
+    cdoWhile (lm_body (some (.tab sr))) (lmCond d.prev d.w_mask limit) st h ∧
     ∃ st' h', cdoWhile (lm_body (some (.tab sr))) (lmCond d.prev d.w_mask limit) st h = .ok (st', h') ∧
       LMOut h0 sr d wa st' h' := by
-  have key := cdoWhile_measure (σ := LMState) (body := lm_body (some (.tab sr))) (cond := lmCond d.prev d.w_mask limit)
+  have key := loop_corresponds (σ := LMState) (a := _) (b := lm_body (some (.tab sr))) (cond := lmCond d.prev d.w_mask limit)
     (fun st h => st.brk = false ∧ LMInv h0 sr d wb pb wa pa c st h) (fun st => st.cur_match.toNat)
-    (fun st h => LMOut h0 sr d wa st h) ?_ (s := st) (h := h) ⟨hbrk, hI⟩
+    (fun st h => LMOut h0 sr d wa st h) (fun st _ hi => (lm_body_source E st hi.1 hi.2).1) ?_ (s := st) (h := h) ⟨hbrk, hI⟩
     (by unfold fuel; have := st.cur_match.toNat_lt; omega)
   · exact key
   · intro st h hIn
@@ -136,6 +187,13 @@ theorem lm_loop_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array U
         rw [UInt32.lt_iff_toNat_lt]; simpa using big
       refine ⟨st1, h1, false, lmStep st1 (wfn pa (st1.cur_match.toNat &&& (d.w_size.toNat - 1))) st1.chain_length, h1, hrun, ?_, fun _ => hout, by simp⟩
       simp only [lmCond, bind_app, pure_app, hb1', Bool.false_eq_true, ↓reduceIte, hrd, GT.gt, hng, lmStep]
+
+theorem lm_loop_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array UInt8} {pa : Array UInt16} {c : UInt32}
+    (E : LMEnv h0 sr d wb pb wa pa c) (limit : UInt32) (hlimit : limit.toNat = lmLimit d.strstart.toNat (d.w_size.toNat - 262))
+    (st : LMState) (h : Heap) (hbrk : st.brk = false) (hI : LMInv h0 sr d wb pb wa pa c st h) :
+    ∃ st' h', cdoWhile (lm_body (some (.tab sr))) (lmCond d.prev d.w_mask limit) st h = .ok (st', h') ∧
+      LMOut h0 sr d wa st' h' :=
+  (lm_loop_source E limit hlimit st h hbrk hI).2
 
 theorem hAt_self (h0 : Heap) (sr : Nat) (d : DeflateState) (hd : h0.dstates sr = some d) :
     hAt h0 sr d d.match_start = h0 := by
@@ -200,8 +258,9 @@ theorem lmRest_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array UI
 (the result heap is `hAt h0 sr d ms`). It returns `min(best, lookahead)` for some `best` with
 `prev_length <= best <= 258`; either `best = prev_length` and `match_start` is unchanged, or `match_start` names a good
 match of length `best`: before `strstart`, within `MAX_DIST`, and the window bytes agree on the first `best` bytes. -/
-theorem longest_match_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array UInt8} {pa : Array UInt16} {c : UInt32}
+theorem longest_match_source {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array UInt8} {pa : Array UInt16} {c : UInt32}
     (E : LMEnv h0 sr d wb pb wa pa c) :
+    longest_match (some (.tab sr)) c h0 = legacyLongestMatch (some (.tab sr)) c h0 ∧
     ∃ (r : UInt32) (h' : Heap) (ms : UInt32) (best : Nat),
       longest_match (some (.tab sr)) c h0 = .ok (r, h') ∧
       r = UInt32.ofNat (lmResult best d.lookahead.toNat) ∧ h' = hAt h0 sr d ms ∧
@@ -253,6 +312,14 @@ theorem longest_match_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : A
         intro hh; apply hg; rw [GT.gt, UInt32.lt_iff_toNat_lt, hsub]; exact hh
       rw [ite_eq_right hg, ite_eq_right hg']; rfl
   have hLsame : (if d.strstart > d.w_size - MIN_LOOKAHEAD_u then d.strstart - (d.w_size - MIN_LOOKAHEAD_u) else 0) = L := hL.symm
+  have loops (cl : UInt32) (nm : Int32) :=
+    (lm_loop_source E L hlimit _ h0 rfl (lm_init_inv E cl nm)).1
+  have same : longest_match (some (.tab sr)) c h0 = legacyLongestMatch (some (.tab sr)) c h0 := by
+    rw [longest_match_unfold, legacy_longest_match_unfold]
+    simp only [bind_app, pure_app, M_ite_app, e_ld0, E.win, f14, f15, i0, i4, i5', i5, i6, hmm, hLsame]
+    by_cases hg : d.prev_length ≥ d.good_match <;> by_cases hn : d.nice_match.toUInt32 > d.lookahead <;>
+      simp only [hg, hn, ite_true, ite_false, loops]
+  refine ⟨same, ?_⟩
   have key : ∀ (cl : UInt32) (nm : Int32), ∃ (r : UInt32) (h' : Heap) (ms : UInt32) (best : Nat),
       lmRest sr L d c wb wa cl nm h0 = .ok (r, h') ∧
       r = UInt32.ofNat (lmResult best d.lookahead.toNat) ∧ h' = hAt h0 sr d ms ∧
@@ -260,7 +327,7 @@ theorem longest_match_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : A
       ((best = d.prev_length.toNat ∧ ms = d.match_start) ∨
        (d.prev_length.toNat < best ∧ GoodMatch wa d.strstart.toNat d.w_size.toNat ms.toNat best)) :=
     fun cl nm => lmRest_ok E L hlimit cl nm
-  rw [longest_match_unfold]
+  rw [same, legacy_longest_match_unfold]
   simp only [bind_app, pure_app, M_ite_app, e_ld0, E.win, f14, f15, i0, i4, i5', i5, i6, hmm, hLsame]
   by_cases hg : d.prev_length ≥ d.good_match <;> by_cases hn : d.nice_match.toUInt32 > d.lookahead
   · obtain ⟨r, h', ms, best, hr, hrest⟩ := key (d.max_chain_length >>> 2) d.lookahead.toInt32
@@ -275,5 +342,15 @@ theorem longest_match_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : A
   · obtain ⟨r, h', ms, best, hr, hrest⟩ := key d.max_chain_length d.nice_match
     refine ⟨r, h', ms, best, ?_, hrest⟩
     simp only [hg, hn, ite_false]; simp only [lmRest, bind_app, pure_app, M_ite_app] at hr; exact hr
+
+theorem longest_match_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array UInt8} {pa : Array UInt16} {c : UInt32}
+    (E : LMEnv h0 sr d wb pb wa pa c) :
+    ∃ (r : UInt32) (h' : Heap) (ms : UInt32) (best : Nat),
+      longest_match (some (.tab sr)) c h0 = .ok (r, h') ∧
+      r = UInt32.ofNat (lmResult best d.lookahead.toNat) ∧ h' = hAt h0 sr d ms ∧
+      d.prev_length.toNat ≤ best ∧ best ≤ 258 ∧
+      ((best = d.prev_length.toNat ∧ ms = d.match_start) ∨
+       (d.prev_length.toNat < best ∧ GoodMatch wa d.strstart.toNat d.w_size.toNat ms.toNat best)) :=
+  (longest_match_source E).2
 
 end Zlib.Deflate.Engine.Proofs

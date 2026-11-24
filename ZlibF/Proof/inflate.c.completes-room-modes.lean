@@ -141,7 +141,7 @@ theorem roomX_inflate_CODELENS (c : Ctx) : RoomX c.flush c.st (inflate_CODELENS 
 
 theorem roomX_inflate_LENLENS (c : Ctx) : RoomX c.flush c.st (inflate_LENLENS c) := by
   intro l
-  unfold inflate_LENLENS
+  rw [LENLENS_previous]
   repeat' first
     | with_reducible exact roomX_NEEDBITS _ _ _ _
     | with_reducible exact roomX_BITS _ _ _ _

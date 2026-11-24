@@ -75,17 +75,7 @@ theorem PULLBYTE_c_eq (c : BCtx) {l : IL} {h : Heap} (hne : l.have_ ≠ 0) :
     runX (Zlib.Infback.PULLBYTE c) l h = runX Zlib.Inflate.PULLBYTE l h := by
   have hb : (l.have_ == 0) = false := by simpa using hne
   unfold Zlib.Infback.PULLBYTE Zlib.Inflate.PULLBYTE
-  simp only [runX_bind, PULL_have hne, runX_get, hb, Bool.false_eq_true, ↓reduceIte, runX_set, runX_lift]
-  generalize load8 l.next h = r1
-  rcases r1 with e | ⟨a1, h1⟩
-  · rfl
-  simp only []
-  generalize Ptr.add l.next 1 h1 = r2
-  rcases r2 with e | ⟨a2, h2⟩
-  · rfl
-  simp only []
-  generalize shl64 a1.toUInt64 l.bits h2 = r3
-  rcases r3 with e | ⟨a3, h3⟩ <;> rfl
+  simp only [runX_bind, PULL_have hne, runX_get, hb, Bool.false_eq_true, ↓reduceIte]
 
 /-- `PULLBYTE` of `inflate()` with its pointer made explicit. -/
 theorem PULLBYTE_nx {h : Heap} {l : IL} {b : UInt8} {r : BRef} {off : Nat} {a : Array UInt8} (hne : l.have_ ≠ 0)
@@ -101,7 +91,7 @@ theorem PULLBYTE_nx {h : Heap} {l : IL} {b : UInt8} {r : BRef} {off : Nat} {a : 
     rw [hb] at this; exact this
   have hshl : shl64 b.toUInt64 l.bits h = .ok (b.toUInt64 <<< l.bits.toUInt64, h) := by
     rw [shl64_run _ _ hbits]; rfl
-  unfold Zlib.Inflate.PULLBYTE
+  rw [pullByte_eq_previous]
   rw [runX_bind, runX_get]
   simp only [hne', Bool.false_eq_true, ↓reduceIte]
   simp only [runX_bind, runX_set, runX_lift_ok hld, runX_lift_ok hadd, runX_lift_ok hshl]

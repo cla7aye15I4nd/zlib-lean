@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.mode-correspondence»
 import ZlibF.Proof.«inflate.c.completes-keep-macros»
 
 /-! Every inflate mode keeps `Keeps` on all returning executions, including
@@ -103,7 +104,7 @@ theorem keep_x_inflate_CODELENS {q : InflateStatePtr} (c : Ctx) : KeepX q (infla
     | keep_x_step
 
 theorem keep_x_inflate_LENLENS {q : InflateStatePtr} (c : Ctx) : KeepX q (inflate_LENLENS c) := by
-  unfold inflate_LENLENS
+  rw [Zlib.Inflate.Proofs.LENLENS_previous]
   repeat' first
     | with_reducible exact keep_x_inflate_CODELENS _
     | keep_x_step

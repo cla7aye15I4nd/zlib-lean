@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.engine.lminner»
 import ZlibF.Proof.«deflate.c.borrow-stable-base»
 
 /-! # Actual longest-match searches retain borrowed libc text -/
@@ -29,18 +30,28 @@ theorem stable_lm_cond (limit scan match_ : BPtr) : StableM (lm_cond limit scan 
     cases result <;> dsimp only
     all_goals repeat' first | exact stable_ptr_lt _ _ | deflate_borrow_step
 
-theorem stable_lm_body (p : DeflateStatePtr) (st : LMState) : StableM (lm_body p st) := by
-  unfold lm_body
+private theorem stable_lm_body_with (getEnd : DeflateState → M BPtr) (safe : ∀ d, StableM (getEnd d)) (p : DeflateStatePtr) (st : LMState) : StableM (lm_body_with getEnd lm_cond p st) := by
+  unfold lm_body_with
   repeat' first
+    | with_reducible exact safe _
     | with_reducible exact stable_lm_cond _ _ _
     | with_reducible exact stable_ptr_diff _ _
     | with_reducible exact stable_isub _ _
     | deflate_borrow_step
 
-theorem stable_longest_match (p : DeflateStatePtr) (cur : UInt32) : StableM (longest_match p cur) := by
-  unfold longest_match
+theorem stable_lm_body (p : DeflateStatePtr) (st : LMState) : StableM (lm_body p st) := by
+  apply stable_lm_body_with
+  intro d
   repeat' first
-    | with_reducible exact stable_lm_body _ _
+    | with_reducible exact stable_ptr_diff _ _
+    | with_reducible exact stable_isub _ _
+    | deflate_borrow_step
+
+theorem stable_longest_match (p : DeflateStatePtr) (cur : UInt32) : StableM (longest_match p cur) := by
+  unfold longest_match searchMatches
+  simp only [Zlib.Deflate.Engine.Proofs.compare_eight_eq]
+  repeat' first
+    | with_reducible exact stable_lm_body_with _ (fun _ => StableM.pure _) _ _
     | with_reducible exact stable_isub _ _
     | deflate_borrow_step
 

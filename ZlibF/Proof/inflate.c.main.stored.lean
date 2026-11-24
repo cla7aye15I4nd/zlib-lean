@@ -21,7 +21,7 @@ theorem copyAmt_le (len have_ left : UInt32) : (copyAmt len have_ left).toNat �
 /-- `case COPY:` with nothing left to copy: back to `TYPE`; `copy` is recorded as 0. -/
 theorem inflate_COPY_done {c : Ctx} {h : Heap} {r zs z s} (E : Env c h r zs z s) (l : IL) (hz : s.length = 0) :
     runX (inflate_COPY c) l h = .ok ((.ok (), { l with copy := 0 }), setI h zs { s with mode := TYPE }) := by
-  unfold inflate_COPY
+  rw [COPY_previous]
   have hb : (s.length != 0) = false := by simp [hz]
   rw [runX_bind, runX_ldS E]
   simp only [hb, Bool.false_eq_true, ↓reduceIte]
@@ -46,7 +46,7 @@ def copyTail (c : Ctx) (n : UInt32) : X Unit := do
 theorem inflate_COPY_split {c : Ctx} {h : Heap} {r zs z s} (E : Env c h r zs z s) (l : IL) (hnz : s.length ≠ 0) :
     runX (inflate_COPY c) l h = runX (copyTail c (copyAmt s.length l.have_ l.left)) l h := by
   have hb : (s.length != 0) = true := by simpa using hnz
-  unfold inflate_COPY
+  rw [COPY_previous]
   rw [runX_bind, runX_ldS E]
   simp only [hb, ↓reduceIte]
   rw [runX_bind, runX_get]

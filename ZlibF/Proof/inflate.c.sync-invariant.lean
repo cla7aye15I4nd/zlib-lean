@@ -308,6 +308,7 @@ theorem syncTail_invariant_of_run {h after : Heap} {r : ZStreamRef} {zs block : 
       after.bytes block = h.bytes block ∧ after.ro block = h.ro block := by
   change syncTail (some r) (some (.tab zs)) h = _ at actual
   unfold syncTail at actual
+  simp only [syncsearch_inflateHave] at actual
   simp only [bind_app, ldZ_eq, current.good.live.hz, rdI_eq, current.good.live.hs] at actual
   cases searchRun : syncsearch s.«have» z.next_in z.avail_in h with
   | error fault => rw [searchRun] at actual; cases actual
@@ -316,16 +317,18 @@ theorem syncTail_invariant_of_run {h after : Heap} {r : ZStreamRef} {zs block : 
     have same := syncsearch_heap_unchanged searchRun
     subst middle
     rw [searchRun] at actual
-    simp only [wrI_eq, current.good.live.hs] at actual
-    cases addRun : Ptr.add z.next_in (used.toNat : Int) (setI h zs { s with «have» := found }) with
+    simp only [wrI_eq, current.good.live.hs, pure_app, wrZ_eq, rdZ_eq, ZStreamRef.get_setI,
+      current.good.live.hz, ZStreamRef.get_put, Option.map_some] at actual
+    cases addRun : Ptr.add z.next_in (used.toNat : Int)
+        (r.put (setI h zs { s with «have» := found }) { z with avail_in := z.avail_in - used }) with
     | error fault => rw [addRun] at actual; cases actual
     | ok pair =>
       obtain ⟨next, middle⟩ := pair
       have same := sync_pointer_add_heap addRun
       subst middle
       rw [addRun] at actual
-      simp only [wrZ_eq, ZStreamRef.get_setI, current.good.live.hz,
-        setI_istates_same, ZStreamRef.put_setI] at actual
+      simp only [ZStreamRef.get_setI, current.good.live.hz,
+        ZStreamRef.get_put, Option.map_some, ZStreamRef.put_put, setI_istates_same, ZStreamRef.put_setI] at actual
       let stream := { z with avail_in := z.avail_in - used, next_in := next, total_in := z.total_in + used.toUInt64 }
       let state := syncHave s found
       let heap := setI (r.put h stream) zs state
@@ -421,7 +424,7 @@ theorem inflateSync_preserves (r : ZStreamRef) : InflatePreserves r (.inflateSyn
     · have separate := win_ne_buf current.good.fresh current.good.inv.win
       have first := syncFirst_run (initial.good.live.hs) get size write initial.good.inv.bits
       have firstState := initial.sync_first get separate
-      change syncFirst (some (.tab zs)) (syncBuf h) s (syncAlloc h) = _ at first
+      change syncFirst (some (.tab zs)) (syncBuf h) (syncAlloc h) = _ at first
       simp only [bne_iff_ne] at run
       rw [ite_eq_left resumed] at run
       simp only [bind_app, first] at run

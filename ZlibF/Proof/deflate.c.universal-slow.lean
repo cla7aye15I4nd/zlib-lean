@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.slow.source»
 import ZlibF.Proof.«trees.c.universal-overlay-at»
 import ZlibF.Proof.«deflate.c.universal-privm»
 import ZlibF.Proof.«deflate.c.engine.short-match-frontier-loop»
@@ -1435,7 +1436,7 @@ theorem slow_spec_of {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
     · rw [brk] at e; cases e
     · rw [ret0] at e; cases e
   · refine ⟨need_more, h1, z1, d1, ?_, head1.inv, head1.buffers, acc1, need_more_meaning why⟩
-    simp [C.run, deflate_slow, bind_app, loopRun, ret]
+    simp [C.run, SlowProofs.after_loop loopRun, ret]
   · have ld1 : ldDeflateState (some (.tab ds)) h1 = .ok (d1, h1) := ldDeflateState_tab head1.inv.good.live.hs
     by_cases avail : d1.match_available ≠ 0
     · have availB : (d1.match_available != 0) = true := by simpa using avail
@@ -1457,7 +1458,7 @@ theorem slow_spec_of {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
           (setD h3 ds { literalState d1 c with match_available := 0 }) =
           .ok ((), setD (setD h3 ds { literalState d1 c with match_available := 0 }) ds (endState (literalState d1 c))) := by
         rw [wrD_eq]; simp; rfl
-      simp only [C.run, deflate_slow, bind_app, loopRun, ret, ld1, availB, ite_true, readC, tallyRun, wr1, wr2]
+      simp only [C.run, SlowProofs.after_loop loopRun, ret, slowFinish, SlowProofs.finish_hash_eq, bind_app, ld1, availB, ite_true, readC, tallyRun, wr1, wr2]
       exact tailRun
     · have idle : d1.match_available = 0 := by simpa using avail
       have availB : (d1.match_available != 0) = false := by simp [idle]
@@ -1469,7 +1470,7 @@ theorem slow_spec_of {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
         Fr.priv head1.inv.good head1.buffers (priv_setD h1 r ds d1 _ head1.inv.good.live.hs) ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
       refine ⟨bstate, after, z', d', ?_, invA, buffersA,
         Fr.trans inv.good entry.buffers acc1 (Fr.trans head1.inv.good head1.buffers ins accT), meanT⟩
-      simp only [C.run, deflate_slow, bind_app, loopRun, ret, ld1, availB, Bool.false_eq_true, ite_false, wrRun]
+      simp only [C.run, SlowProofs.after_loop loopRun, ret, slowFinish, SlowProofs.finish_hash_eq, bind_app, ld1, availB, Bool.false_eq_true, ite_false, wrRun]
       exact tailRun
 
 /-- **`slow_spec`**: `deflate_slow` (levels 4 to 9 with a hashing strategy) keeps the invariant for

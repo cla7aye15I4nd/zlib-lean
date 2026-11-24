@@ -412,13 +412,24 @@ theorem copy_failure {h : Heap} {source dest : ZStreamRef} {ds : Nat} {z zd : ZS
       simp only [copyFail_bind e7]
       rw [copyBuffers_bind]
       simp only [copyFail_bind e8]
-      rw [ite_eq_left cond]
+      have readField {X : Heap} {α : Type} (field : DeflateState → α)
+          (live : X.dstates h.nextBlk = some (copyBufState (copyH0 h d) d)) :
+          rd (some (.tab h.nextBlk)) field X = .ok (field (copyBufState (copyH0 h d) d), X) := by
+        rw [rdD_eq, live]
+      rw [copyFail_bind (load_written_state _ _ _)]
       rw [show setD (copyB (copyH0 h d) d) h.nextBlk (copyBufState (copyH0 h d) d) =
         failBuf (copyH0 h d) h.nextBlk d from rfl]
-      rw [tryB_run zB hfree fB]
-      rw [tryW_run (by simpa using zB) hfree fQ]
-      rw [tryW_run (by simpa using zB) hfree fP]
-      rw [tryB_run (by simpa using zB) hfree fW]
+      simp only [copyBufState, cond, ↓reduceIte]
+      erw [tryB_run zB hfree fB]
+      rw [copyFail_bind (readField (·.head) (by simp [failBuf]))]
+      simp only [copyBufState]
+      erw [tryW_run (by simpa using zB) hfree fQ]
+      rw [copyFail_bind (readField (·.prev) (by simp [failBuf]))]
+      simp only [copyBufState]
+      erw [tryW_run (by simpa using zB) hfree fP]
+      rw [copyFail_bind (readField (·.window) (by simp [failBuf]))]
+      simp only [copyBufState]
+      erw [tryB_run (by simpa using zB) hfree fW]
       rw [show freeBytes (freeWords (freeWords (freeBytes (failBuf (copyH0 h d) h.nextBlk d)
           (bytePtr (copyQ (copyH0 h d) d))) (wordPtr (copyP (copyH0 h d) d))) (wordPtr (copyW (copyH0 h d) d)))
           (bytePtr (copyH0 h d)) = failFreed (copyH0 h d) h.nextBlk d from rfl]

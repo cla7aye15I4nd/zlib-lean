@@ -99,7 +99,10 @@ theorem syncTail_total {h : Heap} {r : ZStreamRef} {zs : Nat} {z : ZStream} {s :
       Good after r zs stream state ∧ after = setI (r.put (reset2Heap h wb s) stream) zs state ∧
       state.window = (if s.wbits ≠ i2u wb then .null else s.window) := by
   obtain ⟨used, found, search, bound⟩ := syncsearch_public_readable range nonnull s.«have»
-  obtain ⟨next, advance⟩ := sync_public_input_add range nonnull bound zs { s with «have» := found }
+  let counted := { z with avail_in := z.avail_in - used }
+  have views (ref : BRef) : Space.get (r.put (setI h zs { s with «have» := found }) counted) ref =
+      Space.get h ref := by rw [byte_view_get_stream_put, byte_view_get_setI]
+  obtain ⟨next, advance⟩ := sync_input_add_of_views range nonnull bound views
   let stream := { z with avail_in := z.avail_in - used, next_in := next, total_in := z.total_in + used.toUInt64 }
   let state := syncHave s found
   let heap := setI (r.put h stream) zs state
@@ -107,9 +110,13 @@ theorem syncTail_total {h : Heap} {r : ZStreamRef} {zs : Nat} {z : ZStream} {s :
   have tailPrefix : C.run (syncTail (some r) (some (.tab zs))) h =
       (if found != 4 then pure Z_DATA_ERROR else syncDone (some r) (some (.tab zs))) heap := by
     unfold C.run syncTail
-    simp only [bind_app, ldZ_eq, rdI_eq, current.good.live.hs, search,
-      wrI_eq, advance, wrZ_eq, ZStreamRef.get_setI, current.good.live.hz,
-      setI_istates_same, ZStreamRef.put_setI]
+    simp only [syncsearch_inflateHave]
+    simp only [bind_app, ldZ_eq, rdI_eq, current.good.live.hs, search, wrI_eq, pure_app,
+      wrZ_eq, rdZ_eq, ZStreamRef.get_setI, current.good.live.hz, ZStreamRef.get_put,
+      Option.map_some]
+    rw [advance]
+    simp only [ZStreamRef.get_put, ZStreamRef.get_setI, current.good.live.hz,
+      Option.map_some, ZStreamRef.put_put, ZStreamRef.put_setI, setI_istates_same]
     rfl
   have keep : reset2Heap h (syncWidth s.wbits) s = h := by
     simp only [reset2Heap, i2u_syncWidth current.wbits_small, bne_self_eq_false,

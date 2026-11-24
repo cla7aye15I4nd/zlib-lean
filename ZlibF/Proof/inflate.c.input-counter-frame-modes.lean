@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.mode-correspondence»
 import ZlibF.Proof.«inflate.c.input-counter-frame-macros»
 
 namespace Zlib.Inflate.Proofs.InputCounter
@@ -142,7 +143,7 @@ theorem inputCounterX_inflate_CODELENS (r : ZStreamRef) (context : Ctx) (root : 
 
 theorem inputCounterX_inflate_LENLENS (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     InputCounterX r (inflate_LENLENS context) := by
-  unfold inflate_LENLENS
+  rw [Zlib.Inflate.Proofs.LENLENS_previous]
   try rw [root]
   have continuation0 := inputCounterX_inflate_CODELENS r context root
   input_counter_mode r, root
@@ -189,7 +190,7 @@ theorem inputCounterX_inflate_TYPE (r : ZStreamRef) (context : Ctx) (root : cont
 
 theorem inputCounterX_inflate_HCRC (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     InputCounterX r (inflate_HCRC context) := by
-  unfold inflate_HCRC
+  rw [Zlib.Inflate.Proofs.HCRC_previous]
   try rw [root]
   input_counter_mode r, root
 
@@ -244,7 +245,8 @@ theorem inputCounterX_inflate_FLAGS (r : ZStreamRef) (context : Ctx) (root : con
 
 theorem inputCounterX_inflate_HEAD (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     InputCounterX r (inflate_HEAD context) := by
-  unfold inflate_HEAD
+  unfold inflate_HEAD startDataCheck storeChecksum resetHeaderCheck
+  simp only [Zlib.Inflate.Proofs.liftHeapBind, x_bind_assoc, Bool.false_eq_true, ↓reduceIte]
   try rw [root]
   input_counter_mode r, root
 

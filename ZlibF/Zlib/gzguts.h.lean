@@ -48,6 +48,14 @@ def updS (s : GzStatePtr) (f : GzState → GzState) : M Unit := do
 def updX (s : GzStatePtr) (f : GzFile → GzFile) : M Unit :=
   updS s fun st => { st with x := f st.x }
 
+/-- Read through x.next and advance it, as in the buffered gzgetc path. -/
+def loadNextPostInc (state : GzStatePtr) : G Int32 := do
+  let s ← ldS state
+  let b ← load8 s.x.next
+  let next ← s.x.next.add 1
+  updX state fun x => { x with next }
+  return b.toUInt32.toInt32
+
 /-- `*strm` -/
 def ldZ (z : ZStreamPtr) : M ZStream := ldZStream z
 
@@ -75,6 +83,9 @@ def allocLocal (n : Nat) : M BPtr := fun h =>
 
 /-- An 8-byte automatic scalar cell (`z_size_t got`, `uLong used`). -/
 abbrev allocLocal64 : M C.StackScalar64 := allocLocal 8
+
+abbrev allocLocal32 : M C.StackScalar32 := allocLocal 4
+abbrev allocLocalByte : M C.StackByte := allocLocal 1
 
 -- `*(int *)p`, `*(uint64_t *)p`, and their stores live in `C` (`ZlibF.Runtime.CAbi`) and are re-exported here.
 export C (load32 store32 load64 store64)

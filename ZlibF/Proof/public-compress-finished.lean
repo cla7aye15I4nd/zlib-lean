@@ -116,82 +116,69 @@ theorem kept_wr (p : DeflateStatePtr) (f : DeflateState → DeflateState) : Stre
   unfold wr
   exact StreamsKept.bind (kept_ldDeflateState p) (fun d => kept_stDeflateState p (f d))
 
+/-- A successful operation preserves the amount of input present at this stream. -/
+private def KeepsAvail (r : ZStreamRef) {α : Type} (m : M α) : Prop :=
+  ∀ h a after, m h = .ok (a, after) →
+    (r.get after).map ZStream.avail_in = (r.get h).map ZStream.avail_in
+
+private theorem KeepsAvail.bind {r : ZStreamRef} {α β : Type} {m : M α} {f : α → M β}
+    (hm : KeepsAvail r m) (hf : ∀ a, KeepsAvail r (f a)) : KeepsAvail r (m >>= f) := by
+  intro h v after run
+  rw [bind_app] at run
+  cases e : m h with
+  | error _ => simp [e] at run
+  | ok p =>
+    obtain ⟨a, middle⟩ := p
+    rw [e] at run
+    exact (hf a middle v after run).trans (hm h a middle e)
+
+private theorem KeepsAvail.of_kept {r : ZStreamRef} {α : Type} {m : M α} (keeps : StreamsKept m) :
+    KeepsAvail r m := by
+  intro h a after run
+  obtain ⟨streams, gz⟩ := keeps h a after run
+  rw [get_of_kept r streams gz]
+
+private theorem KeepsAvail.ite {r : ZStreamRef} {α : Type} (p : Prop) [Decidable p] {a b : M α}
+    (ha : KeepsAvail r a) (hb : KeepsAvail r b) : KeepsAvail r (if p then a else b) := by
+  split <;> assumption
+
+private theorem KeepsAvail.update (r : ZStreamRef) (f : ZStream → ZStream)
+    (field : ∀ z, (f z).avail_in = z.avail_in) : KeepsAvail r (zwr (some r) f) := by
+  intro h a after run
+  rw [zwr_eq] at run
+  cases get : r.get h <;> simp [get] at run
+  obtain ⟨rfl, rfl⟩ := run
+  simp [get, field]
+
 /-- `flush_pending` keeps the stream's `avail_in`. -/
 theorem flush_pending_avail_in {h after : Heap} {r : ZStreamRef} {z : ZStream}
     (getz : r.get h = some z) (run : flush_pending (some r) h = .ok ((), after)) :
     ∃ z', r.get after = some z' ∧ z'.avail_in = z.avail_in := by
-  unfold flush_pending at run
-  simp only [bind_app, zrd, ldZStream, getz, pure_app] at run
-  cases ec : castDeflateState z.state h with
-  | error _ => simp [ec] at run
-  | ok p0 =>
-    rcases p0 with ⟨sp, h0⟩
-    simp only [ec] at run
-    have h0eq : h0 = h := by
-      unfold castDeflateState at ec
-      split at ec <;> (try cases ec) <;> rfl
-    subst h0eq
-    cases et : Zlib.Trees.«_tr_flush_bits» sp h0 with
-    | error _ => simp [et] at run
-    | ok p1 =>
-      rcases p1 with ⟨_, h1⟩
-      simp only [et] at run
-      obtain ⟨k1, g1⟩ := kept_tr_flush_bits sp h0 _ h1 et
-      have getz1 : r.get h1 = some z := (get_of_kept r k1 g1).trans getz
-      simp only [getz1] at run
-      cases el : ldDeflateState sp h1 with
-      | error _ => simp [el] at run
-      | ok p2 =>
-        rcases p2 with ⟨d, h2⟩
-        have h2eq : h2 = h1 := by
-          unfold ldDeflateState at el
-          split at el <;> (try split at el) <;> first | (cases el; rfl) | contradiction
-        subst h2eq
-        simp only [el] at run
-        generalize (if d.pending > z.avail_out.toUInt64 then z.avail_out else d.pending.toUInt32) = len at run
-        by_cases zero : (len == 0) = true
-        · simp only [zero, ite_true, pure_app] at run
-          cases run; exact ⟨z, getz1, rfl⟩
-        · simp only [zero, Bool.false_eq_true, ite_false, bind_app] at run
-          cases e1 : Ptr.memcpy z.next_out d.pending_out len.toNat h2 with
-          | error _ => simp [e1] at run
-          | ok q1 =>
-            rcases q1 with ⟨_, h3⟩
-            simp only [e1] at run
-            obtain ⟨k3, g3⟩ := kept_memcpy _ _ _ h2 _ h3 e1
-            cases e2 : padd z.next_out len.toNat h3 with
-            | error _ => simp [e2] at run
-            | ok q2 =>
-              rcases q2 with ⟨no, h4⟩
-              simp only [e2] at run
-              obtain ⟨k4, g4⟩ := kept_ptr_add _ _ h3 _ h4 e2
-              cases e3 : padd d.pending_out len.toNat h4 with
-              | error _ => simp [e3] at run
-              | ok q3 =>
-                rcases q3 with ⟨po, h5⟩
-                simp only [e3] at run
-                obtain ⟨k5, g5⟩ := kept_ptr_add _ _ h4 _ h5 e3
-                have getz5 : r.get h5 = some z :=
-                  (get_of_kept r k5 g5).trans ((get_of_kept r k4 g4).trans ((get_of_kept r k3 g3).trans getz1))
-                have ro : r.isRo = false := by cases r <;> rfl
-                split at run
-                · rename_i x6 h6 e6
-                  simp only [stZStream, getz5, ro, Bool.false_eq_true, ite_false, Except.ok.injEq,
-                    Prod.mk.injEq] at e6
-                  obtain ⟨-, rfl⟩ := e6
-                  have getv := Zlib.Deflate.Proofs.ZStreamRef.get_put_same getz5
-                    { z with next_out := no, total_out := z.total_out + len.toUInt64, avail_out := z.avail_out - len }
-                  split at run
-                  · rename_i x7 h7 e7
-                    obtain ⟨k7, g7⟩ := kept_stDeflateState _ _ _ _ h7 e7
-                    have getv7 := (get_of_kept r k7 g7).trans getv
-                    split at run
-                    · obtain ⟨k8, g8⟩ := kept_wr _ _ _ _ _ run
-                      exact ⟨_, (get_of_kept r k8 g8).trans getv7, rfl⟩
-                    · cases run
-                      exact ⟨_, getv7, rfl⟩
-                  · cases run
-                · cases run
+  have ld (p : ZStreamPtr) : StreamsKept (ldZStream p) := by
+    intro before v later load
+    unfold ldZStream at load
+    repeat' first | split at load | (cases load; exact ⟨rfl, rfl⟩) | contradiction
+  have cast (p : Option StateRef) : StreamsKept (castDeflateState p) := by
+    intro before v later load
+    unfold castDeflateState at load
+    split at load <;> cases load <;> exact ⟨rfl, rfl⟩
+  have keeps : KeepsAvail r (flush_pending (some r)) := by
+    unfold flush_pending advance_pending zrd rd
+    repeat' first
+      | exact KeepsAvail.update _ _ (fun _ => rfl)
+      | exact KeepsAvail.of_kept (kept_tr_flush_bits _)
+      | exact KeepsAvail.of_kept (kept_wr _ _)
+      | exact KeepsAvail.of_kept (kept_memcpy _ _ _)
+      | exact KeepsAvail.of_kept (kept_ptr_add _ _)
+      | exact KeepsAvail.of_kept (kept_ldDeflateState _)
+      | exact KeepsAvail.of_kept (ld _)
+      | exact KeepsAvail.of_kept (cast _)
+      | exact KeepsAvail.of_kept (StreamsKept.pure _)
+      | apply KeepsAvail.ite
+      | apply KeepsAvail.bind
+      | intro _
+  have field := keeps h () after run
+  cases next : r.get after <;> simp_all
 
 /-- **`FinishedNewInput`**: new input offered to a finished stream gives `Z_BUF_ERROR`, or the
 pending flush fills the output first (`Z_OK` after writing a byte). -/
@@ -258,7 +245,7 @@ theorem finished_new_input : FinishedNewInput := by
     · left
       obtain ⟨i, err, -⟩ := err_return_static getz1 Z_BUF_ERROR
       rw [ite_eq_right (by simp [full])] at run'
-      simp only [bind_app, rdD_eq, getd1, zrd_eq, getz1] at run'
+      simp only [bind_app, ldDeflateState_tab getd1, ldZStream_ok getz1] at run'
       rw [ite_eq_left (by simp [st1, ain1, ain]), err] at run'
       simp only [Except.ok.injEq, Prod.mk.injEq] at run'
       exact run'.1.symm

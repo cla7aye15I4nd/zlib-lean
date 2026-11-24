@@ -279,7 +279,7 @@ theorem noRet_inflate_CODELENS (c : Ctx) : NoRet (inflate_CODELENS c) := by
 /-- Actual LENLENS code may leave the mode loop; it never returns an
 arbitrary API code directly. Runtime faults are covered separately. -/
 theorem noRet_inflate_LENLENS (c : Ctx) : NoRet (inflate_LENLENS c) := by
-  unfold inflate_LENLENS
+  unfold inflate_LENLENS storeOrderedLength
   repeat' first
     | with_reducible exact noRet_NEEDBITS _
     | with_reducible exact noRet_BITS _

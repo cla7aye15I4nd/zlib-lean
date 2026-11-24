@@ -63,7 +63,7 @@ theorem inflate_LEN_fast_view_cut
     rw [E.strm]
     exact call
   refine ⟨after, zNext, sNext, used, made, ?_, current, accounting⟩
-  unfold inflate_LEN
+  rw [LEN_previous]
   rw [runX_bind, runX_get]
   simp only [fast, ↓reduceIte]
   rw [runX_bind, RESTORE_pending_run E]

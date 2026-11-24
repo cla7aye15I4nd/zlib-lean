@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.mode-correspondence»
 import ZlibF.Proof.«inflate.c.match-emit»
 
 namespace Zlib.Inflate.Proofs
@@ -40,7 +41,27 @@ def matchSelect (c : Ctx) : X Unit := do
   if copy > l.left then copy := l.left
   matchEmitFrom c l copy from_
 
-theorem inflate_MATCH_select_cut (c : Ctx) : inflate_MATCH c = matchSelect c := rfl
+theorem inflate_MATCH_select_cut (c : Ctx) : inflate_MATCH c = matchSelect c := by
+  have ending : (do let s ← ldInflateState c.st
+                    if s.length == 0 then setMode c.st LEN : X Unit) =
+      (do if (← rdS c.st (·.length)) == 0 then setMode c.st LEN : X Unit) := by
+    unfold rdS
+    simp only [liftHeapBind, x_bind_assoc]
+    rfl
+  have discard (m : M Unit) :
+      (do let _ ← m; pure () : X Unit) = (liftM m : X Unit) := by
+    funext l h
+    change runX _ l h = runX _ l h
+    simp only [runX_bind, runX_lift]
+    rcases m h with e | ⟨⟨⟩, h'⟩ <;> rfl
+  unfold inflate_MATCH matchSelect withMatchSource matchEmitFrom
+  simp only [ending, discard]
+  funext l h
+  change runX _ l h = runX _ l h
+  simp only [runX_bind, runX_get]
+  by_cases zero : (l.left == 0) = true
+  · simp only [zero, ↓reduceIte, runX_bind, runX_throw]
+  · simp only [zero, Bool.false_eq_true, ↓reduceIte, runX_bind, runX_get]
 
 /-- Source selection for a back-reference in the current output. -/
 theorem matchSelect_output_cut {c : Ctx} {h : Heap} {r : ZStreamRef} {zs : Nat} {z : ZStream} {s : InflateState}

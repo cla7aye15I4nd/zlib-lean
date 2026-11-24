@@ -62,6 +62,7 @@ theorem public_pending_exhausted_counter_execution {h : Heap} {r : ZStreamRef} {
       · simp [finished, status finished]
       · simp [finished]
     rw [public_deflate_source]
+    unfold Phases.entryPhase
     simp only [bind_app, pure_app, checked, show ((0 : Int32) != 0) = false from rfl,
       flagUpper, flagLower,
       decide_false, Bool.false_or, Bool.false_eq_true, ite_false,

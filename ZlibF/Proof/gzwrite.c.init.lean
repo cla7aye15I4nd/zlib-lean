@@ -1724,7 +1724,7 @@ theorem gz_init_run (err : GzErrorSpec) (errOwn : GzErrorOwn) (i : Nat) (h : Hea
     rw [Nat.shiftLeft_eq, Nat.pow_one]
     have : (2 : Nat) ^ 31 = 2147483648 := by decide
     omega
-  unfold Zlib.Gzwrite.gz_init
+  unfold Zlib.Gzwrite.gz_init Zlib.Gzwrite.initWith
   by_cases hok : h.allocOk h.nalloc = true
   · by_cases hd : s.direct = 0
     · by_cases hok2 : h.allocOk (h.nalloc + 1) = true

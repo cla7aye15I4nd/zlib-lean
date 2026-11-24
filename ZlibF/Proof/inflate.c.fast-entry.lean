@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.code-width-correspondence»
 import ZlibF.Proof.«inflate.c.leave-restore»
 import ZlibF.Proof.«inffast.c.platform»
 import ZlibF.Proof.«inffast.c.progress»
@@ -481,7 +482,7 @@ theorem inflate_LEN_fast_raw_cut_progress {c : Ctx} {l : IL} {h : Heap} {r : ZSt
       (setI (r.put h (leaveStream z l)) zs (leaveState s l)) = .ok ((), after) := by
     simpa only [C.run, heapEq, streamEq, startEq] using call
   refine ⟨entry, after, ?_, post, platform, streamEq, refEq, stateId, state0, stream0, heapEq, outBlock, progress⟩
-  unfold inflate_LEN
+  rw [LEN_previous]
   rw [runX_bind, runX_get]
   simp only [fast, ↓reduceIte]
   rw [runX_bind, RESTORE_pending_run E]

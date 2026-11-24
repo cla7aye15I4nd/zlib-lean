@@ -277,7 +277,7 @@ theorem inflateGetDictionary_default_public_contract
   by_cases empty : dest = .null ∨ s.whave = 0
   · have actual : C.run (inflateGetDictionary (some r) dest dl) h =
         .ok ((Z_OK, dl.map (fun _ => s.whave)), h) := by
-      unfold C.run inflateGetDictionary
+      unfold C.run inflateGetDictionary getDictionaryWith
       rcases empty with null | zero
       · cases dl <;> simp [stateCheck_live good.live, ldZ_eq, ldI_eq,
           good.live.hz, good.live.zst, castI, good.live.hs, null]

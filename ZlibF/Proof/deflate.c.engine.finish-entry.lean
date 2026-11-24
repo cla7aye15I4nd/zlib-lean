@@ -51,7 +51,7 @@ theorem public_busy_finish_entry {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZSt
       (setD h ds { d with last_flush := Z_FINISH }) =
       publicDataTail (some r) (some (.tab ds)) Z_FINISH (setD h ds { d with last_flush := Z_FINISH }) := by
     unfold publicZlibHeader
-    simp only [bind_app, rdD_eq, setD_dstates_same, status,
+    simp only [bind_app, ldD_eq, rdD_eq, setD_dstates_same, status,
       show (BUSY_STATE == INIT_STATE) = false from rfl, Bool.false_and, Bool.false_eq_true, ite_false]
   have inputs : (z.avail_in != 0 && z.next_in == .null) = false := by
     by_cases empty : z.avail_in = 0
@@ -60,7 +60,8 @@ theorem public_busy_finish_entry {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZSt
   obtain ⟨rank, ranked⟩ := rank_legal_last_flush d.last_flush lower upper
   have checked := stateCheck_live good.live
   have rankFinish : RANK Z_FINISH = pure 8 := by rfl
-  rw [public_deflate_source]
+  rw [public_deflate_source, entryPhase_eq_previousPublicEntry good.live _ (by decide) ⟨lower, upper⟩]
+  unfold previousPublicEntry
   simp only [bind_app, pure_app, checked, show ((0 : Int32) != 0) = false from rfl,
     show (Z_FINISH > Z_BLOCK) = False from by decide, show (Z_FINISH < 0) = False from by decide,
     decide_false, Bool.false_eq_true, ite_false,

@@ -136,21 +136,35 @@ theorem inflateSync_buf_error {h : Heap} {r : ZStreamRef} {zs : Nat} {z : ZStrea
   isimp [allocLocalB_run h hG.fresh, stateCheck_live hL, hL.zst, hG.live.hz, hG.live.hs, hav, hb,
     freeBuf_run hbb (syncAlloc_ro_buf h), tmpFreed, syncBuf]
 
+/-- Passing the real `state->have` field to the C helper reads it at entry and writes
+the count produced by the byte search into the same field on return. -/
+theorem syncsearch_inflateHave (st : InflateStatePtr) (buf : ConstBPtr) (len : UInt32) :
+    syncsearch_c (.inflateHave st) buf len = (do
+      let initial ← rdS st (·.«have»)
+      let (used, found) ← syncsearch initial buf len
+      wrS st fun s => { s with «have» := found }
+      return used) := rfl
+
 /-- the part of `inflateSync` from the bit-buffer restore on, as a function of the state pointer -/
-def syncFirst (st : InflateStatePtr) (buf : BPtr) (s : InflateState) : M Unit := do
-  let h ← shr64 s.hold (s.bits &&& 7)
-  wrS st fun s => { s with mode := SYNC, hold := h, bits := s.bits - (s.bits &&& 7) }
+def syncFirst (st : InflateStatePtr) (buf : BPtr) : M Unit := do
+  wrS st fun s => { s with mode := SYNC }
+  let bits ← rdS st (·.bits)
+  let value ← rdS st (·.hold)
+  let h ← shr64 value (bits &&& 7)
+  wrS st fun s => { s with hold := h }
+  wrS st fun s => { s with bits := s.bits - (s.bits &&& 7) }
   let len ← cwhile (σ := UInt32)
     (fun len => do return ((← rdS st (·.bits)) >= 8, len))
     (fun len => do
       let s ← ldInflateState st
       store8 (← buf.add (len.toNat : Int)) s.hold.toUInt8
-      wrS st fun s => { s with hold := s.hold >>> 8, bits := s.bits - 8 }
-      pure (len + 1))
+      let next ← cdecl (len + 1)
+      wrS st fun s => { s with hold := s.hold >>> 8 }
+      wrS st fun s => { s with bits := s.bits - 8 }
+      pure next)
     0
   wrS st fun s => { s with «have» := 0 }
-  let (_, hv) ← syncsearch 0 buf len
-  wrS st fun s => { s with «have» := hv }
+  let _ ← syncsearch_c (.inflateHave st) buf len
 
 def syncDone (strm : ZStreamPtr) (st : InflateStatePtr) : M Int32 := do
     let flags ← rdS st (·.flags)
@@ -173,10 +187,12 @@ def syncDone (strm : ZStreamPtr) (st : InflateStatePtr) : M Int32 := do
 
 def syncTail (strm : ZStreamPtr) (st : InflateStatePtr) : M Int32 := do
     let z ← ldZStream strm
-    let (len, hv) ← syncsearch (← rdS st (·.«have»)) z.next_in z.avail_in
-    wrS st fun s => { s with «have» := hv }
-    let ni ← z.next_in.add (len.toNat : Int)
-    wrZ strm fun z => { z with avail_in := z.avail_in - len, next_in := ni, total_in := z.total_in + len.toUInt64 }
+    let len ← syncsearch_c (.inflateHave st) z.next_in z.avail_in
+    wrZ strm fun z => { z with avail_in := z.avail_in - len }
+    let input ← rdZ strm (·.next_in)
+    let ni ← input.add (len.toNat : Int)
+    wrZ strm fun z => { z with next_in := ni }
+    wrZ strm fun z => { z with total_in := z.total_in + len.toUInt64 }
     if (← rdS st (·.«have»)) != 4 then return Z_DATA_ERROR
     syncDone strm st
 
@@ -196,12 +212,13 @@ theorem inflateSync_split (strm : ZStreamPtr) : inflateSync strm = (do
     let st ← castInflateState z.state
     let s ← ldInflateState st
     if z.avail_in == 0 && s.bits < 8 then return Z_BUF_ERROR
-    if s.mode != SYNC then syncFirst st buf s
+    if s.mode != SYNC then syncFirst st buf
     syncTail strm st)
   freeB buf
   return r) := by
   unfold inflateSync syncFirst syncTail syncDone
-  simp only [bind_assoc_M]
+  have pure_bind {α β : Type} (a : α) (f : α → M β) : (pure a >>= f) = f a := rfl
+  simp only [bind_assoc_M, pure_bind]
 
 end Zlib.Inflate.Proofs
 

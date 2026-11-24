@@ -91,7 +91,7 @@ theorem inflate_default_view_public_exact_frame
       rw [bind_app, allocLocalB_run h invariant.good.fresh]
       simp only []
       rw [bind_app]
-      simp only [bind_app, stateCheck_live allocated.good.live,
+      simp only [bind_app, pure_app, stateCheck_live allocated.good.live,
         bne_self_eq_false, Bool.false_eq_true, ite_false,
         ldZStream_ok allocated.good.live.hz, accepted, allocated.good.live.zst, castI]
       rw [bind_app] at bodyRun

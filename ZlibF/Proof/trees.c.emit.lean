@@ -108,7 +108,7 @@ theorem send_code_emit {h : Heap} {id : Nat} {d : DeflateState} {b : Nat} {buf :
   rw [v16_u16i, u16i_toInt] at e
   obtain ⟨buf', d', r, hi, ho, hs, hf, hl', hu, hb⟩ := e
   refine ⟨buf', d', ?_, hi, ho, hs, hf, hl', hu, hb⟩
-  unfold send_code
+  unfold send_code cinline
   rw [bind_app, hdl]
   simp only []
   rw [bind_app, hfc]

@@ -412,7 +412,7 @@ macro "modelen_frame" : tactic =>
 set_option maxHeartbeats 2000000 in
 theorem roomX_inflate_EXTRA (c : Ctx) : RoomX c.flush c.st (inflate_EXTRA c) := by
   intro l
-  unfold inflate_EXTRA
+  rw [EXTRA_previous]
   repeat' first
     | with_reducible exact roomX_inflate_NAME _ _
     | (show ∀ _, _ → ExitCause _ _ Ex.leave _ _

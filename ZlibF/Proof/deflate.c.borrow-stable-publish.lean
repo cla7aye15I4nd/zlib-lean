@@ -9,7 +9,7 @@ set_option autoImplicit false
 set_option maxRecDepth 10000
 
 theorem stable_flush_pending (p : ZStreamPtr) : StableM (flush_pending p) := by
-  unfold flush_pending
+  unfold flush_pending advance_pending
   repeat' first
     | exact Zlib.Trees.BorrowProofs.stable__tr_flush_bits _
     | deflate_borrow_step
@@ -38,6 +38,7 @@ theorem stable_finish_tail (p : DeflateStatePtr) (flush : Int32) : StableM (fini
 theorem stable_gz_string_loop (p : ZStreamPtr) (s : DeflateStatePtr) (select : GzHeader → BPtr) :
     StableM (gz_string_loop p s select) := by
   unfold gz_string_loop
+  simp only [cdecl_eq]
   repeat' first
     | exact stable_HCRC_UPDATE _ _ _
     | exact stable_flush_pending _

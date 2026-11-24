@@ -1,9 +1,9 @@
-import ZlibF.Proof.«deflate.c.engine.public-source»
+import ZlibF.Proof.«deflate.c.engine.entry-correspondence»
 
 /-! # The actual duplicate-request prefix returns BUF_ERROR -/
 
 namespace Zlib.Deflate.Engine.Proofs
-open C Zlib.Deflate Zlib.Deflate.Spec Zlib.Deflate.Proofs ZlibF.Spec.Public
+open C Zlib.Deflate Zlib.Deflate.Spec Zlib.Deflate.Proofs
 set_option autoImplicit false
 
 /-- A zero-input repeated NO_FLUSH request with no pending bytes is
@@ -28,7 +28,8 @@ theorem public_busy_no_flush_duplicate_source {h : Heap} {r : ZStreamRef} {ds : 
   obtain ⟨rank, ranked, nonnegative⟩ := rankOld
   have checked := stateCheck_live good.live
   have rankZero : RANK Z_NO_FLUSH = pure 0 := rfl
-  rw [public_deflate_source]
+  rw [deflate_entry_on_domain good.live Z_NO_FLUSH (by decide) ⟨by omega, upper⟩]
+  unfold previousPublicEntry
   simp only [bind_app, pure_app, checked, show ((0 : Int32) != 0) = false from rfl,
     show (Z_NO_FLUSH > Z_BLOCK) = False from by decide, show (Z_NO_FLUSH < 0) = False from by decide,
     decide_false, Bool.false_or, Bool.false_eq_true, ite_false,

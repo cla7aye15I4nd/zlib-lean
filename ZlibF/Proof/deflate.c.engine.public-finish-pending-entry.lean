@@ -37,6 +37,7 @@ theorem public_pending_finish_continue {h middle : Heap} {r : ZStreamRef} {ds : 
     · simp [status]
   have checked := stateCheck_live good.live
   rw [public_deflate_source]
+  unfold Phases.entryPhase
   simp only [bind_app, checked, show ((0 : Int32) != 0) = false from rfl,
     show (Z_FINISH > Z_BLOCK) = False from by decide, show (Z_FINISH < 0) = False from by decide,
     decide_false, Bool.false_eq_true, ite_false,
@@ -48,7 +49,7 @@ theorem public_pending_finish_continue {h middle : Heap} {r : ZStreamRef} {ds : 
     wrD_eq, good.live.hs, show (d.pending != 0) = true from bne_iff_ne.mpr pending,
     ite_true, run, goodM.live.hz,
     show (zm.avail_out == 0) = false from beq_eq_false_iff_ne.mpr remaining,
-    rdD_eq, goodM.live.hs, finishInput]
+    ldDeflateState_tab goodM.live.hs, ldZStream_ok goodM.live.hz, finishInput]
 
 /-- Exhausted pending publication returns before any new strategy or trailer. -/
 theorem public_pending_finish_exhausted {h middle : Heap} {r : ZStreamRef} {ds : Nat}
@@ -65,6 +66,7 @@ theorem public_pending_finish_exhausted {h middle : Heap} {r : ZStreamRef} {ds :
     · simp [input empty]
   have checked := stateCheck_live good.live
   rw [public_deflate_source]
+  unfold Phases.entryPhase
   simp only [bind_app, pure_app, checked, show ((0 : Int32) != 0) = false from rfl,
     show (Z_FINISH > Z_BLOCK) = False from by decide, show (Z_FINISH < 0) = False from by decide,
     decide_false, Bool.false_eq_true, ite_false,
@@ -83,7 +85,7 @@ theorem public_busy_header_skip {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStr
       (publicDataTail (some r) (some (.tab ds)) Z_FINISH) h =
       publicDataTail (some r) (some (.tab ds)) Z_FINISH h := by
   unfold publicZlibHeader
-  simp only [bind_app, rdD_eq, good.live.hs, status,
+  simp only [bind_app, ldDeflateState_tab good.live.hs, rdD_eq, good.live.hs, status,
     show (BUSY_STATE == INIT_STATE) = false from rfl, Bool.false_and, Bool.false_eq_true, ite_false]
 
 end Zlib.Deflate.Engine.Proofs

@@ -68,14 +68,17 @@ def zlibCompileFlags : M (CExport UInt64) := do
   -- return flags;
   return flags
 
-/-- `const char * ZEXPORT zError(int err)`  (`ERR_MSG(err)` is
-`z_errmsg[(err) < -6 || (err) > 2 ? 9 : 2 - (err)]`) -/
-def zError (err : Int32) : M (CExport ConstCStr) := do
+/-- The ERR_MSG macro shared by the public wrapper and its in-library callers. -/
+abbrev errorMessage (err : Int32) : M ConstCStr := do
   let i : Int32 := if err < -6 || err > 2 then 9 else 2 - err
   -- the index is in 0..9 for every err, so the access is inside the array
   match z_errmsg[i.toInt.toNat]? with
   | some s => strLit s
   | none => ub "z_errmsg index outside its array"
+
+/-- `const char * ZEXPORT zError(int err)`  (`ERR_MSG(err)` is
+`z_errmsg[(err) < -6 || (err) > 2 ? 9 : 2 - (err)]`) -/
+def zError (err : Int32) : M (CExport ConstCStr) := errorMessage err
 
 /-- `voidpf ZLIB_INTERNAL zcalloc(voidpf opaque, unsigned items, unsigned size)` (the default allocator, `malloc` branch
 since `sizeof(uInt) > 2`; the product is computed in `unsigned`). -/

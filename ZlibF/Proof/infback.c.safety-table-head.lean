@@ -1,3 +1,4 @@
+import ZlibF.Proof.«infback.c.repeat-source»
 import ZlibF.Proof.«infback.c.safety-lookup»
 import ZlibF.Proof.«inflate.c.main.table2»
 import ZlibF.Proof.«inflate.c.main.check0»
@@ -19,11 +20,11 @@ open Zlib.Inftrees (inflate_table)
 set_option autoImplicit false
 
 /-- The condition of the loop over the code-length code lengths read from the stream. -/
-def tl1Cond (c : BCtx) : X Bool :=
+def tl1Cond (c : DecoderCtx) : X Bool :=
   do let s ← ldInflateState c.st; return s.«have» < s.ncode
 
 /-- One code-length code length read from the stream. -/
-def tl1Body (c : BCtx) : X Unit := do
+def tl1Body (c : DecoderCtx) : X Unit := do
   NEEDBITS c 3
   let s ← ldInflateState c.st
   wrS c.st fun s => { s with «have» := s.«have» + 1 }
@@ -33,24 +34,24 @@ def tl1Body (c : BCtx) : X Unit := do
   DROPBITS 3
 
 /-- `case TABLE`: the code-length code lengths read from the stream. -/
-def tabLoop1 (c : BCtx) : X Unit := xwhile (tl1Cond c) (tl1Body c)
+def tabLoop1 (c : DecoderCtx) : X Unit := xwhile (tl1Cond c) (tl1Body c)
 
 /-- The condition of the loop over the code-length code lengths not sent. -/
-def tl2Cond (c : BCtx) : X Bool :=
+def tl2Cond (c : DecoderCtx) : X Bool :=
   do let s ← ldInflateState c.st; return s.«have» < 19
 
 /-- One code-length code length not sent, set to 0. -/
-def tl2Body (c : BCtx) : X Unit := do
+def tl2Body (c : DecoderCtx) : X Unit := do
   let s ← ldInflateState c.st
   wrS c.st fun s => { s with «have» := s.«have» + 1 }
   let o ← orderAt s.«have»
   Ptr.store (← (lensP c.st).add (o.toNat : Int)) (0 : UInt16)
 
 /-- `case TABLE`: the code-length code lengths not sent, set to 0. -/
-def tabLoop2 (c : BCtx) : X Unit := xwhile (tl2Cond c) (tl2Body c)
+def tabLoop2 (c : DecoderCtx) : X Unit := xwhile (tl2Cond c) (tl2Body c)
 
 /-- `case TABLE`: the literal/length and distance code lengths, decoded with the code-length code. -/
-def tabRead (c : BCtx) : X Unit :=
+def tabRead (c : DecoderCtx) : X Unit :=
   xwhileBrk
     (do let s ← ldInflateState c.st; return s.«have» < s.nlen + s.ndist)
     (do
@@ -103,7 +104,7 @@ def tabRead (c : BCtx) : X Unit :=
         return false)
 
 /-- `case TABLE` after the distance table call. -/
-def tabLensTail2 (c : BCtx) (r : Int32) : X Unit := do
+def tabLensTail2 (c : DecoderCtx) (r : Int32) : X Unit := do
   if r != 0 then
     badMode c "invalid distances set"
     return
@@ -111,29 +112,35 @@ def tabLensTail2 (c : BCtx) (r : Int32) : X Unit := do
   setMode c.st LEN
   back_LEN c
 
+abbrev TableBuilder := UInt32 → WPtr → UInt32 → CodePtr → UInt32 → WPtr → M (Int32 × CodePtr × UInt32)
+
 /-- `case TABLE` after the literal/length table call. -/
-def tabLensTail1 (c : BCtx) (r : Int32) : X Unit := do
+def tabLensTail1With (build : TableBuilder) (c : DecoderCtx) (r : Int32) : X Unit := do
   if r != 0 then
     badMode c "invalid literal/lengths set"
     return
   wrS c.st fun s => { s with distcode := s.next, distbits := 8 }
   let s ← ldInflateState c.st
-  let (r, nx, db) ← inflate_table DISTS (← (lensP c.st).add (s.nlen.toNat : Int)) s.ndist s.next s.distbits (workP c.st)
+  let (r, nx, db) ← build DISTS (← (lensP c.st).add (s.nlen.toNat : Int)) s.ndist s.next s.distbits (workP c.st)
   wrS c.st fun s => { s with next := nx, distbits := db }
   modify fun l => { l with ret := r }
   tabLensTail2 c r
 
+abbrev tabLensTail1 := tabLensTail1With inflate_table
+
 /-- `case TABLE`: the literal/length and distance tables, then `case LEN`. -/
-def tabLens (c : BCtx) : X Unit := do
+def tabLensWith (build : TableBuilder) (c : DecoderCtx) : X Unit := do
   wrS c.st fun s => { s with next := codesP c.st, lencode := codesP c.st, lenbits := 10 }
   let s ← ldInflateState c.st
-  let (r, nx, lb) ← inflate_table LENS (lensP c.st) s.nlen s.next s.lenbits (workP c.st)
+  let (r, nx, lb) ← build LENS (lensP c.st) s.nlen s.next s.lenbits (workP c.st)
   wrS c.st fun s => { s with next := nx, lenbits := lb }
   modify fun l => { l with ret := r }
   tabLensTail1 c r
 
+abbrev tabLens := tabLensWith inflate_table
+
 /-- `case TABLE` after the decoded code lengths: the mode check, the end-of-block check, the tables. -/
-def tabC (c : BCtx) : X Unit := do
+def tabC (c : DecoderCtx) : X Unit := do
   if (← rdS c.st (·.mode)) == BAD then return
   if (← Ptr.index (lensP c.st) 256) == (0 : UInt16) then
     badMode c "invalid code -- missing end-of-block"
@@ -141,7 +148,7 @@ def tabC (c : BCtx) : X Unit := do
   tabLens c
 
 /-- `case TABLE` after the code-length table call. -/
-def tabBTail (c : BCtx) (r : Int32) : X Unit := do
+def tabBTail (c : DecoderCtx) (r : Int32) : X Unit := do
   if r != 0 then
     badMode c "invalid code lengths set"
     return
@@ -150,19 +157,70 @@ def tabBTail (c : BCtx) (r : Int32) : X Unit := do
   tabC c
 
 /-- `case TABLE` after the code-length code lengths: the code-length table, the decoded lengths. -/
-def tabB (c : BCtx) : X Unit := do
+def tabBWith (build : TableBuilder)
+    (c : DecoderCtx) : X Unit := do
   wrS c.st fun s => { s with next := codesP c.st, lencode := codesP c.st, lenbits := 7 }
   let s ← ldInflateState c.st
-  let (r, nx, lb) ← inflate_table CODES (lensP c.st) 19 s.next s.lenbits (workP c.st)
+  let (r, nx, lb) ← build CODES (lensP c.st) 19 s.next s.lenbits (workP c.st)
   wrS c.st fun s => { s with next := nx, lenbits := lb }
   modify fun l => { l with ret := r }
   tabBTail c r
 
+abbrev tabB := tabBWith inflate_table
+
 /-- `case TABLE` after the header. -/
-def tabA (c : BCtx) : X Unit := do
+def tabA (c : DecoderCtx) : X Unit := do
   tabLoop1 c
   tabLoop2 c
   tabB c
+
+private def finishCode (c : DecoderCtx) : X Bool := do
+  let s ← ldInflateState c.st
+  if s.«have» + (← get).copy > s.nlen + s.ndist then
+    badMode c "invalid bit length repeat"
+    return true
+  Zlib.Inflate.repeatCodeLength c.st
+  return false
+private theorem codeLoop (c : DecoderCtx)
+    (keep : ∀ (n : UInt32) (code : Code), CodeFrame.KeepsCode code (Zlib.Infback.NEEDBITS c n)) :
+    xwhileBrk
+      (do let s ← ldInflateState c.st; return s.«have» < s.nlen + s.ndist)
+      (do lookup1 c false; Zlib.Infback.Equality.currentStep c (finishCode c)) =
+    tabRead c := by
+  have step : Equality.currentStep c (finishCode c) = Equality.earlierStep c (finishCode c) :=
+    Equality.Shared.steps_factored_eq _ _ _ keep _
+  rw [step]
+  delta Zlib.Infback.Equality.earlierStep Zlib.Infback.Equality.Shared.earlierStep finishCode tabRead
+  simp only [Zlib.Inflate.Proofs.repeatCodeLength_eq]
+set_option maxHeartbeats 1800000 in
+theorem back_TABLE_ctx_eq (c : DecoderCtx)
+    (keep : ∀ (n : UInt32) (code : Code), CodeFrame.KeepsCode code (Zlib.Infback.NEEDBITS c n)) : back_TABLE c = (do
+  NEEDBITS c 14
+  let b ← BITS 5
+  wrS c.st fun s => { s with nlen := b + 257 }
+  DROPBITS 5
+  let b ← BITS 5
+  wrS c.st fun s => { s with ndist := b + 1 }
+  DROPBITS 5
+  let b ← BITS 4
+  wrS c.st fun s => { s with ncode := b + 4 }
+  DROPBITS 4
+  -- if (state->nlen > 286 || state->ndist > 30) { "too many length or distance symbols"; BAD; break; }
+  let s ← ldInflateState c.st
+  if s.nlen > 286 || s.ndist > 30 then
+    badMode c "too many length or distance symbols"
+    return
+  -- state->have = 0; while (state->have < state->ncode) { NEEDBITS(3); lens[order[have++]] = BITS(3); DROPBITS(3); }
+  wrS c.st fun s => { s with «have» := 0 }
+  tabA c) := by
+  have loop : Zlib.Inflate.readCodeLengths c.st (lookup1 c false) (NEEDBITS c)
+      (badMode c "invalid bit length repeat") = tabRead c := codeLoop c keep
+  unfold back_TABLE
+  rw [loop]
+  simp only [tabA, tabB, tabLoop1, tl1Body, tabLoop2, tl2Body, storeOrderedLength,
+    Zlib.Inflate.storeOrderedLength, Zlib.Inflate.withLengthOrder,
+    Zlib.Inflate.Proofs.x_bind_assoc, Zlib.Inflate.Proofs.x_pure_bind]
+  first | rfl | done
 
 theorem back_TABLE_eq (c : BCtx) : back_TABLE c = (do
   NEEDBITS c 14
@@ -182,7 +240,8 @@ theorem back_TABLE_eq (c : BCtx) : back_TABLE c = (do
     return
   -- state->have = 0; while (state->have < state->ncode) { NEEDBITS(3); lens[order[have++]] = BITS(3); DROPBITS(3); }
   wrS c.st fun s => { s with «have» := 0 }
-  tabA c) := rfl
+  tabA c) :=
+  back_TABLE_ctx_eq c fun n code => CodeFrame.need c code n
 
 /-- The counts of `case TABLE` in range, the mode still `TABLE`. -/
 structure TabSt (s : InflateState) : Prop where

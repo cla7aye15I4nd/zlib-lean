@@ -13,21 +13,13 @@ theorem put_byte_run {h : Heap} {id : Nat} {d : DeflateState} {b : Nat} {buf : A
       .ok ((), setD (setB h b (buf.set! d.pending.toNat c)) id { d with pending := d.pending + 1 }) := by
   have hg : Space.get h (BRef.blk b) = some buf := hb.bytes
   have e1 := Ptr.add_nat_ok (off := 0) (n := d.pending.toNat) hg (by omega)
-  have e2 := Ptr.store_ok (v := c) (off := 0 + d.pending.toNat) hg hb.rw (by omega)
+  let advanced := setD h id { d with pending := d.pending + 1 }
+  have hg' : Space.get advanced (BRef.blk b) = some buf := hb.bytes
+  have hr' : Space.ro advanced (BRef.blk b) = false := hb.rw
+  have e2 := Ptr.store_ok (v := c) (off := 0 + d.pending.toNat) hg' hr' (by omega)
   unfold OkOn at e1
-  unfold put_byte
-  rw [bind_app, rd_run hb.dstate]
-  simp only [hb.pbuf]
-  rw [bind_app, e1]
-  simp only []
-  rw [bind_app]
-  unfold store8
-  rw [e2]
-  simp only []
-  have hd : (Space.put h (BRef.blk b) (buf.set! (0 + d.pending.toNat) c)).dstates id = some d := hb.dstate
-  rw [md_run hd]
-  simp [setD, Space.put, setB]
-  rw [hb.pbuf]
+  simp only [put_byte, cdecl_eq, bind_app, pure_app, rd_run hb.dstate, hb.pbuf, e1, md_run hb.dstate, store8]
+  simpa only [advanced, Nat.zero_add, setD, Space.put, setB, hb.pbuf] using e2
 
 
 @[simp] theorem setB_setB (h : Heap) (b : Nat) (a a' : Array UInt8) : setB (setB h b a) b a' = setB h b a' := by
@@ -133,7 +125,7 @@ theorem send_bits_B {h : Heap} {id : Nat} {d : DeflateState} {b : Nat} {buf : Ar
     rw [gt_iff_lt, i32_lt_iff, i32_ofInt_toInt (by rw [Buf_size_toInt]; omega) (by rw [Buf_size_toInt]; omega),
       Buf_size_toInt]
     omega
-  unfold send_bits
+  unfold send_bits cinline
   rw [bind_app, rd_run hb.dstate]
   simp only []
   rw [bind_app, hsub]
@@ -205,7 +197,7 @@ theorem send_bits_A {h : Heap} {id : Nat} {d : DeflateState} {b : Nat} {buf : Ar
   rw [i32_ofInt_toInt (by omega) (by omega)] at hrr
   have hsl : isub len Buf_size = pure (Int32.ofInt (len.toInt - 16)) :=
     isub_eq (by rw [Buf_size_toInt]; omega) (by rw [Buf_size_toInt]; omega) |>.trans (by rw [Buf_size_toInt])
-  unfold send_bits
+  unfold send_bits cinline
   rw [bind_app, rd_run hb.dstate]
   simp only []
   rw [bind_app, hsub]

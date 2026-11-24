@@ -22,7 +22,7 @@ open Zlib.Inffast (inflate_fast)
 set_option autoImplicit false
 
 /-- The lookup of one symbol: the root lookup, and the second level after a link. -/
-def symLook (c : BCtx) (dist : Bool) (isLink : Code → Bool) (k : X Unit) : X Unit := do
+def symLook (c : DecoderCtx) (dist : Bool) (isLink : Code → Bool) (k : X Unit) : X Unit := do
   lookup1 c dist
   let here := (← get).here
   if isLink here then
@@ -36,16 +36,16 @@ def lenIsLink (here : Code) : Bool := here.op != 0 && (here.op &&& 0xf0) == 0
 /-- The link test of the distance code. -/
 def distIsLink (here : Code) : Bool := (here.op &&& 0xf0) == 0
 
-theorem lenDist_eq (c : BCtx) : lenDist c = symLook c true distIsLink (distSym c) := rfl
+theorem lenDist_eq (c : DecoderCtx) : lenDist c = symLook c true distIsLink (distSym c) := rfl
 
-theorem back_LEN_eq' (c : BCtx) : back_LEN c = (do
+theorem back_LEN_eq' (c : DecoderCtx) : back_LEN c = (do
     let l ← get
     if l.have_ >= 6 && l.left >= 258 then
       RESTORE c.strm c.st
       inflate_fast c.strm (← rdS c.st (·.wsize))
       LOAD c.strm c.st
       return
-    symLook c false lenIsLink (lenSym c)) := rfl
+    symLook c false lenIsLink (lenSym c)) := back_LEN_eq c
 
 theorem lenIsLink_eq (e : Code) : lenIsLink e = Zlib.Inftrees.Spec.Subtable.IsLink LENS e := by
   simp [lenIsLink, Zlib.Inftrees.Spec.Subtable.IsLink]

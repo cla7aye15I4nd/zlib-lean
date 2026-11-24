@@ -39,6 +39,41 @@ def moveBody : UInt64 × BPtr × BPtr → M (UInt64 × BPtr × BPtr) :=
     store8 to (← load8 from_)
     pure (n, ← padd to 1, ← padd from_ 1)
 
+/-- Cursor order used by the generated function, with the source pointer first. -/
+private def sourceFirstBody : UInt64 × BPtr × BPtr → M (UInt64 × BPtr × BPtr) := fun (n, from_, to) => do
+  store8 to (← load8 from_)
+  let dst ← padd to 1
+  let src ← padd from_ 1
+  pure (n, src, dst)
+/-- Swapping the stored cursor positions preserves every heap result and fault when the loop result is discarded. -/
+private theorem move_cursors_eq {α : Type} (k : M α) (f : Nat) (n : UInt64) (dst src : BPtr) (h : Heap) :
+    (cwhile.go moveCond moveBody f (n, dst, src) >>= fun _ => k) h =
+    (cwhile.go moveCond sourceFirstBody f (n, src, dst) >>= fun _ => k) h := by
+  induction f generalizing n dst src h with
+  | zero => rfl
+  | succ f ih =>
+    simp only [cwhile.go, moveCond, bind_app, pure_app]
+    by_cases hn : (n != 0) = true
+    · simp only [ite_eq_left hn, bind_app]
+      cases hr : load8 src h with
+      | error e => simp [moveBody, sourceFirstBody, hr]
+      | ok value =>
+        rcases value with ⟨v, h'⟩
+        cases hw : store8 dst v h' with
+        | error e => simp [moveBody, sourceFirstBody, hr, hw]
+        | ok value =>
+          rcases value with ⟨_, h''⟩
+          cases hd : padd dst 1 h'' with
+          | error e => simp [moveBody, sourceFirstBody, hr, hw, hd]
+          | ok value =>
+            rcases value with ⟨d, h1⟩
+            cases hs : padd src 1 h1 with
+            | error e => simp [moveBody, sourceFirstBody, hr, hw, hd, hs]
+            | ok value =>
+              rcases value with ⟨s, h2⟩
+              simpa only [moveBody, sourceFirstBody, hr, hw, hd, hs, bind_app, pure_app] using ih (n - 1) d s h2
+    · simp only [ite_eq_right hn, pure_app]
+
 /-- The bit loop body after `put` is chosen. -/
 def bitRest (s : DeflateStatePtr) (d : DeflateState) (bits value put : Int32) : M (Int32 × Int32) := do
   let mask ← isub (← ishl 1 put.toInt) 1
@@ -79,8 +114,23 @@ theorem prime_split (strm : ZStreamPtr) (bits value : Int32) :
         let _ ← cwhile moveCond moveBody (d.pending, d.pending_buf, d.pending_out)
         wr s (fun d => { d with pending_out := d.pending_buf })
       primeTail s bits value) := by
-  delta deflatePrime primeTail moveCond moveBody bitCond bitBody bitRest
-  exact rfl
+  unfold deflatePrime
+  dsimp only
+  apply congrArg (Bind.bind (deflateStateCheck strm))
+  funext c
+  split
+  · rfl
+  apply congrArg (Bind.bind (zrd strm (·.state)))
+  funext ref
+  apply congrArg (Bind.bind (castDeflateState ref))
+  funext s
+  split
+  · rfl
+  apply congrArg (Bind.bind (ldDeflateState s))
+  funext d
+  split
+  · exact (funext (move_cursors_eq _ fuel d.pending d.pending_buf d.pending_out)).symm
+  · rfl
 
 /-! ## Loop rules -/
 

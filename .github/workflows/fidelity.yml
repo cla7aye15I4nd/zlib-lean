@@ -9,19 +9,27 @@ jobs:
       LEAN_NUM_THREADS: 3
       CLANG: /usr/bin/clang-18
       CC: /usr/bin/clang-18
+      AR: /usr/bin/llvm-ar-18
+      RANLIB: /usr/bin/llvm-ranlib-18
     strategy:
       fail-fast: false
       matrix:
-        target: [audit-pinned, binary-pinned, differential]
+        target: [archive-equal, audit-pinned, binary-pinned, differential]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           submodules: true
       - name: Install the pinned Lean toolchain
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y elan clang-18
+          sudo apt-get update -qq && sudo apt-get install -y elan clang-18 llvm-18
           elan toolchain install "$(cat lean-toolchain)"
       - run: make ${{ matrix.target }}
+      - if: matrix.target == 'archive-equal' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-archive-comparison
+          path: build/archive-*/report.json
+          if-no-files-found: error
       - if: matrix.target == 'audit-pinned'
         run: make binary-pinned && make test
       - if: matrix.target == 'audit-pinned' && always()

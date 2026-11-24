@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.hash-order»
 import ZlibF.Proof.«deflate.c.universal-params-steps»
 import ZlibF.Proof.«trees.c.monad»
 
@@ -84,9 +85,11 @@ theorem exact_store_at (p : BPtr) (i : Nat) (v : UInt8) : ExactM (store_at p i v
   unfold store_at; x_steps
 
 theorem exact_put_byte (s : DeflateStatePtr) (c : UInt8) : ExactM (put_byte s c) := by
-  unfold put_byte
-  exact exact_ld_st0 s (fun d => store_at d.pending_buf d.pending.toNat c)
-    (fun d _ => { d with pending := d.pending + 1 }) (fun _ => exact_store_at _ _ _) (fun _ _ => rfl)
+  unfold put_byte Zlib.Trees.put_byte
+  simp only [cdecl_eq, M_pure_bind]
+  exact ExactM.bind (exact_ldDeflateState s) (fun _ =>
+    ExactM.bind (exact_ptr_add _ _) (fun _ =>
+      ExactM.bind (exact_wr _ _ (fun _ => rfl)) (fun _ => exact_store8 _ _)))
 
 theorem exact_putShortMSB (s : DeflateStatePtr) (b : UInt32) : ExactM (putShortMSB s b) := by
   unfold putShortMSB
@@ -102,6 +105,17 @@ theorem exact_INSERT_STRING (s : DeflateStatePtr) (str : UInt32) : ExactM (INSER
   unfold INSERT_STRING
   repeat' first | exact exact_UPDATE_HASH _ _ | x_step
 
+theorem exact_updateHashAt (s : DeflateStatePtr) (window : BPtr) (i : UInt32) :
+    ExactM (updateHashAt s window i) := by
+  intro h u after run
+  have old := (Zlib.Deflate.Proofs.HashOrder.updateHashAt_ok_iff s window i h after u).mp run
+  exact ExactM.bind (exact_index8 _ _) (fun byte => exact_UPDATE_HASH s byte) h u after old
+
+theorem exact_insertStringAt (s : DeflateStatePtr) (str : UInt32) : ExactM (insertStringAt s str) := by
+  intro h v after run
+  exact exact_INSERT_STRING s str h v after
+    ((Zlib.Deflate.Proofs.HashOrder.insertStringAt_ok_iff s str h after v).mp run)
+
 theorem exact_CLEAR_HASH (s : DeflateStatePtr) : ExactM (CLEAR_HASH s) := by
   unfold CLEAR_HASH; x_steps
 
@@ -111,39 +125,27 @@ theorem exact_d_code (dist : UInt16) : ExactM (d_code dist) := by
 theorem exact_freq_inc (r : CtDataRef) (i : Nat) : ExactM (freq_inc r i) := by
   unfold freq_inc; x_steps
 
+theorem exact_put_symbol_byte (p : DeflateStatePtr) (v : UInt8) :
+    ExactM (Zlib.Trees.put_symbol_byte p v) := by
+  unfold Zlib.Trees.put_symbol_byte
+  exact ExactM.bind (exact_ldDeflateState p) (fun _ =>
+    ExactM.bind (exact_ptr_add _ _) (fun _ =>
+      ExactM.bind (exact_wr _ _ (fun _ => rfl)) (fun _ => exact_store8 _ _)))
+
 theorem exact_tally_lit (s : DeflateStatePtr) (c : UInt8) : ExactM (tally_lit s c) := by
-  let rest : M Bool := match s with
-    | none => ub "null deflate_state"
-    | some (.tab id) => do
-      freq_inc (.dstate_dyn_ltree id) c.toNat
-      let d ← ldDeflateState s
-      return d.sym_next == d.sym_end
-  have grouped : tally_lit s c = (do
-      let d ← ldDeflateState s
-      let x ← (do
-        store_at d.sym_buf d.sym_next.toNat 0
-        store_at d.sym_buf (d.sym_next + 1).toNat 0
-        store_at d.sym_buf (d.sym_next + 2).toNat c)
-      stDeflateState s { d with sym_next := d.sym_next + 3 }
-      rest) := by
+  cases s with
+  | none =>
     unfold tally_lit
-    simp only [M_bind_assoc, rest]
-    cases s with
-    | none => rfl
-    | some r => cases r; rfl
-  rw [grouped]
-  refine exact_ld_st s _ (fun d (_ : Unit) => { d with sym_next := d.sym_next + 3 }) (fun _ _ => rest)
-    ?_ (fun _ _ => rfl) ?_
-  · intro d
-    exact ExactM.bind (exact_store_at _ _ _) (fun _ =>
-      ExactM.bind (exact_store_at _ _ _) (fun _ => exact_store_at _ _ _))
-  · intro d x
-    cases s with
-    | none => exact ExactM.ub _
-    | some r =>
-      cases r
-      exact ExactM.bind (exact_freq_inc _ _) (fun _ =>
-        ExactM.bind (exact_ldDeflateState _) (fun _ => ExactM.pure _))
+    repeat' first
+      | exact exact_put_symbol_byte _ _
+      | x_step
+  | some ref =>
+    cases ref
+    unfold tally_lit
+    repeat' first
+      | exact exact_put_symbol_byte _ _
+      | exact exact_freq_inc _ _
+      | x_step
 
 theorem exact_slide_hash (s : DeflateStatePtr) : ExactM (slide_hash s) := by
   unfold slide_hash; x_steps
@@ -152,8 +154,10 @@ theorem exact_read_buf (p : ZStreamPtr) (buf : BPtr) (n : UInt32) : ExactM (read
   unfold read_buf; x_steps
 
 theorem exact_fill_window (s : DeflateStatePtr) : ExactM (fill_window s) := by
-  unfold fill_window
+  unfold fill_window fillWindowBody slideWindowForFill fillFromStream primeWindowHash fillWindowInsert
+    fillWindowCondition clearWindowTail
   repeat' first
+    | with_reducible exact exact_updateHashAt _ _ _
     | with_reducible exact exact_slide_hash _
     | with_reducible exact exact_read_buf _ _ _
     | with_reducible exact exact_UPDATE_HASH _ _

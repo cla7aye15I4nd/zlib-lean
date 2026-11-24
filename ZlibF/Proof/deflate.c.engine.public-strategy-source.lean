@@ -48,8 +48,8 @@ theorem public_busy_finish_slow_source {h : Heap} {r : ZStreamRef} {ds : Nat}
       (do let bstate ← deflate_slow (some (.tab ds)) Z_FINISH
           publicStrategyReturn (some r) (some (.tab ds)) Z_FINISH bstate) h := by
   have cfg : config_at (6 : Int32) = pure (⟨8, 16, 128, 128, .slow⟩ : Config) := by rfl
-  unfold publicDataTail publicStrategyReturn publicFinishTail zlibTrailer
-  simp only [M_bind_assoc]
+  unfold publicDataTail Phases.strategyPhase publicStrategyReturn
+  simp only [trailerPhase_eq_publicFinishTail, Zlib.Deflate.StrategyLoop.wr_reset_history_then]
   simp only [bind_app, pure_app, rdD_eq, hs, status,
     show (BUSY_STATE == GZIP_STATE) = false from by decide,
     show (BUSY_STATE == EXTRA_STATE) = false from by decide,

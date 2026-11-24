@@ -1,3 +1,6 @@
+import ZlibF.Proof.«deflate.c.engine.lminner»
+import ZlibF.Proof.«deflate.c.huff.source»
+import ZlibF.Proof.«deflate.c.rle.source»
 import ZlibF.Proof.«deflate.c.universal-call-keep-publish»
 import ZlibF.Proof.«deflate.c.engine.slow-source»
 
@@ -18,46 +21,20 @@ theorem keep_forever (st : LoopS) : KeepM (forever st) := KeepM.pure _
 
 theorem keep_tally_dist (s : DeflateStatePtr) (distance length : UInt32) :
     KeepM (tally_dist s distance length) := by
-  let len : UInt8 := length.toUInt8
-  let dist : UInt16 := distance.toUInt16
-  let rest : M Bool := match s with
-    | none => ub "null deflate_state"
-    | some (.tab id) => do
-      let lc ← index8 (.ref BRef.st_length_code 0) len.toNat
-      freq_inc (.dstate_dyn_ltree id) (lc.toNat + 256 + 1)
-      let dc ← d_code (dist - 1)
-      freq_inc (.dstate_dyn_dtree id) dc.toNat
-      let d ← ldDeflateState s
-      return d.sym_next == d.sym_end
-  have grouped : tally_dist s distance length = (do
-      let d ← ldDeflateState s
-      let x ← (do
-        store_at d.sym_buf d.sym_next.toNat dist.toUInt8
-        store_at d.sym_buf (d.sym_next + 1).toNat (dist >>> 8).toUInt8
-        store_at d.sym_buf (d.sym_next + 2).toNat len)
-      stDeflateState s { d with sym_next := d.sym_next + 3 }
-      rest) := by
+  cases s with
+  | none =>
     unfold tally_dist
-    simp only [M_bind_assoc, rest]
-    cases s with
-    | none => rfl
-    | some r => cases r; rfl
-  rw [grouped]
-  refine keep_ld_st s _ (fun d (_ : Unit) => { d with sym_next := d.sym_next + 3 }) (fun _ _ => rest)
-    (fun _ _ => ⟨rfl, rfl⟩) ?_ ?_
-  · intro d
-    exact KeepM.bind (keep_store_at _ _ _) (fun _ =>
-      KeepM.bind (keep_store_at _ _ _) (fun _ => keep_store_at _ _ _))
-  · intro d x
-    cases s with
-    | none => exact KeepM.ub _
-    | some r =>
-      cases r
-      dsimp only [rest]
-      repeat' first
-        | exact keep_freq_inc _ _
-        | exact keep_d_code _
-        | k_step
+    repeat' first
+      | exact keep_put_symbol_byte _ _
+      | k_step
+  | some ref =>
+    cases ref
+    unfold tally_dist
+    repeat' first
+      | exact keep_put_symbol_byte _ _
+      | exact keep_freq_inc _ _
+      | exact keep_d_code _
+      | k_step
 
 theorem keep_lm_cond (limit scan match_ : BPtr) : KeepM (lm_cond limit scan match_) := by
   unfold lm_cond
@@ -70,16 +47,24 @@ theorem keep_lm_cond (limit scan match_ : BPtr) : KeepM (lm_cond limit scan matc
     cases result <;> dsimp only
     all_goals k_steps
 
-theorem keep_lm_body (s : DeflateStatePtr) (st : LMState) : KeepM (lm_body s st) := by
-  unfold lm_body
+private theorem keep_lm_body_with (getEnd : DeflateState → M BPtr) (safe : ∀ d, KeepM (getEnd d)) (s : DeflateStatePtr) (st : LMState) : KeepM (lm_body_with getEnd lm_cond s st) := by
+  unfold lm_body_with
   repeat' first
+    | with_reducible exact safe _
     | with_reducible exact keep_lm_cond _ _ _
     | k_step
 
-theorem keep_longest_match (s : DeflateStatePtr) (cur : UInt32) : KeepM (longest_match s cur) := by
-  unfold longest_match
+theorem keep_lm_body (s : DeflateStatePtr) (st : LMState) : KeepM (lm_body s st) := by
+  apply keep_lm_body_with
+  intro d
   repeat' first
-    | with_reducible exact keep_lm_body _ _
+    | k_step
+
+theorem keep_longest_match (s : DeflateStatePtr) (cur : UInt32) : KeepM (longest_match s cur) := by
+  unfold longest_match searchMatches
+  simp only [Zlib.Deflate.Engine.Proofs.compare_eight_eq]
+  repeat' first
+    | with_reducible exact keep_lm_body_with _ (fun _ => KeepM.pure _) _ _
     | k_step
 
 theorem KeepM.list_forIn_plain {α β : Type} (values : List α) (body : α → β → M (ForInStep β))
@@ -101,6 +86,8 @@ macro "k_strategy_step" : tactic => `(tactic|
     | keep_join
     | with_reducible exact keep_tally_lit _ _
     | with_reducible exact keep_tally_dist _ _ _
+    | with_reducible exact keep_updateHashAt _ _ _
+    | with_reducible exact keep_insertStringAt _ _
     | with_reducible exact keep_INSERT_STRING _ _
     | with_reducible exact keep_UPDATE_HASH _ _
     | with_reducible exact keep_longest_match _ _
@@ -120,9 +107,39 @@ macro "k_strategy_step" : tactic => `(tactic|
     | with_reducible exact keep_forever _
     | k_step)
 
+private theorem keep_storedAdvance (s : DeflateStatePtr) (n : UInt32) : KeepM (storedAdvance s n) := by
+  unfold storedAdvance
+  repeat' k_strategy_step
+
+private theorem keep_storedSlideCount (s : DeflateStatePtr) : KeepM (storedSlideCount s) := by
+  unfold storedSlideCount
+  repeat' k_strategy_step
+
+private theorem keep_storedClampInsert (s : DeflateStatePtr) : KeepM (storedClampInsert s) := by
+  unfold storedClampInsert
+  repeat' k_strategy_step
+
+private theorem keep_storedHighWater (s : DeflateStatePtr) : KeepM (storedHighWater s) := by
+  unfold storedHighWater
+  repeat' k_strategy_step
+
+private theorem keep_storedAddInsert (s : DeflateStatePtr) (n : UInt32) : KeepM (storedAddInsert s n) := by
+  unfold storedAddInsert
+  dsimp only [cdecl]
+  repeat' k_strategy_step
+
+set_option maxRecDepth 200000 in
 theorem keep_deflate_stored (s : DeflateStatePtr) (flush : Int32) : KeepM (deflate_stored s flush) := by
   unfold deflate_stored
-  repeat' k_strategy_step
+  have localValue {α : Type} (v : α) : KeepM (cdecl v) := KeepM.pure _
+  repeat' first
+    | with_reducible exact localValue _
+    | with_reducible exact keep_storedAdvance _ _
+    | with_reducible exact keep_storedSlideCount _
+    | with_reducible exact keep_storedClampInsert _
+    | with_reducible exact keep_storedHighWater _
+    | with_reducible exact keep_storedAddInsert _ _
+    | k_strategy_step
 
 set_option maxRecDepth 200000 in
 theorem keep_deflate_fast_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS) :
@@ -131,6 +148,8 @@ theorem keep_deflate_fast_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS
   repeat' first
     | with_reducible exact keep_tally_lit _ _
     | with_reducible exact keep_tally_dist _ _ _
+    | with_reducible exact keep_updateHashAt _ _ _
+    | with_reducible exact keep_insertStringAt _ _
     | with_reducible exact keep_INSERT_STRING _ _
     | with_reducible exact keep_UPDATE_HASH _ _
     | with_reducible exact keep_longest_match _ _
@@ -140,16 +159,16 @@ theorem keep_deflate_fast_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS
     | k_step
 
 theorem keep_deflate_fast (s : DeflateStatePtr) (flush : Int32) : KeepM (deflate_fast s flush) := by
-  unfold deflate_fast
-  repeat' first
-    | with_reducible exact keep_deflate_fast_body _ _ _
-    | k_strategy_step
+  unfold deflate_fast deflate_fast_step finishHashBlock
+  repeat' k_strategy_step
 
 /-- The callees of the lazy strategy as steps. -/
 macro "k_slow_step" : tactic => `(tactic|
   first
     | with_reducible exact keep_tally_lit _ _
     | with_reducible exact keep_tally_dist _ _ _
+    | with_reducible exact keep_updateHashAt _ _ _
+    | with_reducible exact keep_insertStringAt _ _
     | with_reducible exact keep_INSERT_STRING _ _
     | with_reducible exact keep_longest_match _ _
     | with_reducible exact keep_FLUSH_BLOCK _ _
@@ -201,10 +220,8 @@ theorem keep_deflate_slow_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS
     | k_slow_step
 
 theorem keep_deflate_slow (s : DeflateStatePtr) (flush : Int32) : KeepM (deflate_slow s flush) := by
-  unfold deflate_slow
-  repeat' first
-    | with_reducible exact keep_deflate_slow_body _ _ _
-    | k_strategy_step
+  unfold deflate_slow deflate_slow_step slowFinish finishHashBlock
+  repeat' k_strategy_step
 
 theorem keep_deflate_rle_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS) :
     KeepM (deflate_rle_body s flush st) := by
@@ -213,10 +230,12 @@ theorem keep_deflate_rle_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS)
   repeat' k_strategy_step
 
 theorem keep_deflate_rle (s : DeflateStatePtr) (flush : Int32) : KeepM (deflate_rle s flush) := by
-  unfold deflate_rle
-  repeat' first
-    | with_reducible exact keep_deflate_rle_body _ _ _
-    | k_strategy_step
+  have frame : KeepM (RleProofs.legacy (fuel+1) s flush) := by
+    rw [RleProofs.legacy_unfold]
+    repeat' first
+      | with_reducible exact KeepM.cwhile_go forever _ keep_forever (keep_deflate_rle_body s flush) _ _
+      | k_strategy_step
+  exact fun _ _ _ run => frame _ _ _ (RleProofs.to_legacy_ok run)
 
 theorem keep_deflate_huff_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS) :
     KeepM (deflate_huff_body s flush st) := by
@@ -224,9 +243,11 @@ theorem keep_deflate_huff_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS
   repeat' k_strategy_step
 
 theorem keep_deflate_huff (s : DeflateStatePtr) (flush : Int32) : KeepM (deflate_huff s flush) := by
-  unfold deflate_huff
-  repeat' first
-    | with_reducible exact keep_deflate_huff_body _ _ _
-    | k_strategy_step
+  have frame : KeepM (HuffProofs.legacy (fuel+1) s flush) := by
+    rw [HuffProofs.legacy_unfold]
+    repeat' first
+      | with_reducible exact KeepM.cwhile_go forever _ keep_forever (keep_deflate_huff_body s flush) _ _
+      | k_strategy_step
+  exact fun _ _ _ run => frame _ _ _ (HuffProofs.to_legacy_ok run)
 
 end Zlib.Deflate.Universal.Keep

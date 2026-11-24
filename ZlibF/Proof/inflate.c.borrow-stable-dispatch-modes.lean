@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.mode-correspondence»
 import ZlibF.Proof.«inflate.c.borrow-stable-dispatch-macros»
 
 /-! Every actual inflate mode, including malformed-data and exception outcomes,
@@ -101,7 +102,7 @@ theorem stable_x_inflate_CODELENS (c : Ctx) : StableX (inflate_CODELENS c) := by
     | inflate_borrow_x_step
 
 theorem stable_x_inflate_LENLENS (c : Ctx) : StableX (inflate_LENLENS c) := by
-  unfold inflate_LENLENS
+  rw [Zlib.Inflate.Proofs.LENLENS_previous]
   repeat' first
     | with_reducible exact stable_x_inflate_CODELENS _
     | inflate_borrow_x_step
@@ -141,19 +142,19 @@ theorem stable_x_inflate_TYPE (c : Ctx) : StableX (inflate_TYPE c) := by
     | inflate_borrow_x_step
 
 theorem stable_x_inflate_DICT (c : Ctx) : StableX (inflate_DICT c) := by
-  unfold inflate_DICT
+  rw [Zlib.Inflate.Proofs.DICT_previous]
   repeat' first
     | with_reducible exact stable_x_inflate_TYPE _
     | inflate_borrow_x_step
 
 theorem stable_x_inflate_DICTID (c : Ctx) : StableX (inflate_DICTID c) := by
-  unfold inflate_DICTID
+  rw [Zlib.Inflate.Proofs.DICTID_previous]
   repeat' first
     | with_reducible exact stable_x_inflate_DICT _
     | inflate_borrow_x_step
 
 theorem stable_x_inflate_HCRC (c : Ctx) : StableX (inflate_HCRC c) := by
-  unfold inflate_HCRC
+  rw [Zlib.Inflate.Proofs.HCRC_previous]
   repeat' first
     | inflate_borrow_x_step
 
@@ -200,7 +201,8 @@ theorem stable_x_inflate_FLAGS (c : Ctx) : StableX (inflate_FLAGS c) := by
     | inflate_borrow_x_step
 
 theorem stable_x_inflate_HEAD (c : Ctx) : StableX (inflate_HEAD c) := by
-  unfold inflate_HEAD
+  unfold inflate_HEAD startDataCheck storeChecksum resetHeaderCheck
+  simp only [Zlib.Inflate.Proofs.liftHeapBind, Zlib.Inflate.Proofs.x_bind_assoc, Bool.false_eq_true, ↓reduceIte]
   repeat' first
     | inflate_borrow_x_step
 

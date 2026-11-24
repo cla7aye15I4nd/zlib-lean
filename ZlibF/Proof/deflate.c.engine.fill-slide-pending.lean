@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.engine.fill-refinement»
 import ZlibF.Proof.«deflate.c.engine.fill-pending-boundary»
 
 /-! # Sliding retains the deferred-insertion frontier -/
@@ -101,7 +102,7 @@ theorem fill_window_empty_pending_boundary {h : Heap} {r : ZStreamRef} {ds origi
   have loop := do_once (fill_body_no_input boundary.good empty noSlide) (fill_cond_break (some (.tab ds)) h)
   have pad := fill_high_water_complete boundary.good win get (window_writable boundary.good win) boundary.range
   have actual : fill_window (some (.tab ds)) h = .ok ((), paddedHeap h ds w d wa) := by
-    rw [fill_window_source]
+    apply fill_window_of_return
     simp only [bind_app, rdD_eq, boundary.good.live.hs, loop]
     exact pad
   have same : after = paddedHeap h ds w d wa := congrArg Prod.snd (Except.ok.inj (run.symm.trans actual))

@@ -73,7 +73,7 @@ theorem PULLBYTE_succ_cursor {h : Heap} {l : IL} {b : UInt8} {bs : List UInt8}
     rw [shl64_run _ _ (by omega : l.bits.toNat < 64)]
     rfl
   have actual : runX PULLBYTE l h = .ok ((.ok (), pulled l array[off] (.ref ref (off + 1))), h) := by
-    unfold PULLBYTE
+    rw [Zlib.Inflate.Proofs.pullByte_eq_previous]
     rw [runX_bind, runX_get]
     simp only [empty, Bool.false_eq_true, ↓reduceIte]
     simp only [runX_bind, runX_set, runX_lift_ok load, runX_lift_ok add, runX_lift_ok shift]

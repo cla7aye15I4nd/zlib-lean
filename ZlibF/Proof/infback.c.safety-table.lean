@@ -44,13 +44,13 @@ theorem tabC_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
     {s : InflateState} (hs : h.istates i = some s)
     (st : s.mode = BAD ∨ (RdSt i s ∧ s.«have».toNat = s.nlen.toNat + s.ndist.toNat ∧ l.bits.toNat < 8))
     {B : Nat} (lt : baseM pr l log + 2 ≤ B) : TabOut c pr h0 B (tabC c) l h := by
-  have rdm : rdS (some (.tab i)) (·.mode) h = .ok (s.mode, h) := by
-    have := rdS_ok I.cst hs (·.mode); rwa [I.cst] at this
+  have rdm := rdS_ok I.cst hs (·.mode)
+  have lens : lensP c.st = .ref (.istate_lens i) 0 := by rw [I.cst]; rfl
   rcases st with bad | ⟨rd, full, short⟩
   · left
     refine ⟨.ok (), l, h, ?_, log, I, Or.inl ⟨rfl, ?_⟩, fun _ => Short.of_mode hs (Or.inl bad)⟩
     · unfold tabC
-      simp only [I.cst, runX_bind, runX_lift_ok rdm, bad, beq_self_eq_true, ↓reduceIte]
+      simp only [runX_bind, runX_lift_ok rdm, bad, beq_self_eq_true, ↓reduceIte]
       rfl
     · rw [backMeasure_of pr hs, bad, modeRank_BAD]; omega
   · have nb : (s.mode == BAD) = false := by rw [rd.tab.mode]; decide
@@ -66,7 +66,7 @@ theorem tabC_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
       obtain ⟨hb, runB, T⟩ := TRound.bad I "invalid code -- missing end-of-block" lit_missing_eob (B := B) (by omega)
       refine ⟨.ok (), l, hb, ?_, T⟩
       unfold tabC
-      simp only [I.cst, runX_bind, runX_lift_ok rdm, nb, Bool.false_eq_true, ↓reduceIte, lensP,
+      simp only [runX_bind, runX_lift_ok rdm, nb, Bool.false_eq_true, ↓reduceIte, lens,
         runX_lift_ok read, z256, runX_lift_ok runB]
       rfl
     · have z' : (s0.lens[0 + 256]'(by rw [wf.1]; omega) == (0 : UInt16)) = false := by simpa using z256
@@ -75,14 +75,14 @@ theorem tabC_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
       · left
         refine ⟨res, l', h', ?_, T⟩
         unfold tabC
-        simp only [I.cst, runX_bind, runX_lift_ok rdm, nb, Bool.false_eq_true, ↓reduceIte, lensP,
+        simp only [runX_bind, runX_lift_ok rdm, nb, Bool.false_eq_true, ↓reduceIte, lens,
           runX_lift_ok read, z']
         exact run'
       · right
         refine ⟨{ l with ret := 0 }, h1, log, s1, ?_, I1, hs1, mode1, tab1, by
           show baseM pr l log + 2 ≤ B; omega, short⟩
         unfold tabC
-        simp only [I.cst, runX_bind, runX_lift_ok rdm, nb, Bool.false_eq_true, ↓reduceIte, lensP,
+        simp only [runX_bind, runX_lift_ok rdm, nb, Bool.false_eq_true, ↓reduceIte, lens,
           runX_lift_ok read, z']
         exact run1
 

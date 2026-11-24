@@ -125,7 +125,7 @@ theorem deflateEnd_run {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d :
       simp only [freeWords_bytes, freeBytes, hB.pbuf]
       simp [upd_ne _ _ _ _ hbw.symm, hwa], by simpa using hB.wro⟩)
   simp only [hB.pbuf, hB.head, hB.prev, hB.win] at f1 f2 f3 f4
-  unfold deflateEnd
+  unfold deflateEnd ZFREE_state
   dsimp' [stateCheck_live hL, hL.zst, hL.hz, hL.hs, hB.pbuf, hB.head, hB.prev, hB.win, f1, f2, f3, f4]
   have hz' : ∀ h' : Heap, r.get h' = r.get h → zfree_default (some r) h' = .ok ((), h') := fun h' e =>
     zfree_default_run (by rw [e]; exact hL.hz) hf

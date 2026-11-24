@@ -160,7 +160,8 @@ theorem inflateCopy_dynamic_no_window_exec
     good.live.zst, castI, allocRun, zeroRun,
     ldInflateState_tab zeroSource, noWindow, nextPtr, len0, distPtr,
     copyZRun, copyIRun, backlinkRun,
-    ldInflateState_tab sourceAfterBacklink, codesP, lenRun,
+    ldInflateState_tab sourceAfterBacklink,
+      ldInflateState_tab sourceAfterLen, ldInflateState_tab sourceAfterDist, codesP, lenRun,
     distDiff, distToInt, distAdd, distRun, nextDiff, nextToInt, nextAdd,
     nextRun, windowRun, destRun, StateRef.ofInflateState,
     finished]

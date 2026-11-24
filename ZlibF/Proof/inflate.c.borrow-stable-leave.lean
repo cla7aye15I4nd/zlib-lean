@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.window-stream»
 import ZlibF.Proof.«checksum.borrow-stable»
 import ZlibF.Zlib.«inflate.c»
 
@@ -166,7 +167,9 @@ metadata for every context/register/heap and every successful return. This
 includes real window-allocation refusal and all window/checksum/return guards.
 No representation invariant or callee contract is assumed. -/
 theorem stable_inflate_leave (c : Ctx) (l : IL) : StableM (inflate_leave c l) := by
-  unfold inflate_leave
+  rw [Zlib.Inflate.Proofs.WindowStream.inflate_leave_eq_saved]
+  unfold leaveWindow leaveAccounting
+  simp only [Zlib.Inflate.Proofs.WindowStream.savedOutput_bind]
   repeat' first
     | with_reducible exact stable_wrZ _ _
     | with_reducible exact stable_wrS _ _

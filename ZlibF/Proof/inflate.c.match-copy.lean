@@ -22,7 +22,7 @@ def matchCopyCond : X Bool := do
   set { l with copy := n }
   return n != 0
 
-def matchCopyLoop : X Unit := xdoWhile matchCopyByte matchCopyCond
+abbrev matchCopyLoop := copyMatchBytes
 
 /-- One actual byte copy, for overlapping output or a distinct saved source.
 The source pointer is advanced on the heap after the destination write. -/
@@ -225,7 +225,8 @@ theorem matchCopyLoop_run {h : Heap} {l : IL} {dest source : BRef}
       ZlibF.Math.InflateMatchCopy.copy (decide (source = dest)) saved n sourceOffset outOffset output := by
     conv => rhs; rw [nEq]
     simp only [ZlibF.Math.InflateMatchCopy.copy_succ, decide_eq_true_eq, array, value]
-  unfold matchCopyLoop xdoWhile
+  change runX (xdoWhile matchCopyByte matchCopyCond) l h = _
+  unfold xdoWhile
   rw [runX_bind, first]
   simp only []
   rw [rest]

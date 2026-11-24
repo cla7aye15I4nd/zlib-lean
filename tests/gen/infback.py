@@ -100,5 +100,17 @@ for nlen in (286, 287, 288):
     for chunk in (1, 1000):
         case(15, chunk, 0, header)
 
+# The output callback redirects the input cursor both at the final flush and
+# while a full window is emitted with a stored block still in progress.
+small = bytes([1, 1, 0, 254, 255, ord("A"), 19, 47])
+large = bytes([1, 44, 1, 211, 254]) + bytes(i % 251 for i in range(300)) + bytes([19, 47])
+for wb, stream in [(15, small), (8, large)]:
+    for chunk in [2, len(stream)]:
+        case(wb, chunk, 8, stream)
+case(8, len(large), 8 | 2, large)
+case(8, len(large), 8 | 1, large)
+case(15, len(small), 8 | 16, small)
+case(8, len(large), 8 | 16, large)
+
 for line in out:
     print(line)

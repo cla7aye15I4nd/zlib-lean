@@ -1,3 +1,4 @@
+import ZlibF.Proof.HeapWP
 import ZlibF.Proof.«inflate.c.sync-first-origin»
 
 namespace Zlib.Inflate.Proofs
@@ -22,18 +23,8 @@ theorem sync_pointer_load_heap {h after : Heap} {pointer : BPtr} {byte : UInt8}
 /-- A successful indexed read only observes the heap, including represented
 embedded/static byte views and the source model's null arithmetic cases. -/
 theorem sync_index8_heap {h after : Heap} {pointer : BPtr} {offset : Int} {byte : UInt8}
-    (actual : C.run (index8 pointer offset) h = .ok (byte, after)) : after = h := by
-  change Ptr.index pointer offset h = _ at actual
-  unfold Ptr.index at actual
-  rw [bind_app] at actual
-  cases added : Ptr.add pointer offset h with
-  | error fault => rw [added] at actual; cases actual
-  | ok pair =>
-    obtain ⟨result, middle⟩ := pair
-    rw [added] at actual
-    have same := sync_pointer_add_heap added
-    subst middle
-    exact sync_pointer_load_heap actual
+    (actual : C.run (index8 pointer offset) h = .ok (byte, after)) : after = h :=
+  C.Ptr.index_heap actual
 
 /-- Every fault-free execution of the actual sync pattern search leaves
 the heap unchanged. It does not assume readable input, termination or the

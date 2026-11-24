@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.strategy-loop»
 import ZlibF.Proof.«deflate.c.universal-call-trailer»
 
 /-!
@@ -62,7 +63,8 @@ set_option maxRecDepth 20000 in
 theorem strategy_phase_split (strm : ZStreamPtr) (s : DeflateStatePtr) (flush : Int32) (k : M Int32) :
     strategyPhase strm s flush k = strategyPhase' strm s flush k := by
   delta strategyPhase strategyPhase' strategyAfter markerTail
-  exact rfl
+  simp only [StrategyLoop.wr_reset_history_then]
+  rfl
 
 /-- The flush after the marker and its early return. -/
 def markerFlush (strm : ZStreamPtr) (s : DeflateStatePtr) (k : M Int32) : M Int32 := do

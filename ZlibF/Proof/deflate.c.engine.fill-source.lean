@@ -107,9 +107,59 @@ def fillHighWater (s : DeflateStatePtr) : M Unit := do
 The complete source decomposition preserves every branch and loop. -/
 theorem fill_window_source (s : DeflateStatePtr) : fill_window s = (do
     let wsize ← rd s (·.w_size)
-    let _ ← cdoWhile (fillBody s wsize) (fillCond s) false
-    fillHighWater s) := by
-  unfold fill_window fillBody fillPrime fillCond fillHighWater
-  simp only [M_bind_assoc, M_pure_bind, fill_ite_bind]
+    let _ ← cdoWhileBrk (fillWindowBody s wsize) (fillWindowCondition s) ()
+    fillHighWater s) := rfl
+
+/-- Without a slide or input, the C loop exits immediately. The entire remaining action is
+    the original high-water padding, including its failure behavior. -/
+theorem fill_window_no_input {h : Heap} {s : DeflateStatePtr} {d : DeflateState} {z : ZStream}
+    (state : ldDeflateState s h = .ok (d, h)) (stream : ldZStream d.strm h = .ok (z, h))
+    (noSlide : ¬d.strstart ≥ d.w_size + (d.w_size - MIN_LOOKAHEAD_u)) (empty : z.avail_in = 0) :
+    fill_window s h = fillHighWater s h := by
+  have body : fillWindowBody s d.w_size () h = .ok (.brk (), h) := by
+    simp [fillWindowBody, fillFromStream, bind_app, state, noSlide, rd, zrd, pure_app, stream, empty]
+  have loop : cdoWhileBrk (fillWindowBody s d.w_size) (fillWindowCondition s) () h =
+      .ok ((), h) := by
+    unfold cdoWhileBrk cdoWhileCtrl
+    rw [show fuel = (2^64-1)+1 by decide, cdoWhileCtrl.go]
+    simp [bind_app, body, pure_app]
+  rw [fill_window_source]
+  simp only [rd, bind_app, state, pure_app, loop]
+
+/-- Testing before the assignment and writing the clamped value agree on every heap. -/
+theorem clampInsert_eq (s : DeflateStatePtr) :
+    (do let d ← ldDeflateState s
+        if d.insert > d.strstart then wr s (fun d => { d with insert := d.strstart })) =
+      wr s (fun d => { d with insert := if d.insert > d.strstart then d.strstart else d.insert }) := by
+  funext h
+  cases s with
+  | none => rfl
+  | some r =>
+    cases r with
+    | tab i =>
+      cases live : h.dstates i with
+      | none => simp [wr, bind_app, ldDeflateState, DeflateStateRef.get, live]
+      | some d =>
+        by_cases need : d.insert > d.strstart
+        · simp [wr, bind_app, ldDeflateState_tab live, need]
+        · simp [wr, bind_app, ldDeflateState_tab live, need, stDeflateState_tab live, upd_self _ _ _ live]
+
+/-- With no slide and no input, the previous flag-based loop and emitted loop have the same
+    complete execution, including faults in the high-water padding. -/
+theorem fill_empty_eq_legacy {h : Heap} {s : DeflateStatePtr} {d : DeflateState} {z : ZStream}
+    (state : ldDeflateState s h = .ok (d, h)) (stream : ldZStream d.strm h = .ok (z, h))
+    (noSlide : ¬d.strstart ≥ d.w_size + (d.w_size - MIN_LOOKAHEAD_u)) (empty : z.avail_in = 0) :
+    fill_window s h = (do
+      let n ← rd s (·.w_size)
+      let _ ← cdoWhile (fillBody s n) (fillCond s) false
+      fillHighWater s) h := by
+  rw [fill_window_no_input state stream noSlide empty]
+  have body : fillBody s d.w_size false h = .ok (true, h) := by
+    simp [fillBody, bind_app, state, noSlide, rd, zrd, pure_app, stream, empty]
+  have loop : cdoWhile (fillBody s d.w_size) (fillCond s) false h = .ok (true, h) := by
+    unfold cdoWhile
+    rw [show fuel = (2^64-1)+1 by decide, cdoWhile.go]
+    simp [bind_app, body, fillCond, pure_app]
+  simp only [rd, bind_app, state, pure_app, loop]
 
 end Zlib.Deflate.Engine.Proofs

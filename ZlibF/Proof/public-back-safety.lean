@@ -2,7 +2,7 @@ import ZlibF.Proof.«infback.c.safety-fast»
 import ZlibF.Proof.«public-infback-end»
 import ZlibF.Proof.«public-infback-init»
 import ZlibF.Proof.«infback.c.back»
-import ZlibF.Proof.«public-init-safety»
+import ZlibF.Proof.«public-init-frame»
 import ZlibF.Spec.Safety.Back
 
 /-!

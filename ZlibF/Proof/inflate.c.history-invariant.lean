@@ -252,7 +252,7 @@ theorem inflateGetDictionary_preserves (r : ZStreamRef) (dest : BPtr) (dl : Opti
     exact ⟨z, s, next, id⟩
   by_cases empty : dest = .null ∨ s.whave = 0
   · refine finish (written := h) (value := (Z_OK, dl.map (fun _ => s.whave))) ?_ current
-    unfold C.run inflateGetDictionary
+    unfold C.run inflateGetDictionary getDictionaryWith
     rcases empty with null | zero
     · cases dl <;> simp [stateCheck_live good.live, ldZ_eq, ldI_eq,
         good.live.hz, good.live.zst, castI, good.live.hs, null]

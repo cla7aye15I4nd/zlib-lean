@@ -97,7 +97,7 @@ theorem params_same_run' {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d
       configuration_table[(if level == Z_DEFAULT_COMPRESSION then 6 else level).toInt.toNat]!, ?_, rfl,
       fun _ => Iff.rfl, rfl⟩
     unfold paramsTail
-    simp only [bind_app, ldRun, levelB, ite_true, zeroB, Bool.false_eq_true, ite_false, cfgL, wrD_eq,
+    simp only [bind_app, ldRun, levelB, ite_true, zeroB, Bool.false_eq_true, ite_false, config_at_run _ lo hi, wrD_eq,
       good.live.hs, setD_dstates_same, setD_setD]
     all_goals (try rfl)
 

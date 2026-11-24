@@ -35,20 +35,16 @@ theorem public_finish_entry {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream}
       (publicDataTail (some r) (some (.tab ds)) Z_FINISH)
       (setD h ds { d with last_flush := Z_FINISH }) =
       publicFinishTail (some r) (some (.tab ds)) Z_FINISH (setD h ds { d with last_flush := Z_FINISH }) := by
-    have getStatus : rd (some (.tab ds)) (·.status) (setD h ds { d with last_flush := Z_FINISH }) =
-        .ok (FINISH_STATE, setD h ds { d with last_flush := Z_FINISH }) := by
-      simp only [rdD_eq, setD_dstates_same, status]
-    have getWrap : rd (some (.tab ds)) (·.wrap) (setD h ds { d with last_flush := Z_FINISH }) =
-        .ok (d.wrap, setD h ds { d with last_flush := Z_FINISH }) := by
-      simp only [rdD_eq, setD_dstates_same]
     unfold publicZlibHeader
-    simp only [bind_app, getStatus, getWrap,
+    simp only [bind_app, ldD_eq, rdD_eq, setD_dstates_same, status,
       show (FINISH_STATE == INIT_STATE) = false from rfl, Bool.false_and,
-      Bool.false_eq_true, ite_false, tail]
+      Bool.false_eq_true, ite_false]
+    simpa only [status] using tail
   obtain ⟨rank, ranked⟩ := rank_legal_last_flush d.last_flush lower upper
   have checked := stateCheck_live good.live
   have rankFinish : RANK Z_FINISH = pure 8 := by rfl
-  rw [public_deflate_source]
+  rw [public_deflate_source, entryPhase_eq_previousPublicEntry good.live _ (by decide) ⟨lower, upper⟩]
+  unfold previousPublicEntry
   simp only [bind_app, pure_app, checked, show ((0 : Int32) != 0) = false from rfl,
     show (Z_FINISH > Z_BLOCK) = False from by decide, show (Z_FINISH < 0) = False from by decide,
     decide_false, Bool.false_eq_true, ite_false,
@@ -87,7 +83,7 @@ theorem public_finished_headers {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStr
       Bool.false_eq_true, ite_false, rdD_eq, good.live.hs, wrap,
       show (-1 : Int32) ≤ 0 from by decide, ite_true]
   unfold publicZlibHeader
-  simp only [bind_app, rdD_eq, good.live.hs, status,
+  simp only [bind_app, ldDeflateState_tab good.live.hs, rdD_eq, good.live.hs, status,
     show (FINISH_STATE == INIT_STATE) = false from rfl,
     Bool.false_and, Bool.false_eq_true, ite_false, tail]
 

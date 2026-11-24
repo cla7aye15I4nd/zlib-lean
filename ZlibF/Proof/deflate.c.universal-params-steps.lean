@@ -145,6 +145,9 @@ macro "exact_step" : tactic => `(tactic|
   first
     | exact_leaf
     | with_reducible apply exact_cfor
+    | with_reducible apply ExactM.cforEverRet
+    | with_reducible apply ExactM.cdoWhileBrk
+    | with_reducible apply ExactM.cwhileBrk
     | with_reducible apply ExactM.cwhile
     | with_reducible apply ExactM.cdoWhile
     | with_reducible apply ExactM.ite

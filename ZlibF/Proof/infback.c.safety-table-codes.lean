@@ -2,6 +2,7 @@ import ZlibF.Proof.«infback.c.safety-table-cl»
 import ZlibF.Proof.«inftrees.c.content.codes»
 import ZlibF.Proof.«inflate.c.main.table5»
 import ZlibF.Proof.«inftrees.c.code-length-contents»
+import ZlibF.Proof.«inftrees.c.abi»
 import ZlibF.Proof.«inflate.c.meaning-lookup»
 import ZlibF.Proof.«inflate.c.meaning-distance»
 
@@ -30,19 +31,18 @@ def cdSt (i : Nat) (s : InflateState) (wa : Array UInt16) (ca : Array Code) (nx 
     InflateState :=
   { s with next := nx, lencode := .ref (.istate_codes i) 0, lenbits := lb, work := wa, codes := ca }
 
-/-- **The code-length table call of `case TABLE` on the invariant.** -/
-theorem tabB_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
-    (pr : Proto c r i window n) {h0 h : Heap} {l : IL} {log : BackLog} (I : PInv c pr h0 h l log)
-    {s : InflateState} (hs : h.istates i = some s) (st : TabSt s)
-    (lens7 : ∀ k, k < 19 → (s.lens.getD k 0).toNat ≤ 7) {B : Nat} (lt : baseM pr l log < B) :
-    (∃ res l' h', runX (tabB c) l h = .ok ((res, l'), h') ∧ TRound c pr h0 B res l' h') ∨
-    (∃ h1 s1, runX (tabB c) l h = runX (do tabRead c; tabC c) { l with ret := 0 } h1 ∧
-      PInv c pr h0 h1 { l with ret := 0 } log ∧ h1.istates i = some s1 ∧ TabSt s1 ∧ s1.«have» = 0 ∧
-      RdTab i s1 ∧ s1.lens = s.lens) := by
-  obtain ⟨z, s0, valid, -, -⟩ := I.valid
-  have e0 : s0 = s := Option.some.inj (valid.2.1.symm.trans hs)
-  subst e0
-  obtain ⟨hl, hw, hcs⟩ := valid.2.2.2.2.2.1
+/-- The builder runs without any callback between its setup and writeback.
+Only the state's work and code arrays and table registers can change. -/
+theorem tabB_run (c : DecoderCtx) {i : Nat} (hc : c.st = some (.tab i))
+    {h : Heap} {s0 : InflateState} (hs : h.istates i = some s0) (wf : s0.WellFormed)
+    (lens7 : ∀ k, k < 19 → (s0.lens.getD k 0).toNat ≤ 7) (l : IL) :
+    ∃ ret nx lb wa ca,
+      let sQ := cdSt i s0 wa ca nx lb
+      sQ.WellFormed ∧
+      runX (tabB c) l h = runX (tabBTail c ret) {l with ret} (setI h i sQ) ∧
+      runX (tabBWith Zlib.Inftrees.inflate_table_c c) l h = runX (tabBTail c ret) {l with ret} (setI h i sQ) ∧
+      (ret = 0 → RdTab i sQ) := by
+  obtain ⟨hl, hw, hcs⟩ := wf
   let sP : InflateState := { s0 with next := .ref (.istate_codes i) 0, lencode := .ref (.istate_codes i) 0, lenbits := 7 }
   have hsP : (setI h i sP).istates i = some sP := by simp [setI]
   have hgl : Space.get (setI h i sP) (WRef.istate_lens i) = some s0.lens := by
@@ -78,15 +78,47 @@ theorem tabB_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
       (.ref (WRef.istate_work i) 0) (setI h i sP) = .ok ((ret, nx, lb), setI h i { sP with work := wa', codes := ca' }) := by
     rw [← hh3']; exact hrun
   let sQ := cdSt i s0 wa' ca' nx lb
-  have hsQ : (setI h i sQ).istates i = some sQ := by simp [setI]
   have wfQ : sQ.WellFormed := ⟨hl, by rw [← hw]; exact hwa, by rw [← hcs]; exact hca⟩
+  have runQ (build : UInt32 → WPtr → UInt32 → CodePtr → UInt32 → WPtr → M (Int32 × CodePtr × UInt32))
+      (hr : build CODES (.ref (.istate_lens i) 0) 19 (.ref (.istate_codes i) 0) 7 (.ref (.istate_work i) 0)
+        (setI h i sP) = .ok ((ret, nx, lb), setI h i {sP with work := wa', codes := ca'})) :
+      runX (tabBWith build c) l h = runX (tabBTail c ret) { l with ret := ret } (setI h i sQ) := by
+    unfold tabBWith
+    rw [hc]
+    simp [runX_bind, runX_lift, wrI_eq, ldI_eq, hs, lensP, workP, codesP, runX_modify, hr, sP]
+    rfl
+  refine ⟨ret, nx, lb, wa', ca', wfQ, runQ _ hrun2,
+    runQ _ (Zlib.Inftrees.TableABI.returning_eq _ _ _ _ _ _ hrun2), ?_⟩
+  intro ok
+  obtain ⟨ca, get, safe⟩ := decoded ok
+  have getQ : Space.get (setI h i { sP with work := wa', codes := ca' }) (CodeRef.istate_codes i) = some ca' := by
+    simp [Space.get, setI]
+  rw [hh3', getQ] at get
+  cases get
+  obtain ⟨ca2, get2, cont⟩ := contents ok
+  rw [hh3', getQ] at get2
+  cases get2
+  exact ⟨rfl, safe, _, cont⟩
+
+/-- **The code-length table call of `case TABLE` on the invariant.** -/
+theorem tabB_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
+    (pr : Proto c r i window n) {h0 h : Heap} {l : IL} {log : BackLog} (I : PInv c pr h0 h l log)
+    {s : InflateState} (hs : h.istates i = some s) (st : TabSt s)
+    (lens7 : ∀ k, k < 19 → (s.lens.getD k 0).toNat ≤ 7) {B : Nat} (lt : baseM pr l log < B) :
+    (∃ res l' h', runX (tabB c) l h = .ok ((res, l'), h') ∧ TRound c pr h0 B res l' h') ∨
+    (∃ h1 s1, runX (tabB c) l h = runX (do tabRead c; tabC c) { l with ret := 0 } h1 ∧
+      PInv c pr h0 h1 { l with ret := 0 } log ∧ h1.istates i = some s1 ∧ TabSt s1 ∧ s1.«have» = 0 ∧
+      RdTab i s1 ∧ s1.lens = s.lens) := by
+  obtain ⟨z, s0, valid, -, -⟩ := I.valid
+  have e0 : s0 = s := Option.some.inj (valid.2.1.symm.trans hs)
+  subst e0
+  obtain ⟨hl, hw, hcs⟩ := valid.2.2.2.2.2.1
+  obtain ⟨ret, nx, lb, wa', ca', wfQ, runQ, -, table⟩ := tabB_run c I.cst hs ⟨hl, hw, hcs⟩ lens7 l
+  let sQ := cdSt i s0 wa' ca' nx lb
+  change runX (tabB c) l h = runX (tabBTail c ret) {l with ret} (setI h i sQ) at runQ
+  have hsQ : (setI h i sQ).istates i = some sQ := by simp [setI]
   have IQ : PInv c pr h0 (setI h i sQ) { l with ret := ret } log :=
     (I.setState hs sQ rfl rfl rfl wfQ (modeOk_of (Or.inr (Or.inl st.mode)))).withRet ret
-  have runQ : runX (tabB c) l h = runX (tabBTail c ret) { l with ret := ret } (setI h i sQ) := by
-    unfold tabB
-    rw [I.cst]
-    simp [runX_bind, runX_lift, wrI_eq, ldI_eq, hs, lensP, workP, codesP, runX_modify, hrun2, sP]
-    rfl
   by_cases r0 : ret = 0
   · subst r0
     right
@@ -94,15 +126,7 @@ theorem tabB_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
     have hsR : (setI h i sR).istates i = some sR := by simp [setI]
     have IR := IQ.setState hsQ sR rfl rfl rfl ⟨wfQ.1, wfQ.2.1, wfQ.2.2⟩ (modeOk_of (Or.inr (Or.inl st.mode)))
     rw [setI_setI] at IR
-    obtain ⟨ca, get, safe⟩ := decoded rfl
-    have getQ : Space.get (setI h i { sP with work := wa', codes := ca' }) (CodeRef.istate_codes i) = some ca' := by
-      simp [Space.get, setI]
-    rw [hh3', getQ] at get
-    cases get
-    obtain ⟨ca2, get2, cont⟩ := contents rfl
-    rw [hh3', getQ] at get2
-    cases get2
-    refine ⟨setI h i sR, sR, ?_, IR, hsR, ⟨st.mode, st.nlen, st.ndist, st.ncode⟩, rfl, ⟨rfl, safe, _, cont⟩, rfl⟩
+    refine ⟨setI h i sR, sR, ?_, IR, hsR, ⟨st.mode, st.nlen, st.ndist, st.ncode⟩, rfl, table rfl, rfl⟩
     rw [runQ]
     unfold tabBTail
     rw [I.cst]

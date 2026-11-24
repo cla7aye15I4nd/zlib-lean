@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.init.source»
 import ZlibF.Proof.«deflate.c.life.reset»
 import ZlibF.Proof.«deflate.c.life.end»
 import ZlibF.Proof.«deflate.c.init.memory»
@@ -69,7 +70,7 @@ theorem source_eq (strm : ZStreamPtr) (level : Int32) (version : BPtr) (size : I
       allocate strm (levelValue level)) := by
   by_cases hd : level = Z_DEFAULT_COMPRESSION
   all_goals unfold deflateInit_ deflateInit2_ allocate levelValue
-  all_goals simp [hd, Z_DEFLATED, MAX_WBITS, DEF_MEM_LEVEL, Z_DEFAULT_STRATEGY, MAX_MEM_LEVEL,
+  all_goals simp [initAllocated_eq_saved, initSaved, cdecl, hd, Z_DEFLATED, MAX_WBITS, DEF_MEM_LEVEL, Z_DEFAULT_STRATEGY, MAX_MEM_LEVEL,
     Z_FIXED, MIN_MATCH_u, iadd, ishl, chk32, M_pure_bind]
   all_goals rfl
 

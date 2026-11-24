@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.engine.entry-correspondence»
 import ZlibF.Proof.«deflate.c.universal-call-entry»
 import ZlibF.Proof.«zutil.c»
 import ZlibF.Spec.Common.Queries
@@ -36,7 +37,7 @@ theorem err_return_static {h : Heap} {r : ZStreamRef} {z : ZStream} (live : r.ge
   obtain ⟨i, run, hi⟩ := Zlib.Zutil.Proofs.strLit_run h _ (Zlib.Zutil.Proofs.errText_lit err.toInt)
   refine ⟨i, ?_, hi⟩
   unfold ERR_RETURN ERR_MSG
-  rw [Zlib.Zutil.Proofs.zError_eval]
+  rw [Zlib.Zutil.Proofs.errorMessage_eval]
   simp only [bind_app, run, Zlib.Zutil.Proofs.litHeap, zwr_eq, live, pure_app]
 
 theorem stream_error_text : Zlib.Zutil.Spec.errText Z_STREAM_ERROR.toInt = errorText Z_STREAM_ERROR.toInt := by
@@ -197,7 +198,8 @@ theorem entry_empty_all {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d 
       else k (some (.tab ds)) (setD h ds { d with last_flush := flush })) := by
     have err' := err
     simp only [pending, good.live.zst] at err'
-    unfold entryPhase
+    rw [Zlib.Deflate.Engine.Proofs.entryPhase_eq_previousPublicEntry good.live flush ⟨flushLow,flushHigh⟩ lastFlush]
+    unfold Zlib.Deflate.Engine.Proofs.previousPublicEntry
     simp only [bind_app, pure_app, checked, show ((0 : Int32) != 0) = false from rfl,
       high, low, decide_false, Bool.false_or, Bool.false_eq_true, ite_false,
       zrd_eq, good.live.hz, good.live.zst, castDeflateState,

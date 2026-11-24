@@ -52,7 +52,7 @@ theorem err_return_run {h : Heap} {r : ZStreamRef} {z : ZStream}
   obtain ⟨message, after, run, frame⟩ := Zlib.Zutil.Proofs.zError_safe h err
   change after = h at frame
   subst after
-  change Zlib.Zutil.zError err h = .ok (message, h) at run
+  change Zlib.Zutil.errorMessage err h = .ok (message, h) at run
   refine ⟨message, ?_⟩
   unfold ERR_RETURN ERR_MSG
   simp only [bind_app, run, zwr_eq, live, pure_app]

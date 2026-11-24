@@ -80,12 +80,7 @@ def addrOf (p : BPtr) : M UInt64 :=
 
 /-- `words[i]` for `z_word_t const *words` (`W == 4`, `z_word_t` = `unsigned`) over the byte buffer at `p`
 (little-endian target). -/
-def loadWord (p : BPtr) : M UInt32 := do
-  let mut w : UInt32 := 0
-  for i in [0:4] do
-    let b ← index8 p i
-    w := w ||| (b.toUInt32 <<< (8 * i).toUInt32)
-  pure w
+def loadWord (p : BPtr) : M UInt32 := memcpyLoad32 p
 
 /-! ### Byte swaps and the word CRCs -/
 
@@ -449,5 +444,183 @@ def crc32_combine64 (crc1 crc2 : UInt64) (len2 : ZOff64T) : M (CExport UInt64) :
 def crc32_combine (crc1 crc2 : UInt64) (len2 : ZOffT) : M (CExport UInt64) :=
   -- return crc32_combine64(crc1, crc2, (z_off64_t)len2);
   crc32_combine64 crc1 crc2 len2
+
+/-- Loop-carried C locals in the polynomial product. `b` is the mutable argument. -/
+structure ProductLocals where
+  m : UInt64
+  p : UInt64
+  b : UInt64
+
+def multmodp_c (a b : UInt64) : M (CStaticAs "multmodp" UInt64) := do
+  let s ← cdecl ({ m := (1 : UInt64) <<< 31, p := 0, b } : ProductLocals)
+  cforEverRet (fun (s : ProductLocals) => do
+    let mut s := s
+    if a &&& s.m != 0 then
+      s := { s with p := s.p ^^^ s.b }
+      if a &&& (s.m - 1) == 0 then return .brk s
+    s := { s with m := s.m >>> 1 }
+    let b : UInt64 := if s.b &&& 1 != 0 then (s.b >>> 1) ^^^ POLY else s.b >>> 1
+    return .next { s with b }) s (fun s => pure s.p)
+
+/-- C locals of the four byte updates in `crc_word`. -/
+structure WordLocals where
+  data : ZWordT
+  k : Int32
+
+def crc_word_c (data : ZWordT) : M (CStaticAs "crc_word" ZCrcT) := do
+  let s ← cdecl ({ data, k := 0 } : WordLocals)
+  let s ← cwhile (fun s => pure (s.k < W, s)) (fun s => do
+    let t ← cinline (crcTab (s.data &&& 0xff).toUInt64)
+    let s := { s with data := (s.data >>> 8) ^^^ t }
+    pure { s with k := s.k + 1 }) s
+  pure s.data
+
+/-- The same three C parameters carry the byte prefix, braid, and byte tail. -/
+structure ByteLocals where
+  crc : UInt64
+  buf : ConstBPtr
+  len : UInt64
+
+/-- Block locals in declaration order, including the target endianness probe. -/
+structure BraidLocals where
+  blks : UInt64
+  words : BPtr
+  endian : UInt32
+  deriving Inhabited
+
+private def byteStepC (s : ByteLocals) : M ByteLocals := do
+  let high := s.crc >>> 8
+  let b ← load8 s.buf
+  let buf ← cinline (s.buf.add 1)
+  let s := { s with buf }
+  let t ← cinline (crcTab ((s.crc ^^^ b.toUInt64) &&& 0xff))
+  pure { s with crc := high ^^^ t.toUInt64 }
+
+private def alignBytesC (s : ByteLocals) : M ByteLocals :=
+  cwhile (fun s => do
+    if s.len == 0 then pure (false, s)
+    else pure ((← addrOf s.buf) &&& (W - 1).toInt.toNat.toUInt64 != 0, s))
+    (fun s => do
+      let s := { s with len := s.len - 1 }
+      byteStepC s) s
+
+private def tailBytesC (s : ByteLocals) (finalXor : UInt64) : M UInt64 := do
+  let s ← cwhile (fun s => pure (s.len ≥ 8, s)) (fun s => do
+    let s := { s with len := s.len - 8 }
+    let s ← byteStepC s
+    let s ← byteStepC s
+    let s ← byteStepC s
+    let s ← byteStepC s
+    let s ← byteStepC s
+    let s ← byteStepC s
+    let s ← byteStepC s
+    byteStepC s) s
+  let s ← cwhile (fun s => pure (s.len != 0, s))
+    (fun s => do
+      let s := { s with len := s.len - 1 }
+      byteStepC s) s
+  pure (s.crc ^^^ finalXor)
+
+/-- Small (two-word) braid on the pinned little-endian LP64 target. -/
+def crc32_braid_c (crc : UInt64) (buf : ConstBPtr) (len : UInt64) : M (CStaticAs "crc32_braid" UInt64) := do
+  let mut s ← cdecl ({ crc, buf, len } : ByteLocals)
+  if s.len ≥ (NLOW * W + W - 1).toInt.toNat.toUInt64 then
+    let mut block ← cdecl ({ blks := default, words := default, endian := default } : BraidLocals)
+    s ← alignBytesC s
+    let nw := (NLOW * W).toInt.toNat.toUInt64
+    block := { block with blks := s.len / nw }
+    s := { s with len := s.len - block.blks * nw }
+    block := { block with words := s.buf, endian := 1 }
+    if firstByte32 block.endian != 0 then
+      let b ← cdecl ({ crc0 := s.crc.toUInt32, crc1 := 0, words := block.words, blks := block.blks } : BL2)
+      let b ← cwhile (fun b => let blks := b.blks - 1; pure (blks != 0, { b with blks })) blockLittle2 b
+      let c0 ← crc_word_c (b.crc0 ^^^ (← wordAt b.words 0))
+      let c1 ← crc_word_c (b.crc1 ^^^ (← wordAt b.words 1) ^^^ c0)
+      s := { s with crc := c1.toUInt64 }
+      block := { block with words := ← b.words.add 8 }
+    else
+      let b ← cdecl ({ crc0 := byte_swap s.crc.toUInt32, crc1 := 0, words := block.words, blks := block.blks } : BB2)
+      let b ← cwhile (fun b => let blks := b.blks - 1; pure (blks != 0, { b with blks })) blockBig2 b
+      let c0 ← crc_word_big (b.crc0 ^^^ (← wordAt b.words 0))
+      let c1 ← crc_word_big (b.crc1 ^^^ (← wordAt b.words 1) ^^^ c0)
+      block := { block with words := ← b.words.add 8 }
+      s := { s with crc := (byte_swap c1).toUInt64 }
+    s := { s with buf := block.words }
+  tailBytesC s 0
+
+/-- Each braid accumulator has a corresponding input word in the five-word block. -/
+structure WideBraid where
+  crc0 : UInt32
+  word0 : UInt32
+  crc1 : UInt32
+  word1 : UInt32
+  crc2 : UInt32
+  word2 : UInt32
+  crc3 : UInt32
+  word3 : UInt32
+  crc4 : UInt32
+  word4 : UInt32
+  words : BPtr
+  blks : UInt64
+
+private def wideStepC (table : Array (Array UInt32)) (s : WideBraid) : M WideBraid := do
+  let s := { s with word0 := s.crc0 ^^^ (← wordAt s.words 0) }
+  let s := { s with word1 := s.crc1 ^^^ (← wordAt s.words 1) }
+  let s := { s with word2 := s.crc2 ^^^ (← wordAt s.words 2) }
+  let s := { s with word3 := s.crc3 ^^^ (← wordAt s.words 3) }
+  let s := { s with word4 := s.crc4 ^^^ (← wordAt s.words 4) }
+  let s := { s with words := ← s.words.add 20 }
+  let s := { s with crc0 := ← crcWord table s.word0 }
+  let s := { s with crc1 := ← crcWord table s.word1 }
+  let s := { s with crc2 := ← crcWord table s.word2 }
+  let s := { s with crc3 := ← crcWord table s.word3 }
+  pure { s with crc4 := ← crcWord table s.word4 }
+
+private structure CombinedWord where
+  comb : UInt32
+
+/-- Five-word braid, with the two-word dispatch and the byte tail of `crc32_z`. -/
+def crc32_z_c (crc : UInt64) (buf : ConstBPtr) (len : UInt64) : M (CExportAs "crc32_z" UInt64) := withScopedLocals do
+  let mut s ← cdecl ({ crc, buf, len } : ByteLocals)
+  if s.buf == .null then return 0
+  s := { s with crc := (~~~s.crc) &&& 0xffffffff }
+  if s.len ≥ (NMIN * W + W - 1).toInt.toNat.toUInt64 then
+    let mut block ← cdecl ({ blks := default, words := default, endian := default } : BraidLocals)
+    if s.len < BRAID_CUT.toInt.toNat.toUInt64 || s.len < (N * W + W - 1).toInt.toNat.toUInt64 then
+      return (← crc32_braid_c s.crc s.buf s.len) ^^^ 0xffffffff
+    s ← alignBytesC s
+    let nw := (N * W).toInt.toNat.toUInt64
+    block := { block with blks := s.len / nw }
+    s := { s with len := s.len - block.blks * nw }
+    block := { block with words := s.buf, endian := 1 }
+    if firstByte32 block.endian != 0 then
+      let b ← cdecl ({ crc0 := s.crc.toUInt32, word0 := default, crc1 := 0, word1 := default,
+                        crc2 := 0, word2 := default, crc3 := 0, word3 := default, crc4 := 0, word4 := default,
+                        words := block.words, blks := block.blks } : WideBraid)
+      let b ← cwhile (fun b => let blks := b.blks - 1; pure (blks != 0, { b with blks }))
+        (wideStepC Zlib.Crc32H.crc_braid5_table) b
+      let c0 ← crc_word_c (b.crc0 ^^^ (← wordAt b.words 0))
+      let c1 ← crc_word_c (b.crc1 ^^^ (← wordAt b.words 1) ^^^ c0)
+      let c2 ← crc_word_c (b.crc2 ^^^ (← wordAt b.words 2) ^^^ c1)
+      let c3 ← crc_word_c (b.crc3 ^^^ (← wordAt b.words 3) ^^^ c2)
+      let c4 ← crc_word_c (b.crc4 ^^^ (← wordAt b.words 4) ^^^ c3)
+      s := { s with crc := c4.toUInt64 }
+      block := { block with words := ← b.words.add 20 }
+    else
+      let b ← cdecl ({ crc0 := byte_swap s.crc.toUInt32, word0 := default, crc1 := 0, word1 := default,
+                        crc2 := 0, word2 := default, crc3 := 0, word3 := default, crc4 := 0, word4 := default,
+                        words := block.words, blks := block.blks } : WideBraid)
+      let mut c ← cdecl ({ comb := default } : CombinedWord)
+      let b ← cwhile (fun b => let blks := b.blks - 1; pure (blks != 0, { b with blks }))
+        (wideStepC Zlib.Crc32H.crc_braid5_big_table) b
+      c := { comb := ← crc_word_big (b.crc0 ^^^ (← wordAt b.words 0)) }
+      c := { comb := ← crc_word_big (b.crc1 ^^^ (← wordAt b.words 1) ^^^ c.comb) }
+      c := { comb := ← crc_word_big (b.crc2 ^^^ (← wordAt b.words 2) ^^^ c.comb) }
+      c := { comb := ← crc_word_big (b.crc3 ^^^ (← wordAt b.words 3) ^^^ c.comb) }
+      c := { comb := ← crc_word_big (b.crc4 ^^^ (← wordAt b.words 4) ^^^ c.comb) }
+      block := { block with words := ← b.words.add 20 }
+      s := { s with crc := (byte_swap c.comb).toUInt64 }
+    s := { s with buf := block.words }
+  tailBytesC s 0xffffffff
 
 end Zlib.Crc32

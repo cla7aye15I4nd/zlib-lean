@@ -107,10 +107,10 @@ theorem distSym_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat
       wrS c.st fun s => { s with offset := l.here.val.toUInt32, extra := l.here.op.toUInt32 &&& 15 }
       let ex := l.here.op.toUInt32 &&& 15
       if ex != 0 then
-        NEEDBITS c ex
-        let b ← BITS ex
+        needExtra c
+        let b ← BITS (← rdS c.st (·.extra))
         wrS c.st fun s => { s with offset := s.offset + b }
-        DROPBITS ex
+        DROPBITS (← rdS c.st (·.extra))
       lenCopy c) l1 h := by
     unfold distSym
     simp only [runX_bind, runX_get, hd1]
@@ -134,10 +134,10 @@ theorem distSym_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat
     have I2 := I1.setState hs S2 rfl rfl rfl (wf_with wf _ rfl rfl rfl) (I.mode s0 hs)
     have pre2 : runX (distSym c) l h = runX (do
         if (l.here.op.toUInt32 &&& 15) != 0 then
-          NEEDBITS c (l.here.op.toUInt32 &&& 15)
-          let b ← BITS (l.here.op.toUInt32 &&& 15)
+          needExtra c
+          let b ← BITS (← rdS c.st (·.extra))
           wrS c.st fun s => { s with offset := s.offset + b }
-          DROPBITS (l.here.op.toUInt32 &&& 15)
+          DROPBITS (← rdS c.st (·.extra))
         lenCopy c) l1 (setI h i S2) := by
       rw [pre1]
       simp only [bad', Bool.false_eq_true, ↓reduceIte, runX_bind, runX_lift_ok wr2]
@@ -145,12 +145,13 @@ theorem distSym_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat
     · obtain ⟨res3, l3, h3, log3, run3, I3, ok3, err3, ist3, meas3⟩ :=
         NEEDBITS_p c pr (l.here.op.toUInt32 &&& 15) (by rw [exN]; omega) I2
       have hs3 : h3.istates i = some S2 := ist3.trans hs2
+      have live3 := (needExtra_eq c pr I2 hs2 (by change (l.here.op.toUInt32 &&& 15).toNat ≤ 32; rw [exN]; omega)).trans run3
       cases res3 with
       | error e =>
         obtain ⟨rfl, ret⟩ := err3 e rfl
         refine ⟨.error Ex.leave, l3, h3, ?_, TRound.leave I3 B ret⟩
         rw [pre2]
-        simp only [hex, ↓reduceIte, runX_bind, run3]
+        simp only [hex, ↓reduceIte, runX_bind, live3]
       | ok u =>
         cases u
         obtain ⟨k3, -, -, mx3⟩ := ok3 rfl
@@ -160,6 +161,10 @@ theorem distSym_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat
           rw [BITS_run _ _ _ (by rw [exN]; omega), hbv]; rfl
         let S4 : InflateState := { S2 with offset := S2.offset + bv }
         have hs4 : (setI h3 i S4).istates i = some S4 := by simp [setI]
+        have read3 : rdS c.st (·.extra) h3 = .ok (l.here.op.toUInt32 &&& 15, h3) :=
+          rdS_ok I3.cst hs3 _
+        have read4 : rdS c.st (·.extra) (setI h3 i S4) =
+            .ok (l.here.op.toUInt32 &&& 15, setI h3 i S4) := rdS_ok I3.cst hs4 _
         have wr4 : wrS c.st (fun s => { s with offset := s.offset + bv }) h3 = .ok ((), setI h3 i S4) :=
           wrS_ok I3.cst hs3 _
         have I4 := I3.setState hs3 S4 rfl rfl rfl (wf_with wf _ rfl rfl rfl) (I.mode s0 hs)
@@ -175,7 +180,7 @@ theorem distSym_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat
           lenCopy_p c pr I5 hw hs4 mode len1 short5 (B := B) (by omega)
         refine ⟨res6, l6, h6, ?_, T6⟩
         rw [pre2]
-        simp only [hex, ↓reduceIte, runX_bind, run3, rb, runX_lift_ok wr4, hd5]
+        simp only [hex, ↓reduceIte, runX_bind, live3, runX_lift_ok read3, rb, runX_lift_ok wr4, runX_lift_ok read4, hd5]
         exact run6
     · have hex' : ((l.here.op.toUInt32 &&& 15) != 0) = false := by simpa using hex
       obtain ⟨res6, l6, h6, run6, T6⟩ :=
@@ -340,13 +345,14 @@ theorem lenSym_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
         · obtain ⟨res4, l4, h4, log4, run4, I4, ok4, err4, ist4, meas4⟩ :=
             NEEDBITS_p c pr (l.here.op.toUInt32 &&& 15) (by rw [exN]; omega) I3
           have hs4 : h4.istates i = some S3 := ist4.trans hs3
+          have live4 := (needExtra_eq c pr I3 hs3 (by change (l.here.op.toUInt32 &&& 15).toNat ≤ 32; rw [exN]; omega)).trans run4
           cases res4 with
           | error e =>
             obtain ⟨rfl, ret⟩ := err4 e rfl
             refine ⟨.error Ex.leave, l4, h4, ?_, TRound.leave I4 B ret⟩
             unfold lenSym
             simp only [runX_bind, runX_get, hd1, runX_lift_ok wr2, lit', eob', bad', Bool.false_eq_true,
-              ↓reduceIte, runX_lift_ok wr3, hex, run4]
+              ↓reduceIte, runX_lift_ok wr3, hex, live4]
           | ok u =>
             cases u
             obtain ⟨k4, -, -, mx4⟩ := ok4 rfl
@@ -358,6 +364,10 @@ theorem lenSym_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
               rw [BITS_run _ _ _ (by rw [exN]; omega), hbv]; rfl
             let S5 : InflateState := { S3 with length := S3.length + bv }
             have hs5 : (setI h4 i S5).istates i = some S5 := by simp [setI]
+            have read4 : rdS c.st (·.extra) h4 = .ok (l.here.op.toUInt32 &&& 15, h4) :=
+              rdS_ok I4.cst hs4 _
+            have read5 : rdS c.st (·.extra) (setI h4 i S5) =
+                .ok (l.here.op.toUInt32 &&& 15, setI h4 i S5) := rdS_ok I4.cst hs5 _
             have wr5 : wrS c.st (fun s => { s with length := s.length + bv }) h4 = .ok ((), setI h4 i S5) :=
               wrS_ok I4.cst hs4 _
             have I5 := I4.setState hs4 S5 rfl rfl rfl (wf_with wf _ rfl rfl rfl) (I.mode s0 hs)
@@ -379,7 +389,7 @@ theorem lenSym_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
             refine ⟨res7, l7, h7, ?_, T7⟩
             unfold lenSym
             simp only [runX_bind, runX_get, hd1, runX_lift_ok wr2, lit', eob', bad', Bool.false_eq_true,
-              ↓reduceIte, runX_lift_ok wr3, hex, run4, rb, runX_lift_ok wr5, hd6]
+              ↓reduceIte, runX_lift_ok wr3, hex, live4, runX_lift_ok read4, rb, runX_lift_ok wr5, runX_lift_ok read5, hd6]
             exact run7
         · have hex' : ((l.here.op.toUInt32 &&& 15) != 0) = false := by simpa using hex
           obtain ⟨res7, l7, h7, run7, T7⟩ :=

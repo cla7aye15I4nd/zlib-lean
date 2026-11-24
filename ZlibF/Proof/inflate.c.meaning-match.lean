@@ -1019,7 +1019,9 @@ theorem match_step {c : Ctx} {f : LoopFrame} {h : Heap} {l : IL} {r : ZStreamRef
         have run := matchEmit_run (c := c) E (l := l) (source := wr) (saved := a) (copy := n)
           (sourceOffset := off + (s.wsize - (s.offset - (l.out_ - l.left) - s.wnext)).toNat)
           put get write sourceGet (by omega) (by rw [ite_eq_right privW, startNat]; omega) (by omega)
-        refine ⟨_, _, _, (sel.trans run),
+        have nativeRun := sel.trans run
+        rw [← inflate_MATCH_select_cut] at nativeRun
+        refine ⟨_, _, _, nativeRun,
           Or.inr ⟨rfl, rfl, Or.inl ?_⟩⟩
         refine emit st hs retOk config haveLe inLen binv leftLe pendBase startEq outBytes get write room
           sepIn sepWin sepOutIn bitsEq heldBits wrapHeader consumedEq prev step eqOut lt d0 d1 d2
@@ -1058,7 +1060,9 @@ theorem match_step {c : Ctx} {f : LoopFrame} {h : Heap} {l : IL} {r : ZStreamRef
         have run := matchEmit_run (c := c) E (l := l) (source := wr) (saved := a) (copy := n)
           (sourceOffset := off + (s.wnext - (s.offset - (l.out_ - l.left))).toNat)
           put get write sourceGet (by omega) (by rw [ite_eq_right privW, startNat]; omega) (by omega)
-        refine ⟨_, _, _, (sel.trans run),
+        have nativeRun := sel.trans run
+        rw [← inflate_MATCH_select_cut] at nativeRun
+        refine ⟨_, _, _, nativeRun,
           Or.inr ⟨rfl, rfl, Or.inl ?_⟩⟩
         refine emit st hs retOk config haveLe inLen binv leftLe pendBase startEq outBytes get write room
           sepIn sepWin sepOutIn bitsEq heldBits wrapHeader consumedEq prev step eqOut lt d0 d1 d2
@@ -1089,7 +1093,9 @@ theorem match_step {c : Ctx} {f : LoopFrame} {h : Heap} {l : IL} {r : ZStreamRef
     have run := matchEmit_run (c := c) E (l := l) (source := dest) (saved := output) (copy := n)
       (sourceOffset := o0 + callOut.length - s.offset.toNat)
       put get write (by rw [ite_eq_left rfl]; exact get) (by omega) (by rw [ite_eq_left rfl]; omega) (by omega)
-    refine ⟨_, _, _, (sel.trans run),
+    have nativeRun := sel.trans run
+    rw [← inflate_MATCH_select_cut] at nativeRun
+    refine ⟨_, _, _, nativeRun,
       Or.inr ⟨rfl, rfl, Or.inl ?_⟩⟩
     refine emit st hs retOk config haveLe inLen binv leftLe pendBase startEq outBytes get write room
           sepIn sepWin sepOutIn bitsEq heldBits wrapHeader consumedEq prev step eqOut lt d0 d1 d2

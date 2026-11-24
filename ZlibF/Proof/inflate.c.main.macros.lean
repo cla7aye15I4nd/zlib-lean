@@ -12,6 +12,53 @@ The byte-block pointer facts are facts about `Space.get h r`. None of these macr
 namespace Zlib.Inflate.Proofs
 open C Zlib.Inflate
 
+private theorem appendLiftSelf {α : Type} (m : M α) : (liftM m : M α) = m := rfl
+
+/-- Reordering the index update and its array store preserves every return and fault. -/
+theorem appendLength_eq (st : InflateStatePtr) (value : UInt16) :
+    (appendLength st value : M Unit) = (do
+      let s ← ldInflateState st
+      Ptr.store (← (lensP st).add (s.«have».toNat : Int)) value
+      wrS st fun s => { s with «have» := s.«have» + 1 }) := by
+  funext h
+  cases st with
+  | none => rfl
+  | some ref =>
+    obtain ⟨i⟩ := ref
+    cases hs : h.istates i with
+    | none => simp [appendLength, rdS, ldInflateState, InflateStateRef.get, hs]
+    | some s =>
+      let updated : InflateState := { s with «have» := s.«have» + 1 }
+      let changed : Heap := { h with istates := upd h.istates i (some updated) }
+      have current : changed.istates i = some updated := upd_same ..
+      have enter := ldInflateState_ok (r := .tab i) hs
+      have advance := stInflateState_tab (v' := updated) hs
+      simp only [appendLength, appendLiftSelf, rdS, wrS, bind_app, enter, pure_app]
+      rw [advance]
+      have heap_eq : { h with istates := upd h.istates i (some updated) } = changed := rfl
+      rw [heap_eq]
+      have addr (heap : Heap) (record : InflateState) (exists_ : heap.istates i = some record) (n : Nat) :
+          (lensP (some (.tab i))).add (n : Int) heap =
+            if n ≤ record.lens.size then .ok (.ref (.istate_lens i) n, heap)
+            else .error (.ub "pointer arithmetic outside its object") := by
+        by_cases zero : n = 0
+        · subst n; simp [Ptr.add, lensP]
+        · simp [Ptr.add, lensP, zero, WRef.get_istate_lens exists_]
+      have store (heap : Heap) (record : InflateState) (exists_ : heap.istates i = some record) (n : Nat) :
+          (Ptr.ref (WRef.istate_lens i) n).store value heap =
+            if n < record.lens.size then .ok ((), {heap with istates := upd heap.istates i (some {record with lens := record.lens.set! n value})})
+            else .error (.ub "store outside its object") := by
+        have get := WRef.get_istate_lens exists_
+        simp [Ptr.store, get, Space.modify_eq _ _ _ _ get, WRef.put_istate_lens exists_]
+      simp only [addr h s hs, addr changed updated current, updated]
+      by_cases bound : s.«have».toNat ≤ s.lens.size
+      · simp only [bound, ↓reduceIte, store h s hs, store changed updated current, updated]
+        by_cases inside : s.«have».toNat < s.lens.size
+        · simp [inside, changed, ldInflateState, stInflateState, InflateStateRef.get,
+            InflateStateRef.put, InflateStateRef.isRo, upd_upd]
+        · simp [inside]
+      · simp [bound]
+
 theorem runX_get (l : IL) (h : Heap) : runX (get : X IL) l h = .ok ((.ok l, l), h) := rfl
 theorem runX_set (l l' : IL) (h : Heap) : runX (set l' : X PUnit) l h = .ok ((.ok (), l'), h) := rfl
 theorem runX_throw {α : Type} (e : Ex) (l : IL) (h : Heap) : runX (throw e : X α) l h = .ok ((.error e, l), h) := rfl
@@ -24,6 +71,203 @@ theorem runX_lift {α : Type} (m : M α) (l : IL) (h : Heap) :
   rcases hm : m h with e | ⟨a, h'⟩ <;>
     simp [hm, monadLift, MonadLift.monadLift, ExceptT.lift, ExceptT.run, ExceptT.mk, StateT.lift, StateT.run,
       Functor.map, StateT.map, bind_app]
+
+/-- Register operations in the shared C input-byte sequence. -/
+def sourceInputByte (width : UInt32) : X Unit := do
+  modify fun r => { r with have_ := r.have_ - 1 }
+  let r ← get
+  let byte ← load8 r.next
+  let next ← r.next.add 1
+  set { r with next }
+  let shifted ← shl64 byte.toUInt64 (← get).bits
+  modify fun r => { r with hold := r.hold + shifted }
+  modify fun r => { r with bits := r.bits + width }
+
+/-- Equivalence includes the byte load, pointer advance and checked shift on every heap. -/
+theorem absorbInputByte_eq_source : absorbInputByte = sourceInputByte 8 := by
+  funext l h
+  change runX _ l h = runX _ l h
+  simp only [runX_bind, runX_get, runX_set, runX_modify, runX_lift]
+  cases read : load8 l.next h with
+  | error e => rfl
+  | ok pair =>
+    obtain ⟨b, h₁⟩ := pair
+    simp only
+    cases inc : l.next.add 1 h₁ with
+    | error e => rfl
+    | ok pair =>
+      obtain ⟨p, h₂⟩ := pair
+      simp only
+      cases shift : shl64 b.toUInt64 l.bits h₂ <;> rfl
+
+/-- The earlier inflate model decremented its local input count before the
+load and rebuilt the registers from the original snapshot. -/
+theorem pullByte_eq_previous : PULLBYTE = (do
+    let l ← get
+    if l.have_ == 0 then throw Ex.leave
+    set { l with have_ := l.have_ - 1 }
+    let b ← load8 l.next
+    let nx ← l.next.add 1
+    let sh ← shl64 b.toUInt64 l.bits
+    set { l with have_ := l.have_ - 1, next := nx, hold := l.hold + sh, bits := l.bits + 8 } : X Unit) := by
+  funext l h
+  change runX _ l h = runX _ l h
+  by_cases empty : l.have_ = 0 <;>
+    simp only [runX_bind, runX_get, runX_set, runX_lift, empty, beq_iff_eq,
+      ↓reduceIte, runX_throw]
+  cases read : load8 l.next h with
+  | error e => rfl
+  | ok pair =>
+    obtain ⟨b, h₁⟩ := pair
+    simp only
+    cases inc : l.next.add 1 h₁ with
+    | error e => rfl
+    | ok pair =>
+      obtain ⟨p, h₂⟩ := pair
+      simp only
+      cases shift : shl64 b.toUInt64 l.bits h₂ <;> rfl
+
+private theorem appendRunLift {α : Type} (m : M α) (l : IL) (h : Heap) :
+    runX (liftM m : X α) l h = match m h with
+      | .ok (v, h') => .ok ((.ok v, l), h')
+      | .error e => .error e := runX_lift m l h
+
+private theorem appendLength_in_X (st : InflateStatePtr) (value : UInt16) :
+    (appendLength st value : X Unit) = liftM (appendLength st value : M Unit) := by
+  funext l h
+  change runX _ l h = runX _ l h
+  simp only [appendLength, appendLiftSelf, runX_bind, appendRunLift, bind_app]
+  cases a : rdS st (·.«have») h with
+  | error e => rfl
+  | ok pair =>
+    obtain ⟨index, h₁⟩ := pair
+    simp only
+    cases advance : wrS st (fun s => { s with «have» := s.«have» + 1 }) h₁ with
+    | error e => rfl
+    | ok pair =>
+      obtain ⟨_, h₂⟩ := pair
+      simp only
+      cases addr : (lensP st).add (index.toNat : Int) h₂ with
+      | error e => rfl
+      | ok pair =>
+        obtain ⟨ptr, h₃⟩ := pair
+        rfl
+
+theorem appendLength_lift (st : InflateStatePtr) (value : UInt16) :
+    (appendLength st value : X Unit) = (do
+      let s ← ldInflateState st
+      Ptr.store (← (lensP st).add (s.«have».toNat : Int)) value
+      wrS st fun s => { s with «have» := s.«have» + 1 }) := by
+  rw [appendLength_in_X, appendLength_eq]
+  funext l h
+  change runX _ l h = runX _ l h
+  simp only [runX_lift, runX_bind, bind_app]
+  cases a : ldInflateState st h with
+  | error e => rfl
+  | ok pair =>
+    obtain ⟨s, h₁⟩ := pair
+    simp only
+    cases addr : (lensP st).add (s.«have».toNat : Int) h₁ with
+    | error e => rfl
+    | ok pair =>
+      obtain ⟨p, h₂⟩ := pair
+      simp only
+      cases store : p.store value h₂ with
+      | error e => rfl
+      | ok pair =>
+        obtain ⟨_, h₃⟩ := pair
+        rfl
+
+theorem x_bind_assoc {α β γ : Type} (x : X α) (f : α → X β) (g : β → X γ) :
+    ((x >>= f) >>= g) = (x >>= fun a => f a >>= g) := by
+  apply ExceptT.ext
+  apply StateT.ext
+  intro l
+  funext h
+  change runX ((x >>= f) >>= g) l h = runX (x >>= fun a => f a >>= g) l h
+  simp only [runX_bind]
+  cases run : runX x l h with
+  | error fault => simp only
+  | ok pair =>
+    obtain ⟨⟨value, regs⟩, after⟩ := pair
+    cases value <;> simp only
+
+theorem x_pure_bind {α β : Type} (a : α) (k : α → X β) : (pure a >>= k) = k a := by
+  funext l h
+  change runX _ l h = runX _ l h
+  rw [runX_bind, runX_pure]
+
+theorem appendLiteralFalse (st : InflateStatePtr) (value : UInt16) :
+    (do appendLength st value; return false : X Bool) = (do
+      let s ← ldInflateState st
+      Ptr.store (← (lensP st).add (s.«have».toNat : Int)) value
+      wrS st fun s => { s with «have» := s.«have» + 1 }
+      return false) := by
+  rw [appendLength_lift]
+  simp only [x_bind_assoc]
+
+set_option maxHeartbeats 1800000 in
+theorem appendRegister_lift (st : InflateStatePtr) :
+    (do appendLength st (← get).len.toUInt16 : X Unit) = (do
+      let s ← ldInflateState st
+      Ptr.store (← (lensP st).add (s.«have».toNat : Int)) (← get).len.toUInt16
+      wrS st fun s => { s with «have» := s.«have» + 1 }) := by
+  simp only [appendLength_lift]
+  funext l h
+  change runX _ l h = runX _ l h
+  simp only [runX_bind, runX_get, runX_lift]
+  cases a : ldInflateState st h with
+  | error e => rfl
+  | ok pair =>
+    obtain ⟨s, h₁⟩ := pair
+    simp only
+    cases addr : (lensP st).add (s.«have».toNat : Int) h₁ with
+    | error e => rfl
+    | ok pair =>
+      obtain ⟨p, h₂⟩ := pair
+      rfl
+
+/-- The code-length loop emitted for both decoders has the same execution,
+including faults, as the loop used by their table-safety proofs. -/
+theorem repeatCodeLength_eq (st : InflateStatePtr) :
+    repeatCodeLength st = xwhile (do
+      let l ← get
+      set { l with copy := l.copy - 1 }
+      return l.copy != 0) (do
+      let s ← ldInflateState st
+      Ptr.store (← (lensP st).add (s.«have».toNat : Int)) (← get).len.toUInt16
+      wrS st fun s => { s with «have» := s.«have» + 1 }) := by
+  unfold repeatCodeLength
+  rw [appendRegister_lift]
+
+/-- The six stores in the pinned C RESTORE macro, in source order. -/
+def restoreStores (p : ZStreamPtr) (st : InflateStatePtr) (l : IL) : M Unit := do
+  wrZ p fun z => { z with next_out := l.put }
+  wrZ p fun z => { z with avail_out := l.left }
+  wrZ p fun z => { z with next_in := l.next }
+  wrZ p fun z => { z with avail_in := l.have_ }
+  wrS st fun s => { s with hold := l.hold }
+  wrS st fun s => { s with bits := l.bits }
+
+/-- Combining adjacent field stores preserves the result, final heap and faults,
+including for null and dangling stream and decoder pointers. -/
+theorem RESTORE_stores (p : ZStreamPtr) (st : InflateStatePtr) (l : IL) (h : Heap) :
+    runX (RESTORE p st) l h = runX (monadLift (restoreStores p st l) : X Unit) l h := by
+  unfold RESTORE restoreStores
+  simp only [runX_bind, runX_get, runX_lift, bind_app]
+  cases p with
+  | none => rfl
+  | some r =>
+    cases hz : r.get h with
+    | none => simp only [wrZ_eq, hz]
+    | some z =>
+      simp only [wrZ_eq, hz, ZStreamRef.get_put, Option.map_some, ZStreamRef.put_put]
+      cases st with
+      | none => rfl
+      | some i =>
+        rcases i with ⟨i⟩
+        simp only [wrI_eq, ZStreamRef.put_istates]
+        cases h.istates i <;> simp only [setI_istates_same, setI_setI]
 
 /-- The registers describe the bit stream `natBits bits hold` followed by the bytes `bs` at `next`. -/
 structure BitInv (h : Heap) (l : IL) (bs : List UInt8) : Prop where
@@ -113,7 +357,7 @@ theorem PULLBYTE_succ {h : Heap} {l : IL} {b : UInt8} {bs : List UInt8} (B : Bit
     rw [shl64_run _ _ hlb]; rfl
   have hbn := u32_add8 l.bits hb
   refine ⟨.ref r (off + 1), ?_, ?_, ?_, by simp [pulled, hbn]⟩
-  · unfold PULLBYTE
+  · rw [pullByte_eq_previous]
     rw [runX_bind, runX_get]
     simp only [hne, Bool.false_eq_true, ↓reduceIte]
     simp only [runX_bind, runX_set, runX_lift_ok hld, runX_lift_ok hadd, runX_lift_ok hshl]

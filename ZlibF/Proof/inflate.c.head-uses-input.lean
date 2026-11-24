@@ -211,7 +211,7 @@ theorem headUses_dispatch_pulls {c : Ctx} {h : Heap} {r : ZStreamRef} {zs : Nat}
       have_le_mode
   · rw [inflate_dispatch_block_type E l (Or.inr typedo)] at run
     rw [ite_eq_right (by rw [typedo]; decide)] at run
-    unfold inflate_TYPEDO at run
+    rw [inflate_TYPEDO_previous] at run
     rw [runX_bind, runX_rdS E] at run
     simp only [last, bne_self_eq_false, Bool.false_eq_true, ↓reduceIte] at run
     obtain ⟨r1, l1, nb, lt1, _⟩ := headUses_needbits_strict B 3 (by decide) (short 3 (by decide)) pending
@@ -433,7 +433,7 @@ theorem inflateHeadUsesInputR_holds : InflateHeadUsesInputR := by
       rw [bind_app, allocLocalB_run h invariant.good.fresh]
       simp only []
       rw [bind_app]
-      simp only [bind_app, stateCheck_live allocated.good.live,
+      simp only [bind_app, pure_app, stateCheck_live allocated.good.live,
         bne_self_eq_false, Bool.false_eq_true, ite_false,
         ldZStream_ok allocated.good.live.hz, accepted, allocated.good.live.zst, castI]
       rw [bind_app] at bodyRun

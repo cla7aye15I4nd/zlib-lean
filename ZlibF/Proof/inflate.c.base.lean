@@ -200,6 +200,8 @@ theorem stZ_eq (h : Heap) (r : ZStreamRef) (v : ZStream) : stZStream (some r) v 
   | none => simp [stZStream, hh]
   | some w => simp [stZStream_ok hh hro]
 
+@[simp] theorem zlibVersion_firstByte : literalFirstByte ZLIB_VERSION = 49 := rfl
+
 /-- Evaluate a straight-line sequence of accesses to a stream and its state. -/
 macro "isimp" "[" ts:Lean.Parser.Tactic.simpLemma,* "]" : tactic =>
   `(tactic| simp [bind_app, pure_app, ldI_eq, ldZ_eq, rdI_eq, rdZ_eq, wrI_eq, wrZ_eq, stI_eq, stZ_eq, castI, $ts,*])

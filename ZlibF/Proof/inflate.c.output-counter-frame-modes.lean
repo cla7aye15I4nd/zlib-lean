@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.mode-correspondence»
 import ZlibF.Proof.«inflate.c.output-counter-frame-macros»
 
 namespace Zlib.Inflate.Proofs.OutputCounter
@@ -135,7 +136,7 @@ theorem outputCounterX_inflate_CODELENS (r : ZStreamRef) (context : Ctx) (root :
 
 theorem outputCounterX_inflate_LENLENS (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     OutputCounterX r (inflate_LENLENS context) := by
-  unfold inflate_LENLENS
+  rw [Zlib.Inflate.Proofs.LENLENS_previous]
   try rw [root]
   have continuation0 := outputCounterX_inflate_CODELENS r context root
   output_counter_mode r, root
@@ -182,7 +183,7 @@ theorem outputCounterX_inflate_TYPE (r : ZStreamRef) (context : Ctx) (root : con
 
 theorem outputCounterX_inflate_DICT (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     OutputCounterX r (inflate_DICT context) := by
-  unfold inflate_DICT
+  rw [Zlib.Inflate.Proofs.DICT_previous]
   try rw [root]
   have continuation0 := outputCounterX_inflate_TYPE r context root
   output_counter_mode r, root
@@ -190,7 +191,7 @@ theorem outputCounterX_inflate_DICT (r : ZStreamRef) (context : Ctx) (root : con
 
 theorem outputCounterX_inflate_DICTID (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     OutputCounterX r (inflate_DICTID context) := by
-  unfold inflate_DICTID
+  rw [Zlib.Inflate.Proofs.DICTID_previous]
   try rw [root]
   refine outputCounterX_bind (outputCounterX_NEEDBITS r 32) (fun _ => ?_)
   refine outputCounterX_bind (outputCounterX_get r) (fun regs => ?_)
@@ -202,7 +203,7 @@ theorem outputCounterX_inflate_DICTID (r : ZStreamRef) (context : Ctx) (root : c
 
 theorem outputCounterX_inflate_HCRC (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     OutputCounterX r (inflate_HCRC context) := by
-  unfold inflate_HCRC
+  rw [Zlib.Inflate.Proofs.HCRC_previous]
   try rw [root]
   output_counter_mode r, root
 
@@ -257,7 +258,8 @@ theorem outputCounterX_inflate_FLAGS (r : ZStreamRef) (context : Ctx) (root : co
 
 theorem outputCounterX_inflate_HEAD (r : ZStreamRef) (context : Ctx) (root : context.strm = some r) :
     OutputCounterX r (inflate_HEAD context) := by
-  unfold inflate_HEAD
+  unfold inflate_HEAD startDataCheck storeChecksum resetHeaderCheck
+  simp only [Zlib.Inflate.Proofs.liftHeapBind, x_bind_assoc, Bool.false_eq_true, ↓reduceIte]
   try rw [root]
   output_counter_mode r, root
 

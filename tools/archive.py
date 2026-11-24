@@ -7,8 +7,9 @@ from pathlib import Path
 import shlex
 import subprocess
 import tempfile
+from typing import NamedTuple
 
-from reference import BUILD, ROOT, make_reference
+from reference import BUILD, LOCK, ROOT, make_reference
 
 
 def output(command, **kwargs):
@@ -19,10 +20,28 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def compare(work):
+class BuildInputs(NamedTuple):
+    compiler: list[str]
+    archiver: list[str]
+    version: str
+    target: str
+    env: dict
+    flags: list[str]
+
+
+def prepare_inputs(work, *, pinned=False):
+    """Produce the two configured source trees and the exact archive compiler flags."""
     cc = shlex.split(os.environ.get("CC", "clang"))
     ar = shlex.split(os.environ.get("AR", "llvm-ar"))
+    version = output([*cc, "--version"]).splitlines()[0]
+    toolchain = LOCK["clangAudit"]
+    if pinned:
+        if version != toolchain["version"]:
+            raise ValueError(f"expected {toolchain['version']}, found {version}")
+        cc.append("--target=" + toolchain["target"])
     target = output([*cc, "-dumpmachine"])
+    if pinned and target != toolchain["target"]:
+        raise ValueError(f"expected {toolchain['target']}, found {target}")
     if not target.startswith("x86_64-") or not target.endswith("linux-gnu"):
         raise ValueError(f"CC must target x86-64 Linux GNU, got {target}")
 
@@ -33,11 +52,18 @@ def compare(work):
     make_reference(reference, configure=True)
     env = dict(os.environ, CC=shlex.join(cc), AR=shlex.join(ar), ARFLAGS="rcsD",
                RANLIB=os.environ.get("RANLIB", "llvm-ranlib"), CHOST=target,
-               SOURCE_DATE_EPOCH="0", CFLAGS="-O3 -std=gnu17 -g0 -DNDEBUG -ffunction-sections")
+               SOURCE_DATE_EPOCH="0", CFLAGS=f"-O3 -std={toolchain['standard']} -g0 -DNDEBUG -ffunction-sections")
     subprocess.run(["./configure", "--static"], cwd=reference, env=env, check=True)
-    subprocess.run(["make", "libz.a"], cwd=reference, env=env, check=True)
     flags = shlex.split(output(["make", "-s", "-f", "Makefile", "-f", "-", "abi-flags"],
                                input="abi-flags:\n\t@echo $(CFLAGS)\n", cwd=reference, env=env))
+    return BuildInputs(cc, ar, version, target, env, flags)
+
+
+def compare(work, *, pinned=False):
+    cc, ar, version, target, env, flags = prepare_inputs(work, pinned=pinned)
+    lean = work / "lean"
+    reference = work / "reference"
+    subprocess.run(["make", "libz.a"], cwd=reference, env=env, check=True)
     expected = output([*ar, "t", reference / "libz.a"]).splitlines()
     if not expected or len(expected) != len(set(expected)):
         raise ValueError("unexpected reference archive layout")
@@ -59,8 +85,10 @@ def compare(work):
         generated = (lean / member).read_bytes()
         objects[member] = {"equal": original == generated, "reference_sha256": sha(original),
                            "lean_sha256": sha(generated)}
-    equal = not missing and not unexpected and candidate_bytes == reference_bytes
-    report = {"target": target, "compiler": output([*cc, "--version"]).splitlines()[0],
+    equal = (not missing and not unexpected and all(obj["equal"] for obj in objects.values())
+             and candidate_bytes == reference_bytes)
+    report = {"pinned": pinned, "zlib": LOCK["zlib"], "patches": LOCK["patches"],
+              "target": target, "compiler": version,
               "cflags": flags, "archiver": output([*ar, "--version"]).splitlines()[0],
               "reference": "reference/libz.a", "reference_sha256": sha(reference_bytes),
               "lean": "lean/" + name, "lean_sha256": sha(candidate_bytes), "objects": objects,
@@ -74,6 +102,7 @@ def compare(work):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pinned", action="store_true", help="enforce the compiler and target in pins.json")
     parser.add_argument("--output", type=Path, help="new directory for this build")
     args = parser.parse_args()
     if args.output:
@@ -82,4 +111,4 @@ if __name__ == "__main__":
     else:
         BUILD.mkdir(exist_ok=True)
         work = Path(tempfile.mkdtemp(prefix="archive-", dir=BUILD))
-    raise SystemExit(0 if compare(work) else 1)
+    raise SystemExit(0 if compare(work, pinned=args.pinned) else 1)

@@ -6,12 +6,13 @@ This checks two properties independently of manual claims:
    safety scope) plus `whole_library_safety` (from b442cf6) remain in `ZlibF.Results.proved`,
    `notDone` is empty, and all 99 baseline `required` goals (plus `whole_library_safety`)
    remain in `ZlibF.Results.required`.
-2. When git object history for `85cd20c` (and `b442cf6`) is available locally, stripping Lean
+2. Using git history for `85cd20c` and `b442cf6`, stripping Lean
    comments/docstrings from the 17 baseline `ZlibF/Spec/Safety/*.lean` files, all
    `ZlibF/Spec/Common/**.lean` files, and core runtime semantics
    (`ZlibF/Runtime/{Space,Monad,Ptr,Schema}.lean`) shows zero code or goal-statement drift,
    and `PublicEntry` / `StreamProtocol` / `Goal.whole_library_safety` in
-   `ZlibF/Spec/Safety/WholeLibrary.lean` match `b442cf6` token-for-token.
+   `ZlibF/Spec/Safety/WholeLibrary.lean` match `b442cf6` token-for-token. Previous C ABI and multi-stream contracts and selectors
+   are compared with `50c4359`. The source check requires the three baseline commits.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE_COMMIT = "85cd20c"
 WHOLE_LIBRARY_COMMIT = "b442cf6"
+EXTENDED_LIBRARY_COMMIT = "50c43592de2b6e317806e29a14ca4a2d50764034"
 
 BASELINE_SAFETY_FILES = (
     "ZlibF/Spec/Safety/Back.lean",
@@ -348,9 +350,9 @@ def _git_ls_tree(commit: str, prefix: str) -> list[str]:
 def check_git_baseline() -> list[str]:
     """Compare current working-tree spec and runtime files against baseline git commits."""
     notes: list[str] = []
-    if not _git_has_commit(BASELINE_COMMIT):
-        notes.append(f"git commit {BASELINE_COMMIT} unavailable; skipping git source diff check")
-        return notes
+    for commit in (BASELINE_COMMIT, WHOLE_LIBRARY_COMMIT, EXTENDED_LIBRARY_COMMIT):
+        if not _git_has_commit(commit):
+            raise AssertionError(f"missing baseline {commit}; fetch the repository history for this check")
 
     errors: list[str] = []
     goal_count = 0
@@ -391,13 +393,30 @@ def check_git_baseline() -> list[str]:
         if normalize_tokens(base_code) != normalize_tokens(curr_code):
             errors.append(f"{rel}: non-comment diff detected vs {BASELINE_COMMIT}")
 
-    if _git_has_commit(WHOLE_LIBRARY_COMMIT):
-        wl_rel = "ZlibF/Spec/Safety/WholeLibrary.lean"
-        base_wl = strip_lean_comments(_git_show(WHOLE_LIBRARY_COMMIT, wl_rel))
-        curr_wl = strip_lean_comments((ROOT / wl_rel).read_text(encoding="utf-8"))
-        for decl in ("inductive PublicEntry", "inductive StreamProtocol", "def Goal.whole_library_safety"):
-            if extract_named_decl(base_wl, decl) != extract_named_decl(curr_wl, decl):
-                errors.append(f"{wl_rel}: `{decl}` changed vs {WHOLE_LIBRARY_COMMIT}")
+    wl_rel = "ZlibF/Spec/Safety/WholeLibrary.lean"
+    curr_wl = strip_lean_comments((ROOT / wl_rel).read_text(encoding="utf-8"))
+    for commit, names in [
+        (WHOLE_LIBRARY_COMMIT, ("inductive PublicEntry", "inductive StreamProtocol", "def Goal.whole_library_safety")),
+        (EXTENDED_LIBRARY_COMMIT, ("inductive MultiStreamContract", "def Goal.extended_library_safety")),
+    ]:
+        original = strip_lean_comments(_git_show(commit, wl_rel))
+        for decl in names:
+            if extract_named_decl(original, decl) != extract_named_decl(curr_wl, decl):
+                errors.append(f"{wl_rel}: `{decl}` changed vs {commit}")
+
+    # The extended selector may gain cases. Preserve the types of all previous constructors.
+    previous = strip_lean_comments(_git_show(EXTENDED_LIBRARY_COMMIT, wl_rel))
+    name = "inductive CAbiCompanion"
+    original_cases = extract_named_decl(previous, name).split(" | ")
+    current_cases = extract_named_decl(curr_wl, name).split(" | ")
+    if current_cases[0] != original_cases[0] or not set(original_cases[1:]) <= set(current_cases[1:]):
+        errors.append(f"{wl_rel}: a previous C ABI selector changed")
+    for module in ("MultiStream", "UtilitiesCAbi"):
+        rel = f"ZlibF/Spec/Safety/{module}.lean"
+        original = strip_lean_comments(_git_show(EXTENDED_LIBRARY_COMMIT, rel))
+        current = strip_lean_comments((ROOT / rel).read_text(encoding="utf-8"))
+        if normalize_tokens(original) != normalize_tokens(current):
+            errors.append(f"{rel}: contract changed vs {EXTENDED_LIBRARY_COMMIT}")
 
     if errors:
         raise AssertionError("\n".join(errors))
@@ -407,6 +426,7 @@ def check_git_baseline() -> list[str]:
         f"{len(BASELINE_SAFETY_FILES)} safety spec files ({goal_count} Goal.* decls), "
         f"{len(common_files)} Spec/Common files, {len(IMMUTABLE_RUNTIME_FILES)} core Runtime files unchanged"
     )
+    notes.append("Previous C ABI and multi-stream contracts and selectors preserved against 50c4359.")
     return notes
 
 
@@ -415,8 +435,14 @@ def check_results_registry() -> None:
     assert len(BASELINE_PROVED_GOALS) == 124, len(BASELINE_PROVED_GOALS)
     assert len(BASELINE_REQUIRED_GOALS) == 99, len(BASELINE_REQUIRED_GOALS)
 
-    proved_lit = ", ".join(f"``{n}" for n in BASELINE_PROVED_GOALS)
-    req_lit = ", ".join(f"``{n}" for n in BASELINE_REQUIRED_GOALS)
+    # Both historical sets gained these ten required contracts by 50c4359.
+    extended = tuple("ZlibF.Spec.Public.Goal." + name for name in (
+        "whole_library_safety", "extended_library_safety",
+        "compress2_z_c_safety", "compress2_c_safety", "compress_z_c_safety", "compress_c_safety",
+        "multi_stream_init_disjoint", "multi_stream_step_safety", "multi_stream_end_safety", "multi_stream_nonvacuity",
+    ))
+    proved_lit = ", ".join(f"``{n}" for n in BASELINE_PROVED_GOALS + extended)
+    req_lit = ", ".join(f"``{n}" for n in BASELINE_REQUIRED_GOALS + extended)
     lean_script = f"""import ZlibF.Results
 
 open Lean Elab Command
@@ -428,16 +454,12 @@ open Lean Elab Command
   for g in baselineProved do
     if !(provedNames.contains g) then
       throwError "missing baseline proved goal {{g}}"
-  if !(provedNames.contains ``ZlibF.Spec.Public.Goal.whole_library_safety) then
-    throwError "missing ZlibF.Spec.Public.Goal.whole_library_safety in ZlibF.Results.proved"
   if !ZlibF.Results.notDone.isEmpty then
     throwError "ZlibF.Results.notDone is non-empty: {{ZlibF.Results.notDone}}"
   for g in baselineRequired do
     if !(ZlibF.Results.required.contains g) then
       throwError "missing baseline required goal {{g}}"
-  if !(ZlibF.Results.required.contains ``ZlibF.Spec.Public.Goal.whole_library_safety) then
-    throwError "missing ZlibF.Spec.Public.Goal.whole_library_safety in ZlibF.Results.required"
-  IO.println s!"Results registry retains all {{baselineProved.length}} baseline proved goals (+ whole_library_safety) and {{baselineRequired.length}} baseline required goals (+ whole_library_safety)."
+  IO.println s!"Results registry retains all {{baselineProved.length}} previously proved and {{baselineRequired.length}} previously required goals from 50c4359."
 """
     res = subprocess.run(
         ["lake", "env", "lean", "--stdin"],

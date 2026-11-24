@@ -24,8 +24,9 @@ def paramsTail (s : DeflateStatePtr) (level strategy : Int32) : M Int32 := do
     if d.level == 0 && d.«matches» != 0 then
       if d.«matches» == 1 then slide_hash s else CLEAR_HASH s
       wr s (fun d => { d with «matches» := 0 })
+    wr s (fun d => { d with level := level })
     let c ← config_at level
-    wr s (fun d => { d with level := level, max_lazy_match := c.max_lazy.toUInt32, good_match := c.good_length.toUInt32,
+    wr s (fun d => { d with max_lazy_match := c.max_lazy.toUInt32, good_match := c.good_length.toUInt32,
                             nice_match := c.nice_length.toUInt32.toInt32, max_chain_length := c.max_chain.toUInt32 })
   wr s (fun d => { d with strategy })
   return Z_OK
@@ -44,10 +45,11 @@ theorem params_source (strm : ZStreamPtr) (level strategy : Int32) :
       if differs && d.last_flush != -2 then
         let err ← deflate strm Z_BLOCK
         if err == Z_STREAM_ERROR then return err
+        if (← zrd strm (·.avail_in)) != 0 then return Z_BUF_ERROR
         let d ← ldDeflateState s
         let diff ← lsub d.strstart.toUInt64.toInt64 d.block_start
         let tot ← ladd diff d.lookahead.toUInt64.toInt64
-        if (← zrd strm (·.avail_in)) != 0 || tot != 0 then return Z_BUF_ERROR
+        if tot != 0 then return Z_BUF_ERROR
         paramsTail s level strategy
       else
         paramsTail s level strategy) := by
@@ -252,7 +254,7 @@ theorem step_params_same {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d
     let d2 := paramsState d lv strategy c
     have tailRun : paramsTail (some (.tab ds)) lv strategy h = .ok (Z_OK, setD h ds d2) := by
       unfold paramsTail
-      simp only [bind_app, ldRun, levelB, ite_true, zeroB, Bool.false_eq_true, ite_false, cfgL, wrD_eq,
+      simp only [bind_app, ldRun, levelB, ite_true, zeroB, Bool.false_eq_true, ite_false, config_at_run _ lo hi, wrD_eq,
         good.live.hs, setD_dstates_same, setD_setD]
       rfl
     have inv2 : DStInv h ds d2 := { good.inv with blocks := good.inv.blocks_keys rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl, level_lo := lo, level_hi := hi, strat_lo := slo, strat_hi := shi }

@@ -66,7 +66,7 @@ theorem inflateGetDictionary_copy_general {h : Heap} {r : ZStreamRef} {zs : Nat}
     simpa [getDictBytes, first, mid, hsub] using h
   have hc : (st.whave != 0 && (Ptr.ref rd off : BPtr) != .null) = true := by simp [hpos]
   unfold OkOn at hadd hsub'
-  unfold inflateGetDictionary
+  unfold inflateGetDictionary getDictionaryWith
   simp only [bind_app, ldI_eq, ldZ_eq, hL.hz, hL.zst, castI, hL.hs, stateCheck_live hL,
     bne_iff_ne, ne_eq, not_true_eq_false, ite_false, hc, hw, hfirst, hmem1,
     ite_true, hadd, hsub', hmem2]

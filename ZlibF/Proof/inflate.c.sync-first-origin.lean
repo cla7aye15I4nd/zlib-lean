@@ -60,7 +60,7 @@ theorem syncFirst_default_origin_run {h : Heap} {r : ZStreamRef} {zs nb : Nat}
     (before : DefaultOriginState h r zs z s) (get : h.bytes nb = some array)
     (size : array.size = 4) (write : h.ro nb = false)
     (separate : ∀ w, s.window = .ref (.blk w) 0 → w ≠ nb) :
-    C.run (syncFirst (some (.tab zs)) (.ref (.blk nb) 0) s) h =
+    C.run (syncFirst (some (.tab zs)) (.ref (.blk nb) 0)) h =
       .ok ((), syncFirstHeap h zs nb s array) ∧
       DefaultOriginState (syncFirstHeap h zs nb s array) r zs z (syncFirstState s) :=
   ⟨syncFirst_run before.good.live.hs get size write before.good.inv.bits,
@@ -72,7 +72,7 @@ theorem syncFirst_default_local_origin_run {h : Heap} {r : ZStreamRef} {zs : Nat
     {z : ZStream} {s : InflateState} (before : DefaultOriginState h r zs z s) :
     C.run (do
       let buffer ← allocLocalB 4
-      syncFirst (some (.tab zs)) buffer s) h =
+      syncFirst (some (.tab zs)) buffer) h =
         .ok ((), syncFirstHeap (syncAlloc h) zs h.nextBlk s (syncJunk h)) ∧
       DefaultOriginState (syncFirstHeap (syncAlloc h) zs h.nextBlk s (syncJunk h))
         r zs z (syncFirstState s) := by
@@ -83,7 +83,7 @@ theorem syncFirst_default_local_origin_run {h : Heap} {r : ZStreamRef} {zs : Nat
   refine ⟨?_, next⟩
   change (do
     let buffer ← allocLocalB 4
-    syncFirst (some (.tab zs)) buffer s) h = _
+    syncFirst (some (.tab zs)) buffer) h = _
   rw [bind_app, allocLocalB_run h before.good.fresh]
   exact run
 

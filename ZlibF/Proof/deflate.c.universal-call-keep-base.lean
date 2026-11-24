@@ -1,3 +1,4 @@
+import ZlibF.Proof.ControlFlowFrame
 import ZlibF.Proof.«deflate.c.universal-params-base»
 import ZlibF.Zlib.«deflate.c»
 import ZlibF.Spec.Common.Initialisation
@@ -262,6 +263,20 @@ theorem KeepM.bind {α β : Type} {m : M α} {f : α → M β} (hm : KeepM m) (h
 theorem KeepM.ite {α : Type} (p : Prop) [Decidable p] {a b : M α} (ha : KeepM a) (hb : KeepM b) :
     KeepM (if p then a else b) := by
   split <;> assumption
+
+theorem KeepM.cforEverRet {σ ρ : Type} (body : σ → M (LoopStep σ ρ)) (s : σ) (k : σ → M ρ)
+    (hb : ∀ s, KeepM (body s)) (hk : ∀ s, KeepM (k s)) : KeepM (C.cforEverRet body s k) :=
+  Preserves.cforEverRet (R := KeepRel) KeepRel.refl (fun a b => KeepRel.trans a b) body s k hb hk
+
+theorem KeepM.cwhileBrk {σ : Type} (cond : σ → M (Bool × σ)) (body : σ → M (LoopStep σ Empty))
+    (s : σ) (hc : ∀ s, KeepM (cond s)) (hb : ∀ s, KeepM (body s)) :
+    KeepM (C.cwhileBrk cond body s) :=
+  Preserves.cwhileBrk (R := KeepRel) KeepRel.refl (fun a b => KeepRel.trans a b) cond body s hc hb
+
+theorem KeepM.cdoWhileBrk {σ : Type} (body : σ → M (LoopStep σ Empty)) (cond : σ → M (Bool × σ))
+    (s : σ) (hb : ∀ s, KeepM (body s)) (hc : ∀ s, KeepM (cond s)) :
+    KeepM (C.cdoWhileBrk body cond s) :=
+  Preserves.cdoWhileBrk (R := KeepRel) KeepRel.refl (fun a b => KeepRel.trans a b) body cond s hb hc
 
 theorem KeepM.cwhile_go {σ : Type} (cond : σ → M (Bool × σ)) (body : σ → M σ)
     (hc : ∀ s, KeepM (cond s)) (hb : ∀ s, KeepM (body s)) (n : Nat) (s : σ) :

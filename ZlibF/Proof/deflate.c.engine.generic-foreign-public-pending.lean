@@ -126,6 +126,7 @@ theorem public_pending_exhausted_foreign {h : Heap} {r : ZStreamRef} {ds owner o
       · simp [finished,status finished]
       · simp [finished]
     rw [public_deflate_source]
+    unfold Phases.entryPhase
     simp only [bind_app,pure_app,checked,show ((0 : Int32) != 0) = false from rfl,
       flagUpper,flagLower,decide_false,Bool.false_or,Bool.false_eq_true,ite_false,
       zrd_eq,good.live.hz,good.live.zst,castDeflateState,ldZStream_ok good.live.hz,

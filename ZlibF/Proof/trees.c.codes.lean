@@ -48,7 +48,15 @@ theorem gen_codes_eq (tree : CtDataPtr) (max_code : Int32) (bl_count : WPtr) :
     gen_codes tree max_code bl_count = (do
       let (_, _, nc) ← gcStart bl_count
       let _ ← gcAssign tree max_code nc
-      pure ()) := rfl
+      pure ()) := by
+  unfold gen_codes gcStart gcAssign
+  have fault {α β : Type} (msg : String) (k : α → M β) : (ub msg >>= k) = ub msg := rfl
+  have readBind {α : Type} (a : Array UInt16) (i : Nat) (k : UInt16 → M α) :
+      (readNextCode a i >>= k) =
+        (if a.size ≤ i then ub "next_code index outside its array" else k a[i]!) := by
+    rw [readNextCode_eq]
+    split <;> rfl
+  simp only [readBind, M_pure_bind, fault]
 
 /-- All fifteen canonical starting codes are computed without changing the
 heap. Counts are arbitrary unsigned 16-bit values; wrapping is accounted for. -/

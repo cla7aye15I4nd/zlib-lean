@@ -80,20 +80,21 @@ theorem end_partial_run {h : Heap} {r : ZStreamRef} {ds : Nat} {z : ZStream} {d 
   have hw1 := freeableB_after hw hb hwb
   have hw3 : FreeableB (freeWords (freeWords (freeBytes h d.pending_buf) d.head) d.prev) d.window := by
     simpa only [FreeableB, freeWords_bytes, freeWords_ro] using hw1
-  unfold deflateEnd
+  unfold deflateEnd ZFREE_state
   simp only [bind_app, stateCheck_live hl, bne_self_eq_false, Bool.false_eq_true, ite_false,
     zrd_eq, hl.hz, hl.zst, castD, rdD_eq, hl.hs]
   rw [freeB_continue hl.hz hf hb]
-  simp only [bind_app, rdD_eq, freeBytes_dstates, hl.hs]
+  simp only [bind_app, ldZ_eq, ZStreamRef.get_freeBytes, hl.hz, hl.zst, castD, rdD_eq, freeBytes_dstates, hl.hs]
   rw [freeW_continue (by simpa using hl.hz) hf hq1]
-  simp only [bind_app, rdD_eq, freeWords_dstates, freeBytes_dstates, hl.hs]
+  simp only [bind_app, ldZ_eq, ZStreamRef.get_freeWords, ZStreamRef.get_freeBytes, hl.hz, hl.zst, castD, rdD_eq, freeWords_dstates, freeBytes_dstates, hl.hs]
   rw [freeW_continue (by simpa using hl.hz) hf hp2]
-  simp only [bind_app, rdD_eq, freeWords_dstates, freeBytes_dstates, hl.hs]
+  simp only [bind_app, ldZ_eq, ZStreamRef.get_freeWords, ZStreamRef.get_freeBytes, hl.hz, hl.zst, castD, rdD_eq, freeWords_dstates, freeBytes_dstates, hl.hs]
   rw [freeB_continue (by simpa using hl.hz) hf hw3]
-  rw [bind_app, zfree_default_run (by simpa using hl.hz) hf]
+  simp only [bind_app, ldZ_eq, ZStreamRef.get_freeBytes, ZStreamRef.get_freeWords, hl.hz, hl.zst, castD]
+  rw [zfree_default_run (by simpa using hl.hz) hf]
   simp only []
-  rw [bind_app, freeDeflateState_free_ok (d := d) (by simpa using hl.hs)]
+  rw [freeDeflateState_free_ok (d := d) (by simpa using hl.hs)]
   simp only [zwr_eq, ZStreamRef.get_dstates, ZStreamRef.get_freeBytes, ZStreamRef.get_freeWords,
-    hl.hz, bind_app, pure_app, ZStreamRef.put_with_dstates, endHeap, freeBytes_dstates, freeWords_dstates]
+    hl.hz, pure_app, ZStreamRef.put_with_dstates, endHeap, freeBytes_dstates, freeWords_dstates]
 
 end Zlib.Deflate.Proofs.DefaultInit

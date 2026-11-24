@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.window-stream»
 import ZlibF.Proof.«inflate.c.completes-room-modes»
 import ZlibF.Proof.«inflate.c.completes-observe-avail»
 import ZlibF.Proof.«inflate.c.completes-interface»
@@ -175,7 +176,9 @@ theorem RetIs.ite {P : Int32 → Prop} (p : Prop) [Decidable p] {a b : M Int32}
 theorem inflate_leave_ret (c : Ctx) (l : IL) :
     RetIs (fun v => v = Z_MEM_ERROR ∨ v = l.ret ∨ (v = Z_BUF_ERROR ∧ l.ret = Z_OK))
       (inflate_leave c l) := by
-  unfold inflate_leave
+  rw [Zlib.Inflate.Proofs.WindowStream.inflate_leave_eq_saved]
+  unfold leaveWindow leaveAccounting
+  simp only [Zlib.Inflate.Proofs.WindowStream.savedOutput_bind]
   repeat' first
     | exact RetIs.pure _ (Or.inl rfl)
     | exact RetIs.pure _ (Or.inr (Or.inl rfl))
@@ -214,7 +217,7 @@ theorem blocked_leave (codesOK : LeaveRetCodes) (gz : GzipFieldLeaves) : Blocked
   have refusal : rc ≠ Z_STREAM_ERROR := by
     rcases codes with e | e <;> rw [e] <;> decide
   by_cases accepted : (z0.next_out == .null || (z0.next_in == .null && z0.avail_in != 0)) = false
-  · simp only [bind_app, stateCheck_live live', bne_self_eq_false, Bool.false_eq_true, ite_false,
+  · simp only [bind_app, pure_app, stateCheck_live live', bne_self_eq_false, Bool.false_eq_true, ite_false,
       ldZStream_ok live'.hz, accepted, live'.zst, castI] at ebody
     have nonnull : z0.next_out ≠ .null := by
       intro e; rw [e] at accepted; simp at accepted
@@ -293,7 +296,7 @@ theorem blocked_leave (codesOK : LeaveRetCodes) (gz : GzipFieldLeaves) : Blocked
       cases e : (z0.next_out == .null || (z0.next_in == .null && z0.avail_in != 0))
       · exact absurd e accepted
       · rfl
-    simp only [bind_app, stateCheck_live live', bne_self_eq_false, Bool.false_eq_true, ite_false,
+    simp only [bind_app, pure_app, stateCheck_live live', bne_self_eq_false, Bool.false_eq_true, ite_false,
       ldZStream_ok live'.hz, refused, ite_true, pure_app] at ebody
     cases ebody
     exact absurd rfl refusal

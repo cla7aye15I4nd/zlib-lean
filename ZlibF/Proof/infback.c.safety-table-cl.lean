@@ -29,7 +29,7 @@ theorem tabGap_of {i : Nat} {bound : InflateState → Nat} {h : Heap} {s : Infla
   simp [tabGap, hs]
 
 /-- One code-length code length after `NEEDBITS(3)`. -/
-def tl1Rest (c : BCtx) : X Unit := do
+def tl1Rest (c : DecoderCtx) : X Unit := do
   let s ← ldInflateState c.st
   wrS c.st fun s => { s with «have» := s.«have» + 1 }
   let o ← orderAt s.«have»
@@ -37,7 +37,7 @@ def tl1Rest (c : BCtx) : X Unit := do
   Ptr.store (← (lensP c.st).add (o.toNat : Int)) b.toUInt16
   DROPBITS 3
 
-theorem tl1Body_eq (c : BCtx) : tl1Body c = (do NEEDBITS c 3; tl1Rest c) := rfl
+theorem tl1Body_eq (c : DecoderCtx) : tl1Body c = (do NEEDBITS c 3; tl1Rest c) := rfl
 
 theorem v3_le {l : IL} : ((l.hold.toUInt32 &&& ((1 : UInt32) <<< 3 - 1)).toUInt16).toNat ≤ 7 := by
   rw [UInt32.toNat_toUInt16, BITS_toNat l 3 (by decide)]
@@ -69,7 +69,7 @@ theorem lens_store {i : Nat} {h : Heap} {s : InflateState} (_hs : h.istates i = 
   rw [st]
   simp only [Nat.zero_add, setI, upd_upd, clSet]
 
-theorem tl1Rest_run (c : BCtx) {i : Nat} (hc : c.st = some (.tab i)) {h : Heap} {s : InflateState}
+theorem tl1Rest_run (c : DecoderCtx) {i : Nat} (hc : c.st = some (.tab i)) {h : Heap} {s : InflateState}
     (hs : h.istates i = some s) (hlt : s.«have».toNat < 19) (size : s.lens.size = 320) (l : IL) :
     runX (tl1Rest c) l h = .ok ((.ok (), { l with hold := l.hold >>> (3 : UInt32).toUInt64, bits := l.bits - 3 }),
       setI h i (clSet s (l.hold.toUInt32 &&& ((1 : UInt32) <<< 3 - 1)).toUInt16)) := by
@@ -83,7 +83,7 @@ theorem tl1Rest_run (c : BCtx) {i : Nat} (hc : c.st = some (.tab i)) {h : Heap} 
   simp only [runX_bind, runX_lift_ok ld, runX_lift_ok wA, runX_lift_ok ord, BITS_run _ _ 3 (by decide), lensP,
     runX_lift_ok add, runX_lift_ok st, DROPBITS_run _ _ 3 (by decide)]
 
-theorem tl2Body_run (c : BCtx) {i : Nat} (hc : c.st = some (.tab i)) {h : Heap} {s : InflateState}
+theorem tl2Body_run (c : DecoderCtx) {i : Nat} (hc : c.st = some (.tab i)) {h : Heap} {s : InflateState}
     (hs : h.istates i = some s) (hlt : s.«have».toNat < 19) (size : s.lens.size = 320) (l : IL) :
     runX (tl2Body c) l h = .ok ((.ok (), l), setI h i (clSet s 0)) := by
   obtain ⟨add, st⟩ := lens_store hs hlt size 0

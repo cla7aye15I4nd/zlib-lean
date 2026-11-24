@@ -1,5 +1,6 @@
 import ZlibF.Runtime.Alloc
 import ZlibF.Runtime.CAbi
+import ZlibF.Runtime.ControlFlow
 
 /-!
 # adler32.c — faithful translation
@@ -139,5 +140,84 @@ def adler32_combine (adler1 adler2 : UInt64) (len2 : ZOffT) : M (CExport UInt64)
 /-- `uLong ZEXPORT adler32_combine64(uLong adler1, uLong adler2, z_off64_t len2)` -/
 def adler32_combine64 (adler1 adler2 : UInt64) (len2 : ZOff64T) : M (CExport UInt64) :=
   adler32_combine_ adler1 adler2 len2
+
+/-! ### Exact-shape C-ABI companion (`adler32_z_c`) -/
+
+/-- Locals of `adler32_z` reusing parameters `adler`, `buf : ConstBPtr`, `len`. -/
+structure LocalsC where
+  adler : UInt64
+  sum2 : UInt64
+  buf : ConstBPtr
+  len : UInt64
+  n : UInt32
+
+/-- `DO1(buf,i)` over `LocalsC`. -/
+def do1C (s : LocalsC) (i : Int) : M LocalsC := do
+  let b ← cinline (index8 s.buf i)
+  let s := { s with adler := s.adler + b.toUInt64 }
+  pure { s with sum2 := s.sum2 + s.adler }
+
+/-- `DO16(buf)` over `LocalsC`. -/
+def do16C (s : LocalsC) : M LocalsC := do
+  let s ← do1C s 0;  let s ← do1C s 1;  let s ← do1C s 2;  let s ← do1C s 3
+  let s ← do1C s 4;  let s ← do1C s 5;  let s ← do1C s 6;  let s ← do1C s 7
+  let s ← do1C s 8;  let s ← do1C s 9;  let s ← do1C s 10; let s ← do1C s 11
+  let s ← do1C s 12; let s ← do1C s 13; let s ← do1C s 14; do1C s 15
+
+/-- `adler += *buf++; sum2 += adler;` over `LocalsC`. -/
+def stepByteC (s : LocalsC) : M LocalsC := do
+  let b ← cinline (load8 s.buf)
+  let s := { s with adler := s.adler + b.toUInt64 }
+  let buf1 ← cinline (s.buf.add 1)
+  let s := { s with buf := buf1 }
+  pure { s with sum2 := s.sum2 + s.adler }
+
+/-- `while (len--)` condition over `LocalsC`. -/
+def lenPostDecC (s : LocalsC) : M (Bool × LocalsC) :=
+  pure (s.len != 0, { s with len := s.len - 1 })
+
+/-- Exact C-shaped `adler32_z`: reuses `adler`, `buf`, `len` and declares `sum2`, `n` via `cdecl`. -/
+def adler32_z_c (adler : UInt64) (buf : ConstBPtr) (len : UInt64) : M (CExportAs "adler32_z" UInt64) := do
+  let mut s ← cdecl ({ adler, sum2 := default, buf, len, n := default } : LocalsC)
+  s := { s with sum2 := (s.adler >>> 16) &&& 0xffff }
+  s := { s with adler := s.adler &&& 0xffff }
+  if s.len == 1 then
+    let b ← index8 s.buf 0
+    s := { s with adler := s.adler + b.toUInt64 }
+    if s.adler >= BASE then s := { s with adler := s.adler - BASE }
+    s := { s with sum2 := s.sum2 + s.adler }
+    if s.sum2 >= BASE then s := { s with sum2 := s.sum2 - BASE }
+    return s.adler ||| (s.sum2 <<< 16)
+  if s.buf == .null then return 1
+  if s.len < 16 then
+    s ← cwhile lenPostDecC stepByteC s
+    if s.adler >= BASE then s := { s with adler := s.adler - BASE }
+    s := { s with sum2 := s.sum2 % BASE }
+    return s.adler ||| (s.sum2 <<< 16)
+  s ← cwhile (fun s => pure (s.len >= NMAX, s))
+    (fun s => do
+      let s := { s with len := s.len - NMAX, n := (NMAX / 16).toUInt32 }
+      let s ← cdoWhile
+        (fun s => do
+          let s ← do16C s
+          let b16 ← cinline (s.buf.add 16)
+          pure { s with buf := b16 })
+        (fun s => let n := s.n - 1; pure (n != 0, { s with n }))
+        s
+      let s := { s with adler := s.adler % BASE }
+      pure { s with sum2 := s.sum2 % BASE })
+    s
+  if s.len != 0 then
+    s ← cwhile (fun s => pure (s.len >= 16, s))
+      (fun s => do
+        let s := { s with len := s.len - 16 }
+        let s ← do16C s
+        let b16 ← cinline (s.buf.add 16)
+        pure { s with buf := b16 })
+      s
+    s ← cwhile lenPostDecC stepByteC s
+    s := { s with adler := s.adler % BASE }
+    s := { s with sum2 := s.sum2 % BASE }
+  return s.adler ||| (s.sum2 <<< 16)
 
 end Zlib.Adler32

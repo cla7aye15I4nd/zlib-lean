@@ -8,7 +8,7 @@ set_option autoImplicit false
 theorem inflate_DICTID_wait {c : Ctx} {h : Heap} {l current : IL} {exit : Ex}
     (pull : runX (NEEDBITS 32) l h = .ok ((.error exit, current), h)) :
     runX (inflate_DICTID c) l h = .ok ((.error exit, current), h) := by
-  unfold inflate_DICTID
+  rw [Zlib.Inflate.Proofs.DICTID_previous]
   rw [runX_bind, pull]
 
 /-- After the actual word read, DICTID writes the swapped checksum,
@@ -20,7 +20,7 @@ theorem inflate_DICTID_parsed_cut {c : Ctx} {h : Heap} {r : ZStreamRef} {zs : Na
       (setI (r.put h { z with adler := ZSWAP32 current.hold }) zs
         { s with check := ZSWAP32 current.hold, mode := DICT }) := by
   let value := ZSWAP32 current.hold
-  unfold inflate_DICTID
+  rw [Zlib.Inflate.Proofs.DICTID_previous]
   rw [runX_bind, pull]
   simp only []
   rw [runX_bind, runX_get]

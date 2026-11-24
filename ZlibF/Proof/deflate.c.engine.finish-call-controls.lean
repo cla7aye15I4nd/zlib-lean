@@ -27,9 +27,7 @@ theorem deflate_slow_finish_run_controls {h after : Heap} {r : ZStreamRef} {ds o
     loop stateL.good.live.hs
   rcases stopped with returned | ⟨running, broke⟩
   · have earlyRun : deflate_slow (some (.tab ds)) Z_FINISH h = .ok (need_more, loopHeap) := by
-      rw [deflate_slow_eof_tail_source, bind_app, loop]
-      simp only [returned]
-      rfl
+      simp only [deflate_slow_eof_tail_source loop, returned, pure_app]
     have heaps : loopHeap = after := (Prod.mk.inj (Except.ok.inj (earlyRun.symm.trans run))).2
     rw [heaps] at stateL
     have states : loopD = result := Option.some.inj (stateL.good.live.hs.symm.trans live)
@@ -50,7 +48,7 @@ theorem deflate_slow_finish_run_controls {h after : Heap} {r : ZStreamRef} {ds o
       slow_eof_finish_controls_execution localState endL buffersL eof.1 (by rw [levelL]; exact positive)
         pointerL readyL.2.1 (by rw [memoryL]; exact memory) readyL.1 (wrapL.trans wrap)
     have wholeRun : deflate_slow (some (.tab ds)) Z_FINISH h = .ok (tailRet, tailHeap) := by
-      rw [deflate_slow_eof_tail_source, bind_app, loop]
+      rw [deflate_slow_eof_tail_source loop]
       simp only [running]
       exact tailRun
     have heaps : tailHeap = after := (Prod.mk.inj (Except.ok.inj (wholeRun.symm.trans run))).2

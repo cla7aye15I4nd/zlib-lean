@@ -52,7 +52,7 @@ theorem modeOk_tb {i : Nat} {s : InflateState} (m : s.mode = TYPE ∨ s.mode = B
   rcases m with m | m <;> rw [m] at e <;> exact absurd e (by decide)
 
 /-- `RESTORE()` on the records of the invariant. -/
-theorem RESTORE_back_run {c : BCtx} {r : ZStreamRef} {i : Nat} {h : Heap} {z : ZStream} {s : InflateState}
+theorem RESTORE_back_run {c : DecoderCtx} {r : ZStreamRef} {i : Nat} {h : Heap} {z : ZStream} {s : InflateState}
     (cstrm : c.strm = some r) (cst : c.st = some (.tab i)) (hz : r.get h = some z) (hs : h.istates i = some s)
     (l : IL) :
     runX (RESTORE c.strm c.st) l h = .ok ((.ok (), l),
@@ -69,10 +69,10 @@ theorem RESTORE_back_run {c : BCtx} {r : ZStreamRef} {i : Nat} {h : Heap} {z : Z
   simp only []
   rw [runX_bind, runX_lift_ok write]
   simp only []
-  rw [runX_lift_ok (wrS_ok cst hs1 _)]
+  rw [cst, runX_lift_ok (wrS_tab hs1 _)]
 
 /-- `LOAD()` on the records of the invariant. -/
-theorem LOAD_back_run {c : BCtx} {r : ZStreamRef} {i : Nat} {h : Heap} {z : ZStream} {s : InflateState}
+theorem LOAD_back_run {c : DecoderCtx} {r : ZStreamRef} {i : Nat} {h : Heap} {z : ZStream} {s : InflateState}
     (cstrm : c.strm = some r) (cst : c.st = some (.tab i)) (hz : r.get h = some z) (hs : h.istates i = some s)
     (l : IL) :
     runX (LOAD c.strm c.st) l h = .ok ((.ok (), { l with
@@ -85,6 +85,83 @@ theorem LOAD_back_run {c : BCtx} {r : ZStreamRef} {i : Nat} {h : Heap} {z : ZStr
   simp only []
   rw [runX_bind, runX_lift_ok hs']
   rfl
+
+/-- Build the fast decoder's heap and buffer witnesses from the unread
+input and the remaining window range after RESTORE. The current input may
+occupy a disjoint part of the same allocation as the window. -/
+theorem fast_range_env (c : DecoderCtx) {r : ZStreamRef} {i w woff n b pos : Nat} {h : Heap} {l : IL}
+    {z : ZStream} {s : InflateState} (stream : c.strm = some r) (hz : r.get h = some z)
+    (zst : z.state = some (.inflate i)) (mode : s.mode = LEN) (tables : TablesOk i s)
+    (globals : LibraryGlobals h) (st : StOk s) (wsize32 : s.wsize.toNat ≤ 32768)
+    (win : s.window = .ref (.blk w) woff) (sz : s.wsize.toNat = n) (hleft : l.left.toNat ≤ n)
+    (hput : l.put = .ref (.blk w) (woff + (n - l.left.toNat))) (hnext' : l.next = .ref (.blk b) pos)
+    {ina wa : Array UInt8} (inget : h.bytes b = some ina) (wget : h.bytes w = some wa) (wro : h.ro w = false)
+    (inroom : pos + l.have_.toNat ≤ ina.size) (wroom : woff + n ≤ wa.size)
+    (inbig : ina.size < 2^63) (wbig : wa.size < 2^63) (inputRoom : 6 ≤ l.have_.toNat) (outputRoom : 258 ≤ l.left.toNat)
+    (hsep' : b ≠ w ∨ b = w ∧ (pos + l.have_.toNat ≤ woff + (n - l.left.toNat) ∨
+      woff + (n - l.left.toNat) + l.left.toNat ≤ pos))
+    (short : l.bits.toNat < 8) (held : l.hold.toNat < 2 ^ l.bits.toNat) :
+    ∃ e : Zlib.Inffast.Proofs.EnvG true,
+      e.h0 = setI (r.put h { z with next_out := l.put, avail_out := l.left, next_in := l.next, avail_in := l.have_ }) i
+        { s with hold := l.hold, bits := l.bits } ∧
+      e.strm = c.strm ∧ e.start = s.wsize ∧ e.r = r ∧ e.stid = i ∧
+      e.sm0 = { z with next_out := l.put, avail_out := l.left, next_in := l.next, avail_in := l.have_ } ∧
+      e.s0 = { s with hold := l.hold, bits := l.bits } ∧ e.ob = BRef.blk w ∧ e.o0 = woff + (n - l.left.toNat) ∧
+      l.next = .ref e.ib e.i0 ∧ LenLeavesPositive e.LCA e.ol e.s0.lenbits.toNat := by
+  -- the heap after RESTORE
+  let z1 : ZStream := { z with next_out := l.put, avail_out := l.left, next_in := l.next, avail_in := l.have_ }
+  let s1 : InflateState := { s with hold := l.hold, bits := l.bits }
+  have hsm1 : r.get (setI (r.put h z1) i s1) = some z1 := by
+    rw [rget_setI]; exact Zlib.Inflate.Proofs.ZStreamRef.get_put_same hz z1
+  have hs1 : (setI (r.put h z1) i s1).istates i = some s1 := by simp [setI]
+  have hIN1 : (setI (r.put h z1) i s1).bytes b = some ina := by
+    show (r.put h z1).bytes b = some ina
+    rw [Zlib.Inffast.Proofs.put_bytes]; exact inget
+  have hA1 : (setI (r.put h z1) i s1).bytes w = some wa := by
+    show (r.put h z1).bytes w = some wa
+    rw [Zlib.Inffast.Proofs.put_bytes]; exact wget
+  have hro1 : (setI (r.put h z1) i s1).ro w = false := by
+    show (r.put h z1).ro w = false
+    rw [Zlib.Inffast.Proofs.put_ro]; exact wro
+  have glob1 : LibraryGlobals (setI (r.put h z1) i s1) := by
+    unfold LibraryGlobals at globals ⊢
+    rw [← globals]
+    exact Zlib.Inffast.Proofs.put_static r h z1
+  have tabs1 : TablesOk i s1 := tables
+  obtain ⟨rl, ol, LCA, hlc, hLCA, hlt, hpos⟩ := lenTabPos hs1 tabs1 glob1
+  obtain ⟨rd, od, DCA, -, -, hdc, -, hDCA, hdt, -⟩ := distTab hs1 tabs1 glob1
+  let e : Zlib.Inffast.Proofs.EnvG true := {
+    h0 := setI (r.put h z1) i s1, strm := c.strm, start := s.wsize, r := r, sm0 := z1, stid := i, s0 := s1,
+    hstrm := stream, hsm := hsm1, hrw := by cases r <;> rfl, hstate := zst, hs0 := hs1,
+    ib := BRef.blk b, i0 := pos, IN := ina, hnin := hnext', hIN := hIN1,
+    hai := inputRoom,
+    hINsz := inroom,
+    hINbig := inbig,
+    ob := BRef.blk w, o0 := woff + (n - l.left.toNat), A0 := wa, hnout := hput, hA0 := hA1, hro := hro1,
+    hao := outputRoom,
+    hAsz := by
+      change woff + (n - l.left.toNat) + l.left.toNat ≤ wa.size
+      omega,
+    hAbig := wbig,
+    hstart := by change l.left.toNat ≤ s.wsize.toNat; omega,
+    hbeg := by change s.wsize.toNat - l.left.toNat ≤ woff + (n - l.left.toNat); omega,
+    hsep := hsep'.imp (fun ne same => ne (BRef.blk.inj same))
+      (fun ⟨same, apart⟩ => ⟨congrArg BRef.blk same, apart⟩),
+    hbits := short, hhold := held, hsane := st.1,
+    hmode := by change s.mode = LEN; exact mode,
+    halias_win := fun _ => by change s.window ≠ .null; rw [win]; simp,
+    hws := wsize32, hwh := st.2.2,
+    hwn := by change s.wnext.toNat ≤ s.wsize.toNat; rw [st.2.1]; exact Nat.zero_le _,
+    wb := w, woff := woff, W := wa,
+    hwin := fun _ => ⟨by change s.window = _; rw [win],
+      fun _ => ⟨st.2.1, by change woff + s.wsize.toNat ≤ woff + (n - l.left.toNat) + l.left.toNat; omega⟩,
+      hA1, by change woff + s.wsize.toNat ≤ wa.size; omega⟩,
+    hwinLive := fun _ => ⟨by change s.window = _; rw [win],
+      ⟨rfl, st.2.1, by change woff + s.wsize.toNat = woff + (n - l.left.toNat) + l.left.toNat; omega⟩,
+      hA1, by change woff + s.wsize.toNat ≤ wa.size; omega⟩,
+    rl := rl, ol := ol, LCA := LCA, hlc := hlc, hLCA := hLCA, hlt := hlt,
+    rd := rd, od := od, DCA := DCA, hdc := hdc, hDCA := hDCA, hdt := hdt }
+  exact ⟨e, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hnext', hpos⟩
 
 /-- **`fast_env`.** After `RESTORE()` in `case LEN` with `have >= 6`, `left >= 258` and fewer than 8
 bits held, the heap is the entry of an `EnvG true` with `start = wsize`: the input is the rest of
@@ -166,62 +243,9 @@ theorem fast_env (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Nat}
   have wsize32 : s.wsize.toNat ≤ 32768 := by
     have pow := Nat.pow_le_pow_right (by decide : 0 < 2) hi
     omega
-  -- the heap after RESTORE
-  let z1 : ZStream := { z with next_out := l.put, avail_out := l.left, next_in := l.next, avail_in := l.have_ }
-  let s1 : InflateState := { s with hold := l.hold, bits := l.bits }
-  have hsm1 : r.get (setI (r.put h z1) i s1) = some z1 := by
-    rw [rget_setI]; exact Zlib.Inflate.Proofs.ZStreamRef.get_put_same hz z1
-  have hs1 : (setI (r.put h z1) i s1).istates i = some s1 := by simp [setI]
-  have hIN1 : (setI (r.put h z1) i s1).bytes b = some ina := by
-    show (r.put h z1).bytes b = some ina
-    rw [Zlib.Inffast.Proofs.put_bytes]; exact inget
-  have hA1 : (setI (r.put h z1) i s1).bytes w = some wa := by
-    show (r.put h z1).bytes w = some wa
-    rw [Zlib.Inffast.Proofs.put_bytes]; exact wget
-  have hro1 : (setI (r.put h z1) i s1).ro w = false := by
-    show (r.put h z1).ro w = false
-    rw [Zlib.Inffast.Proofs.put_ro]; exact wro
-  have glob1 : LibraryGlobals (setI (r.put h z1) i s1) := by
-    unfold LibraryGlobals at globals ⊢
-    rw [← globals]
-    exact Zlib.Inffast.Proofs.put_static r h z1
-  have tabs1 : TablesOk i s1 := (I.mode s hs).2 mode
-  obtain ⟨rl, ol, LCA, hlc, hLCA, hlt, hpos⟩ := lenTabPos hs1 tabs1 glob1
-  obtain ⟨rd, od, DCA, -, -, hdc, -, hDCA, hdt, -⟩ := distTab hs1 tabs1 glob1
-  let e : Zlib.Inffast.Proofs.EnvG true := {
-    h0 := setI (r.put h z1) i s1, strm := c.strm, start := s.wsize, r := r, sm0 := z1, stid := i, s0 := s1,
-    hstrm := I.cstrm, hsm := hsm1, hrw := by cases r <;> rfl, hstate := zst, hs0 := hs1,
-    ib := BRef.blk b, i0 := aoff + (log.held.length - l.have_.toNat), IN := ina, hnin := hnext', hIN := hIN1,
-    hai := inputRoom,
-    hINsz := by
-      change aoff + (log.held.length - l.have_.toNat) + l.have_.toNat ≤ ina.size
-      omega,
-    hINbig := inbig,
-    ob := BRef.blk w, o0 := woff + (n - l.left.toNat), A0 := wa, hnout := hput, hA0 := hA1, hro := hro1,
-    hao := outputRoom,
-    hAsz := by
-      change woff + (n - l.left.toNat) + l.left.toNat ≤ wa.size
-      omega,
-    hAbig := wbig,
-    hstart := by change l.left.toNat ≤ s.wsize.toNat; omega,
-    hbeg := by change s.wsize.toNat - l.left.toNat ≤ woff + (n - l.left.toNat); omega,
-    hsep := hsep'.imp (fun ne same => ne (BRef.blk.inj same))
-      (fun ⟨same, apart⟩ => ⟨congrArg BRef.blk same, apart⟩),
-    hbits := short, hhold := I.bits.2, hsane := st.1,
-    hmode := by change s.mode = LEN; exact mode,
-    halias_win := fun _ => by change s.window ≠ .null; rw [win, hw]; simp,
-    hws := wsize32, hwh := st.2.2,
-    hwn := by change s.wnext.toNat ≤ s.wsize.toNat; rw [st.2.1]; exact Nat.zero_le _,
-    wb := w, woff := woff, W := wa,
-    hwin := fun _ => ⟨by change s.window = _; rw [win, hw],
-      fun _ => ⟨st.2.1, by change woff + s.wsize.toNat ≤ woff + (n - l.left.toNat) + l.left.toNat; omega⟩,
-      hA1, by change woff + s.wsize.toNat ≤ wa.size; omega⟩,
-    hwinLive := fun _ => ⟨by change s.window = _; rw [win, hw],
-      ⟨rfl, st.2.1, by change woff + s.wsize.toNat = woff + (n - l.left.toNat) + l.left.toNat; omega⟩,
-      hA1, by change woff + s.wsize.toNat ≤ wa.size; omega⟩,
-    rl := rl, ol := ol, LCA := LCA, hlc := hlc, hLCA := hLCA, hlt := hlt,
-    rd := rd, od := od, DCA := DCA, hdc := hdc, hDCA := hDCA, hdt := hdt }
-  exact ⟨e, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hnext', hpos⟩
+  exact fast_range_env (c : DecoderCtx) I.cstrm hz zst mode ((I.mode s hs).2 mode) globals st wsize32
+    (win.trans hw) sz hleft hput hnext' inget wget wro (by omega) wroom inbig wbig inputRoom outputRoom
+    hsep' short I.bits.2
 
 set_option maxHeartbeats 1000000 in
 /-- **`LEN_fast_p`.** The fast path of `case LEN` on the invariant: `RESTORE()`, `inflate_fast`
@@ -258,7 +282,7 @@ theorem LEN_fast_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Na
   have zi : z1.avail_in = l.have_ := by rw [hz1]
   have zo : z1.avail_out = l.left := by rw [hz1]
   -- the run
-  have hR := RESTORE_back_run I.cstrm I.cst hz hs l
+  have hR := RESTORE_back_run (c := (c : DecoderCtx)) I.cstrm I.cst hz hs l
   rw [← hz1, ← hs1] at hR
   have hsB : (setI (r.put h z1) i s1).istates i = some s1 := by simp [setI]
   have hrd : rdS c.st (·.wsize) (setI (r.put h z1) i s1) = .ok (s.wsize, setI (r.put h z1) i s1) := by
@@ -314,7 +338,7 @@ theorem LEN_fast_p (c : BCtx) {r : ZStreamRef} {i : Nat} {window : BPtr} {n : Na
     rw [hafter]; exact Zlib.Inflate.Proofs.ZStreamRef.get_put_same hzD z2
   have hsE : after.istates i = some s2 := by
     rw [hafter, Zlib.Inflate.Proofs.ZStreamRef.put_istates]; simp [setI]
-  have hL := LOAD_back_run I.cstrm I.cst hzE hsE l
+  have hL := LOAD_back_run (c := (c : DecoderCtx)) I.cstrm I.cst hzE hsE l
   have run : runX (back_LEN c) l h = .ok ((.ok (), { l with
       put := z2.next_out, left := z2.avail_out,
       next := z2.next_in, have_ := z2.avail_in, hold := s2.hold, bits := s2.bits }), after) := by

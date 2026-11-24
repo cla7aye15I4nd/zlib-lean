@@ -34,11 +34,11 @@ def copyBuffers (source : ZStreamPtr) (ds : DeflateStatePtr) (dd : DeflateState)
     M (BPtr × WPtr × WPtr × BPtr) := do
   let window ← ZALLOC_bytes source dd.w_size 2
   wr ds (fun d => { d with window })
-  let prev ← ZALLOC_words source dd.w_size
+  let prev ← ZALLOC_words source (← cinline (rd ds (·.w_size)))
   wr ds (fun d => { d with prev })
-  let head ← ZALLOC_words source dd.hash_size
+  let head ← ZALLOC_words source (← cinline (rd ds (·.hash_size)))
   wr ds (fun d => { d with head })
-  let pending_buf ← ZALLOC_bytes source dd.lit_bufsize 4
+  let pending_buf ← ZALLOC_bytes source (← cinline (rd ds (·.lit_bufsize))) 4
   wr ds (fun d => { d with pending_buf })
   pure (window, prev, head, pending_buf)
 
@@ -47,23 +47,28 @@ def copyCnt (sd dd : DeflateState) : UInt32 :=
   if sd.slid != 0 || sd.strstart - sd.insert > dd.w_size then dd.w_size else sd.strstart - sd.insert
 
 /-- The success path after the buffer requests. -/
-def copyTail (dest source : ZStreamPtr) (ss ds : DeflateStatePtr) (dd : DeflateState)
-    (window : BPtr) (prev head : WPtr) (pending_buf : BPtr) : M Int32 := do
+def copyTail (dest source : ZStreamPtr) (ss ds : DeflateStatePtr) : M Int32 := do
   copyZStream dest source
   zwr dest (fun z => { z with state := StateRef.ofDeflateState ds })
   wr ds (fun d => { d with strm := dest })
+  -- zmemcpy(ds->window, ss->window, ss->high_water);
   let sd ← ldDeflateState ss
-  memcpyB window sd.window sd.high_water.toNat
-  let cnt : UInt32 := copyCnt sd dd
-  Ptr.memcpy prev sd.prev cnt.toNat
-  Ptr.memcpy head sd.head dd.hash_size.toNat
+  let buffers ← ldDeflateState ds
+  memcpyB buffers.window sd.window sd.high_water.toNat
+  -- prev is an array of 16-bit Pos values; Ptr.memcpy counts elements.
+  let dstPrev ← rd ds (·.prev)
+  let srcPrev ← rd ss (·.prev)
+  Ptr.memcpy dstPrev srcPrev (if sd.slid != 0 || sd.strstart - sd.insert > buffers.w_size
+    then buffers.w_size else sd.strstart - sd.insert).toNat
+  Ptr.memcpy (← rd ds (·.head)) sd.head buffers.hash_size.toNat
+  -- Relocate pointers inside the destination pending buffer, then copy their live bytes.
   let off ← Ptr.diff sd.pending_out sd.pending_buf
-  let pending_out ← Ptr.add pending_buf off.toInt
+  let pending_out ← Ptr.add buffers.pending_buf off.toInt
   wr ds (fun d => { d with pending_out })
-  memcpyB pending_out sd.pending_out sd.pending.toNat
-  let sym_buf ← padd pending_buf dd.lit_bufsize.toNat
+  memcpyB (← rd ds (·.pending_out)) sd.pending_out sd.pending.toNat
+  let sym_buf ← padd (← rd ds (·.pending_buf)) buffers.lit_bufsize.toNat
   wr ds (fun d => { d with sym_buf })
-  memcpyB sym_buf sd.sym_buf sd.sym_next.toNat
+  memcpyB (← rd ds (·.sym_buf)) sd.sym_buf sd.sym_next.toNat
   match ds with
   | none => ub "null deflate_state"
   | some (.tab id) =>
@@ -103,6 +108,10 @@ def copyB (H : Heap) (d : DeflateState) : Heap := byteResult (copyQ H d) ((d.lit
 def copyBufState (H : Heap) (d : DeflateState) : DeflateState :=
   { d with window := bytePtr H, prev := wordPtr (copyW H d), head := wordPtr (copyP H d), pending_buf := bytePtr (copyQ H d) }
 
+theorem load_written_state (h : Heap) (n : Nat) (d : DeflateState) :
+    ldDeflateState (some (.tab n)) (setD h n d) = .ok (d, setD h n d) := by
+  rw [ldD_eq, setD_dstates_same]
+
 /-- Each of the four buffer requests executes even if an earlier one fails. -/
 theorem copy_buffers_run {H : Heap} {r : ZStreamRef} {z : ZStream} {n : Nat} {d : DeflateState}
     (hf : Fresh H) (hz : r.get H = some z) (ha : z.zalloc = .fn "zcalloc")
@@ -134,8 +143,9 @@ theorem copy_buffers_run {H : Heap} {r : ZStreamRef} {z : ZStream} {n : Nat} {d 
     byteResult_setD] at runP runQ runB
   dsimp only [d1, d2, d3, copyP, copyQ, copyW] at runP runQ runB
   unfold copyBuffers
+  simp only [cinline_eq]
   rw [bind_app, runW]
-  simp only [bind_app, wrD_eq, copyW, byteResult_dstates, hs]
+  simp only [bind_app, wrD_eq, rdD_eq, copyW, byteResult_dstates, hs, setD_dstates_same]
   rw [runP]
   simp only [setD_dstates_same, setD_setD]
   rw [runQ]
@@ -149,11 +159,11 @@ theorem copyBuffers_bind (source : ZStreamPtr) (ds : DeflateStatePtr) (dd : Defl
     (do
       let window ← ZALLOC_bytes source dd.w_size 2
       wr ds (fun d => { d with window })
-      let prev ← ZALLOC_words source dd.w_size
+      let prev ← ZALLOC_words source (← cinline (rd ds (·.w_size)))
       wr ds (fun d => { d with prev })
-      let head ← ZALLOC_words source dd.hash_size
+      let head ← ZALLOC_words source (← cinline (rd ds (·.hash_size)))
       wr ds (fun d => { d with head })
-      let pending_buf ← ZALLOC_bytes source dd.lit_bufsize 4
+      let pending_buf ← ZALLOC_bytes source (← cinline (rd ds (·.lit_bufsize))) 4
       wr ds (fun d => { d with pending_buf })
       k window prev head pending_buf) =
     (copyBuffers source ds dd >>= fun ps => k ps.1 ps.2.1 ps.2.2.1 ps.2.2.2) := by
@@ -205,8 +215,7 @@ theorem copy_cut {h after : Heap} {source dest : ZStreamRef} {ds : Nat} {z zd : 
     (run : C.run (deflateCopy (some dest) (some source)) h = .ok (Z_OK, after)) :
     h.allocOk h.nalloc = true ∧ bytePtr (copyH0 h d) ≠ .null ∧ wordPtr (copyW (copyH0 h d) d) ≠ .null ∧
       wordPtr (copyP (copyH0 h d) d) ≠ .null ∧ bytePtr (copyQ (copyH0 h d) d) ≠ .null ∧
-      copyTail (some dest) (some source) (some (.tab ds)) (some (.tab h.nextBlk)) d (bytePtr (copyH0 h d))
-        (wordPtr (copyW (copyH0 h d) d)) (wordPtr (copyP (copyH0 h d) d)) (bytePtr (copyQ (copyH0 h d) d))
+      copyTail (some dest) (some source) (some (.tab ds)) (some (.tab h.nextBlk))
         (setD (copyB (copyH0 h d) d) h.nextBlk (copyBufState (copyH0 h d) d)) = .ok (Z_OK, after) := by
   have good := inv.good
   have hL := good.live
@@ -256,7 +265,7 @@ theorem copy_cut {h after : Heap} {source dest : ZStreamRef} {ds : Nat} {z zd : 
     have hsH : (copyH0 h d).dstates h.nextBlk = some d := by simp [copyH0]
     rw [copy_buffers_run freshH hzH inv.alloc.1 hsH (by simp [copyH0, stateHeap])] at e8
     cases e8
-    simp only at run
+    rw [C.bind_ok (load_written_state _ _ _)] at run
     split at run
     · exfalso
       refine (?_ : NotOk _) _ _ run
@@ -325,8 +334,7 @@ theorem copy_tail_run {T0 : Heap} {source dest : ZStreamRef} {z zd : ZStream} {d
     (sB1 : off + d.pending.toNat ≤ aB.size) (sb1 : off + d.pending.toNat ≤ ba.size)
     (sB2 : d.lit_bufsize.toNat + d.sym_next.toNat ≤ aB.size) (sb2 : d.lit_bufsize.toNat + d.sym_next.toNat ≤ ba.size)
     (offLt : off < 2 ^ 62) :
-    copyTail (some dest) (some source) (some (.tab ds)) (some (.tab n)) d (.ref (.blk W) 0) (.ref (.blk P) 0)
-      (.ref (.blk Q) 0) (.ref (.blk B) 0) T0 =
+    copyTail (some dest) (some source) (some (.tab ds)) (some (.tab n)) T0 =
       .ok (Z_OK, copyFinal T0 dest z d n W P Q B off aW wa aB ba aP pa aQ qa) := by
   have nd : n ≠ ds := Ne.symm dsn
   unfold copyTail
@@ -344,22 +352,30 @@ theorem copy_tail_run {T0 : Heap} {source dest : ZStreamRef} {z zd : ZStream} {d
   -- sd
   rw [bind_app, ldD_eq]
   simp only [setD_dstates_ne _ _ _ _ dsn, ZStreamRef.put_dstates, hsd]
+  rw [bind_app, ldD_eq]
+  simp only [setD_dstates_same]
   -- the window
   rw [bind_app, win]
   rw [memcpyB_blk_ok (ob := aW) (pbuf := wa) (by simp [setD, gW]) (by simp [setD, gw]) (by simp [setD, roW]) Ww
     (by simpa using sW) (by simpa using sw)]
   simp only []
   -- prev
+  rw [bind_app, rdD_eq]
+  simp only [setD_dstates_same]
+  rw [bind_app, rdD_eq]
+  simp only [setD_dstates_ne _ _ _ _ dsn, ZStreamRef.put_dstates, hsd]
   rw [bind_app, prv]
   rw [Ptr.memcpy_ok (rd := WRef.blk P) (rs := WRef.blk p) (da := aP) (sa := pa)
     (by show (_ : Heap).words P = _; simp [setD, gP]) (by show (_ : Heap).words p = _; simp [setD, gp]) rfl
-    (by simpa using sP) (by simpa using sp) (Or.inl (fun e => Pp (WRef.blk.inj e)))]
+    (by simpa [copyCnt] using sP) (by simpa [copyCnt] using sp) (Or.inl (fun e => Pp (WRef.blk.inj e)))]
   simp only []
   -- head
+  rw [bind_app, rdD_eq]
+  simp only [Space_put_words, setW_dstates, setD_dstates_same]
   rw [bind_app, hd]
   rw [Ptr.memcpy_ok (rd := WRef.blk Q) (rs := WRef.blk q) (da := aQ) (sa := qa)
-    (by show (_ : Heap).words Q = _; simp [setD, upd_ne _ _ _ _ (Ne.symm PQ), gQ])
-    (by show (_ : Heap).words q = _; simp [setD, upd_ne _ _ _ _ (Ne.symm Pq), gq]) rfl
+    (by show (_ : Heap).words Q = _; simp [setD, setW, upd_ne _ _ _ _ (Ne.symm PQ), gQ])
+    (by show (_ : Heap).words q = _; simp [setD, setW, upd_ne _ _ _ _ (Ne.symm Pq), gq]) rfl
     (by simpa using sQ) (by simpa using sq) (Or.inl (fun e => Qq (WRef.blk.inj e)))]
   simp only []
   -- the offset of pending_out
@@ -379,6 +395,8 @@ theorem copy_tail_run {T0 : Heap} {source dest : ZStreamRef} {z zd : ZStream} {d
   rw [bind_app, wrD_eq]
   simp only [Space_put_words, setW_dstates, setD_dstates_same]
   -- the pending bytes
+  rw [bind_app, rdD_eq]
+  simp only [setD_dstates_same]
   try rw [bind_app]
   rw [memcpyB_blk_ok (ob := aB) (pbuf := ba)
     (by simp [setD, setW, upd_ne _ _ _ _ (Ne.symm WB), gB])
@@ -394,12 +412,16 @@ theorem copy_tail_run {T0 : Heap} {source dest : ZStreamRef} {z zd : ZStream} {d
       (n := d.lit_bufsize.toNat) (h := X) hX (by omega)
     simpa [padd, OkOn] using this
   try rw [bind_app]
-  rw [hpadd _ (by simp [setD])]
+  rw [rdD_eq]
+  simp only [setD_dstates_same]
+  rw [bind_app, hpadd _ (by simp [setD])]
   simp only []
   try rw [bind_app]
   rw [wrD_eq]
   simp only [setD_dstates_same]
   -- the symbols
+  rw [bind_app, rdD_eq]
+  simp only [setD_dstates_same]
   try rw [bind_app]
   rw [sym]
   rw [memcpyB_blk_ok (ob := copyRange aB ba off off d.pending.toNat) (pbuf := ba)

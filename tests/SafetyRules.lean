@@ -1,9 +1,28 @@
 import ZlibF.Proof.LibcMemory
 import ZlibF.Proof.CountedLoop
 import ZlibF.Proof.LibcScalar
+import ZlibF.Runtime.CAbi
 
 open C Std.WP
 open scoped C.HeapWP
+
+-- An unsigned output store checks the address, including the origin of an embedded array.
+example (h : Heap) (b : Nat) (v : UInt32) :
+    storeU32 (.ref (.blk b) 1) v h = .error (.ub "misaligned unsigned int store") := rfl
+
+example (h : Heap) (b : Nat) :
+    loadU32 (.ref (.blk b) 1) h = .error (.ub "misaligned unsigned int load") := rfl
+
+example (h : Heap) (b : Nat) (v : Int32) :
+    storeI32 (.ref (.blk b) 1) v h = .error (.ub "misaligned int store") := rfl
+
+example (h : Heap) (b : Nat) (v : UInt32) :
+    storeU32 (.ref (.blk b) 4) v h = store32 (.ref (.blk b) 4) v.toInt32 h := by
+  simp [storeU32, ByteAddress.value]
+
+example (h : Heap) (i : Nat) (v : UInt32) (origin : (h.byteBase (.dstate_depth i)).val = 1) :
+    storeU32 (.ref (.dstate_depth i) 3) v h = store32 (.ref (.dstate_depth i) 3) v.toInt32 h := by
+  simp [storeU32, ByteAddress.value, ByteAddress.base, origin]
 
 -- Touching endpoints are allowed. Both sides of the written interval keep their bytes.
 example (block watched : Nat) (a : Array UInt8) (different : watched ≠ block)

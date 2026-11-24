@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.slow.source»
 import ZlibF.Proof.«deflate.c.engine.strategy-no-flush-loop»
 import ZlibF.Proof.«deflate.c.engine.no-flush-ready-step»
 import ZlibF.Proof.«deflate.c.engine.loops»
@@ -117,10 +118,7 @@ theorem deflate_slow_no_flush_ready {h : Heap} {r : ZStreamRef} {ds ob oo origin
     endpointA, agreesA, baseA, _validA, _brkA, _retA, _outputA, stopA⟩ := finalInv
   refine ⟨used, produced, after, z', result, base', ys, extended, nextOrigin,
     ?_, stateA, endA, controlsA, buffersA, accountA, agreesA, endpointA, baseA, stopA returned, ?_⟩
-  · unfold deflate_slow
-    rw [bind_app, loop]
-    simp only [returned]
-    rfl
+  · simp only [SlowProofs.after_loop loop, returned, pure_app]
   · intro space
     rcases stopA returned with ⟨empty, _⟩ | empty
     · have count := accountA.2.2.1

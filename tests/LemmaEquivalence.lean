@@ -1,4 +1,6 @@
-import ZlibF
+import ZlibF.Proof.«inflate.c.copy-dynamic-window»
+import ZlibF.Proof.«inflate.c.copy-fixed-window»
+import ZlibF.Proof.«crc32.c»
 import ZlibF.Proof.HeapWP
 
 /-!

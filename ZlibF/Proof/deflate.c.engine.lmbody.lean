@@ -99,9 +99,11 @@ theorem LMEnv.dist {h0 : Heap} {sr : Nat} {d : DeflateState} {wb pb : Nat} {wa :
 
 /-- **One candidate.** The body of the `longest_match` loop does not fault when the loop invariant holds and
 `brk` is false, and the invariant holds afterwards; `cur_match`, `chain_length` and `nice_match` are not changed. -/
-theorem lm_body_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array UInt8} {pa : Array UInt16} {c : UInt32}
+theorem lm_body_source {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array UInt8} {pa : Array UInt16} {c : UInt32}
     (E : LMEnv h0 sr d wb pb wa pa c) (st : LMState) {h : Heap} (hbrk : st.brk = false)
     (hI : LMInv h0 sr d wb pb wa pa c st h) :
+    lm_body_with (fun _ => pure (.ref (.blk wb) (d.strstart.toNat + 258)))
+      (fun limit => compareMatchBytes limit 8) (some (.tab sr)) st h = lm_body (some (.tab sr)) st h ∧
     ∃ st' h', lm_body (some (.tab sr)) st h = .ok (st', h') ∧ LMInv h0 sr d wb pb wa pa c st' h' ∧
       st'.cur_match = st.cur_match ∧ st'.chain_length = st.chain_length ∧ st'.nice_match = st.nice_match := by
   have hI0 := hI
@@ -161,27 +163,33 @@ theorem lm_body_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array U
   have f16 : psub (Ptr.ref (BRef.blk wb) (d.strstart.toNat + 258)) 258 (hAt h0 sr d ms) = .ok (Ptr.ref (BRef.blk wb) d.strstart.toNat, hAt h0 sr d ms) := by
     simpa using psub_ok' (h := hAt h0 sr d ms) (r := BRef.blk wb) (a := wa) (off := d.strstart.toNat + 258) (n := 258)
       (by simpa using hbytes) (by omega) (by omega)
+  have same : lm_body_with (fun _ => pure (.ref (.blk wb) (d.strstart.toNat + 258)))
+      (fun lim => compareMatchBytes lim 8) (some (.tab sr)) st (hAt h0 sr d ms) =
+      lm_body (some (.tab sr)) st (hAt h0 sr d ms) := by
+    simp only [lm_body, lm_body_with, compare_eight_eq, bind_app, pure_app, M_ite_app,
+      e_ld, E.win, hscan, hb, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, hmm, f15]
+  refine ⟨same, ?_⟩
   -- the early returns
   by_cases T1 : bfn wa (st.cur_match.toNat + b) = bfn wa (d.strstart.toNat + b)
   rotate_left
   · refine ⟨st, hAt h0 sr d ms, ?_, hI0, rfl, rfl, rfl⟩
-    simp only [lm_body, bind_app, pure_app, M_ite_app, e_ld, E.win, f2, hb, f3, hse]
+    simp only [lm_body, lm_body_with, bind_app, pure_app, M_ite_app, e_ld, E.win, f2, hb, f3, hse]
     simp [T1]
   by_cases T2 : bfn wa (st.cur_match.toNat + b - 1) = bfn wa (d.strstart.toNat + b - 1)
   rotate_left
   · refine ⟨st, hAt h0 sr d ms, ?_, hI0, rfl, rfl, rfl⟩
-    simp only [lm_body, bind_app, pure_app, M_ite_app, e_ld, E.win, f2, hb, f3, hse, T1, f4, f5, f6, hse1]
+    simp only [lm_body, lm_body_with, bind_app, pure_app, M_ite_app, e_ld, E.win, f2, hb, f3, hse, T1, f4, f5, f6, hse1]
     simp [T2]
   by_cases T3 : bfn wa st.cur_match.toNat = bfn wa d.strstart.toNat
   rotate_left
   · refine ⟨st, hAt h0 sr d ms, ?_, hI0, rfl, rfl, rfl⟩
-    simp only [lm_body, bind_app, pure_app, M_ite_app, e_ld, E.win, f2, hb, f3, hse, T1, f4, f5, f6, hse1, T2, f7,
+    simp only [lm_body, lm_body_with, bind_app, pure_app, M_ite_app, e_ld, E.win, f2, hb, f3, hse, T1, f4, f5, f6, hse1, T2, f7,
       hscan, f8]
     simp [T3]
   by_cases T4 : bfn wa (st.cur_match.toNat + 1) = bfn wa (d.strstart.toNat + 1)
   rotate_left
   · refine ⟨st, hAt h0 sr d ms, ?_, hI0, rfl, rfl, rfl⟩
-    simp only [lm_body, bind_app, pure_app, M_ite_app, e_ld, E.win, f2, hb, f3, hse, T1, f4, f5, f6, hse1, T2, f7,
+    simp only [lm_body, lm_body_with, bind_app, pure_app, M_ite_app, e_ld, E.win, f2, hb, f3, hse, T1, f4, f5, f6, hse1, T2, f7,
       hscan, f8, T3, f9, f10, f11]
     simp [T4]
   -- the candidate agrees on three bytes
@@ -217,7 +225,7 @@ theorem lm_body_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array U
     have hngt : ¬ (Int32.ofInt (r : Int) > st.best_len) := by
       rw [GT.gt, Int32.lt_iff_toInt_lt, hb, hlen]; omega
     refine ⟨{ st with scan := Ptr.ref (BRef.blk wb) d.strstart.toNat }, hAt h0 sr d ms, ?_, ?_, rfl, rfl, rfl⟩
-    · simp only [lm_body, bind_app, pure_app, M_ite_app, ↓reduceIte, e_ld, E.win, f2, hb, f3, hse, T1, f4, f5, f6, hse1, T2,
+    · simp only [lm_body, lm_body_with, bind_app, pure_app, M_ite_app, ↓reduceIte, e_ld, E.win, f2, hb, f3, hse, T1, f4, f5, f6, hse1, T2,
         f7, hscan, f8, T3, f9, f10, f11, T4, f12, f13, f14, f15, hmm, hloop, fd, fl, f16, hngt]
       simp
     · exact ⟨ms, b, rfl, rfl, hb, hpl, hb258, fun _ => ⟨hse1, hse⟩, hch, hgood⟩
@@ -247,14 +255,21 @@ theorem lm_body_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array U
   by_cases hnice : st.nice_match ≤ Int32.ofInt (r : Int)
   · refine ⟨{ st with scan := Ptr.ref (BRef.blk wb) d.strstart.toNat, best_len := Int32.ofInt (r : Int), brk := true },
       hAt h0 sr d st.cur_match, ?_, ?_, rfl, rfl, rfl⟩
-    · simp only [lm_body, bind_app, pure_app, M_ite_app, ↓reduceIte, e_ld, E.win, f2, hb, f3, hse, T1, f4, f5, f6, hse1, T2,
+    · simp only [lm_body, lm_body_with, bind_app, pure_app, M_ite_app, ↓reduceIte, e_ld, E.win, f2, hb, f3, hse, T1, f4, f5, f6, hse1, T2,
         f7, hscan, f8, T3, f9, f10, f11, T4, f12, f13, f14, f15, hmm, hloop, fd, fl, f16, hgt', f17]
       simp [hnice]
     · exact ⟨st.cur_match, r, rfl, rfl, hlen, by omega, hr258, fun h => by simp at h, hch, Or.inr ⟨by omega, hgm'⟩⟩
   · refine ⟨{ st with scan := Ptr.ref (BRef.blk wb) d.strstart.toNat, best_len := Int32.ofInt (r : Int), scan_end1 := bfn wa (d.strstart.toNat + r - 1), scan_end := bfn wa (d.strstart.toNat + r) }, hAt h0 sr d st.cur_match, ?_, ?_, rfl, rfl, rfl⟩
-    · simp only [lm_body, bind_app, pure_app, M_ite_app, ↓reduceIte, e_ld, E.win, f2, hb, f3, hse, T1, f4, f5, f6, hse1, T2,
+    · simp only [lm_body, lm_body_with, bind_app, pure_app, M_ite_app, ↓reduceIte, e_ld, E.win, f2, hb, f3, hse, T1, f4, f5, f6, hse1, T2,
         f7, hscan, f8, T3, f9, f10, f11, T4, f12, f13, f14, f15, hmm, hloop, fd, fl, f16, hgt', f17, g1, g1', g2, hlen, g3]
       simp [hnice]
     · exact ⟨st.cur_match, r, rfl, rfl, hlen, by omega, hr258, fun _ => ⟨rfl, rfl⟩, hch, Or.inr ⟨by omega, hgm'⟩⟩
+
+theorem lm_body_ok {h0 : Heap} {sr wb pb : Nat} {d : DeflateState} {wa : Array UInt8} {pa : Array UInt16} {c : UInt32}
+    (E : LMEnv h0 sr d wb pb wa pa c) (st : LMState) {h : Heap} (hbrk : st.brk = false)
+    (hI : LMInv h0 sr d wb pb wa pa c st h) :
+    ∃ st' h', lm_body (some (.tab sr)) st h = .ok (st', h') ∧ LMInv h0 sr d wb pb wa pa c st' h' ∧
+      st'.cur_match = st.cur_match ∧ st'.chain_length = st.chain_length ∧ st'.nice_match = st.nice_match :=
+  (lm_body_source E st hbrk hI).2
 
 end Zlib.Deflate.Engine.Proofs

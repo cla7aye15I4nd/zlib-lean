@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.mode-correspondence»
 import ZlibF.Proof.«inflate.c.main.common»
 
 /-!
@@ -25,7 +26,7 @@ theorem inflate_TYPE_go (c : Ctx) (l : IL) (h : Heap) (hf : c.flush ≠ Z_BLOCK 
 /-- `case TYPEDO:` after a last block: align to a byte, mode `CHECK`. -/
 theorem inflate_TYPEDO_last {c : Ctx} {h : Heap} {r zs z s} (E : Env c h r zs z s) (l : IL) (hl : s.last ≠ 0) :
     runX (inflate_TYPEDO c) l h = .ok ((.ok (), bytebits l), setI h zs { s with mode := CHECK }) := by
-  unfold inflate_TYPEDO
+  rw [inflate_TYPEDO_previous]
   rw [runX_bind, runX_rdS E]
   simp only [hl, bne_iff_ne, ne_eq, not_false_eq_true, ↓reduceIte]
   rw [runX_bind, BYTEBITS_run]
@@ -37,7 +38,7 @@ theorem inflate_TYPEDO_last {c : Ctx} {h : Heap} {r zs z s} (E : Env c h r zs z 
 theorem inflate_TYPEDO_wait {c : Ctx} {h : Heap} {r zs z s} (E : Env c h r zs z s) (l l1 : IL) (hl : s.last = 0)
     (e : Ex) (hN : runX (NEEDBITS 3) l h = .ok ((.error e, l1), h)) :
     runX (inflate_TYPEDO c) l h = .ok ((.error e, l1), h) := by
-  unfold inflate_TYPEDO
+  rw [inflate_TYPEDO_previous]
   rw [runX_bind, runX_rdS E]
   simp only [hl, bne_iff_ne, ne_eq, not_true_eq_false, ↓reduceIte]
   rw [runX_bind, hN]
@@ -62,7 +63,7 @@ theorem inflate_TYPEDO_head {c : Ctx} {h : Heap} {r zs z s} (E : Env c h r zs z 
     (hN : runX (NEEDBITS 3) l h = .ok ((.ok (), l1), h)) :
     runX (inflate_TYPEDO c) l h = runX (typedoTail c) { l1 with hold := l1.hold >>> 1, bits := l1.bits - 1 }
       (setI h zs { s with last := u2i (l1.hold.toUInt32 &&& ((1 : UInt32) <<< 1 - 1)) }) := by
-  unfold inflate_TYPEDO
+  rw [inflate_TYPEDO_previous]
   rw [runX_bind, runX_rdS E]
   simp only [hl, bne_iff_ne, ne_eq, not_true_eq_false, ↓reduceIte]
   rw [runX_bind, hN]

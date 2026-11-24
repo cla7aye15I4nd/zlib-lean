@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.slow.source»
 import ZlibF.Proof.«deflate.c.engine.short-search-frontier»
 import ZlibF.Proof.«deflate.c.engine.match-endpoint»
 
@@ -20,18 +21,20 @@ def slowEofLiteral (s : DeflateStatePtr) : M Unit := do
     let _ ← tally_lit s c
     wr s (fun d => { d with match_available := 0 })
 
-/-- The complete translated slow function uses this exact EOF state write
-in source order, after the real loop and possible deferred literal. -/
-theorem deflate_slow_eof_source (s : DeflateStatePtr) (flush : Int32) :
-    deflate_slow s flush = (do
-      let st ← cwhile forever (deflate_slow_body s flush) {}
-      if let some r := st.ret then return r
-      slowEofLiteral s
-      wr s eofInsert
-      finish_tail s flush) := by
-  unfold deflate_slow slowEofLiteral eofInsert
-  simp only [M_bind_assoc, M_pure_bind, fill_ite_bind]
-  rfl
+/-- Once the source loop has returned, both executions use its exact heap.
+An immediate block return bypasses EOF settlement. -/
+theorem deflate_slow_eof_source {s : DeflateStatePtr} {flush : Int32} {h after : Heap} {st : LoopS}
+    (loop : cwhile forever (deflate_slow_body s flush) {} h = .ok (st,after)) :
+    deflate_slow s flush h = (match st.ret with
+      | some r => pure r
+      | none => do slowEofLiteral s; wr s eofInsert; finish_tail s flush) after := by
+  rw [SlowProofs.after_loop loop]
+  cases st.ret with
+  | some r => rfl
+  | none =>
+    unfold slowFinish slowEofLiteral eofInsert
+    rw [SlowProofs.finish_hash_eq]
+    simp only [M_bind_assoc, M_pure_bind, fill_ite_bind]
 
 theorem eof_insert_count (d : DeflateState) :
     (eofInsert d).insert.toNat = min d.strstart.toNat 2 := by

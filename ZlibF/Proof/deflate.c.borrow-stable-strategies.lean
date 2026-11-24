@@ -1,3 +1,5 @@
+import ZlibF.Proof.«deflate.c.huff.source»
+import ZlibF.Proof.«deflate.c.rle.source»
 import Lean
 import ZlibF.Proof.«deflate.c.borrow-stable-publish»
 
@@ -35,6 +37,8 @@ elab "strategy_borrow_head" : tactic => do
       ``stable_read_buf,
       ``stable_slide_hash,
       ``stable_CLEAR_HASH,
+      ``stable_insertStringAt,
+      ``stable_updateHashAt,
       ``stable_INSERT_STRING,
       ``stable_UPDATE_HASH,
       ``stable_longest_match,
@@ -77,6 +81,9 @@ elab "strategy_borrow_head" : tactic => do
       ``stable_strLitRef,
       ``StableM.pure,
       ``StableM.ub,
+      ``StableM.cwhileBrk,
+      ``StableM.cdoWhileBrk,
+      ``StableM.cforEverRet,
       ``StableM.cwhile,
       ``StableM.cdoWhile,
       ``StableM.ite,
@@ -106,7 +113,8 @@ macro "strategy_borrow_step" : tactic => `(tactic|
 
 theorem stable_deflate_stored (s : DeflateStatePtr) (flush : Int32) :
     StableM (deflate_stored s flush) := by
-  unfold deflate_stored
+  unfold deflate_stored storedAdvance storedSlideCount storedClampInsert storedHighWater storedAddInsert
+  simp only [cdecl_eq]
   repeat' strategy_borrow_step
 
 theorem stable_deflate_fast_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS) :
@@ -115,10 +123,8 @@ theorem stable_deflate_fast_body (s : DeflateStatePtr) (flush : Int32) (st : Loo
   repeat' strategy_borrow_step
 
 theorem stable_deflate_fast (s : DeflateStatePtr) (flush : Int32) : StableM (deflate_fast s flush) := by
-  unfold deflate_fast
-  repeat' first
-    | with_reducible exact stable_deflate_fast_body _ _ _
-    | strategy_borrow_step
+  unfold deflate_fast deflate_fast_step finishHashBlock
+  repeat' strategy_borrow_step
 
 theorem stable_deflate_slow_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS) :
     StableM (deflate_slow_body s flush st) := by
@@ -126,10 +132,8 @@ theorem stable_deflate_slow_body (s : DeflateStatePtr) (flush : Int32) (st : Loo
   repeat' strategy_borrow_step
 
 theorem stable_deflate_slow (s : DeflateStatePtr) (flush : Int32) : StableM (deflate_slow s flush) := by
-  unfold deflate_slow
-  repeat' first
-    | with_reducible exact stable_deflate_slow_body _ _ _
-    | strategy_borrow_step
+  unfold deflate_slow deflate_slow_step slowFinish finishHashBlock
+  repeat' strategy_borrow_step
 
 theorem stable_deflate_rle_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS) :
     StableM (deflate_rle_body s flush st) := by
@@ -138,10 +142,12 @@ theorem stable_deflate_rle_body (s : DeflateStatePtr) (flush : Int32) (st : Loop
   repeat' strategy_borrow_step
 
 theorem stable_deflate_rle (s : DeflateStatePtr) (flush : Int32) : StableM (deflate_rle s flush) := by
-  unfold deflate_rle
-  repeat' first
-    | with_reducible exact stable_deflate_rle_body _ _ _
-    | strategy_borrow_step
+  have frame : StableM (RleProofs.legacy (fuel+1) s flush) := by
+    rw [RleProofs.legacy_unfold]
+    repeat' first
+      | with_reducible exact StableM.cwhile_go forever _ stable_forever (stable_deflate_rle_body s flush) _ _
+      | strategy_borrow_step
+  exact fun _ _ _ run => frame _ _ _ (RleProofs.to_legacy_ok run)
 
 theorem stable_deflate_huff_body (s : DeflateStatePtr) (flush : Int32) (st : LoopS) :
     StableM (deflate_huff_body s flush st) := by
@@ -149,9 +155,11 @@ theorem stable_deflate_huff_body (s : DeflateStatePtr) (flush : Int32) (st : Loo
   repeat' strategy_borrow_step
 
 theorem stable_deflate_huff (s : DeflateStatePtr) (flush : Int32) : StableM (deflate_huff s flush) := by
-  unfold deflate_huff
-  repeat' first
-    | with_reducible exact stable_deflate_huff_body _ _ _
-    | strategy_borrow_step
+  have frame : StableM (HuffProofs.legacy (fuel+1) s flush) := by
+    rw [HuffProofs.legacy_unfold]
+    repeat' first
+      | with_reducible exact StableM.cwhile_go forever _ stable_forever (stable_deflate_huff_body s flush) _ _
+      | strategy_borrow_step
+  exact fun _ _ _ run => frame _ _ _ (HuffProofs.to_legacy_ok run)
 
 end Zlib.Deflate.BorrowProofs

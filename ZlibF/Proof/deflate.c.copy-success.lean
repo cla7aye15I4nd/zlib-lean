@@ -119,8 +119,7 @@ theorem copy_reach {h : Heap} {source dest : ZStreamRef} {ds : Nat} {z zd : ZStr
     (ok : h.allocOk h.nalloc = true ∧ bytePtr (copyH0 h d) ≠ .null ∧ wordPtr (copyW (copyH0 h d) d) ≠ .null ∧
       wordPtr (copyP (copyH0 h d) d) ≠ .null ∧ bytePtr (copyQ (copyH0 h d) d) ≠ .null) :
     C.run (deflateCopy (some dest) (some source)) h =
-      copyTail (some dest) (some source) (some (.tab ds)) (some (.tab h.nextBlk)) d (bytePtr (copyH0 h d))
-        (wordPtr (copyW (copyH0 h d) d)) (wordPtr (copyP (copyH0 h d) d)) (bytePtr (copyQ (copyH0 h d) d))
+      copyTail (some dest) (some source) (some (.tab ds)) (some (.tab h.nextBlk))
         (setD (copyB (copyH0 h d) d) h.nextBlk (copyBufState (copyH0 h d) d)) := by
   obtain ⟨ho, n1, n2, n3, n4⟩ := ok
   have good := inv.good
@@ -161,6 +160,8 @@ theorem copy_reach {h : Heap} {source dest : ZStreamRef} {ds : Nat} {z zd : ZStr
   simp only [C.bind_ok e7]
   rw [copyBuffers_bind]
   simp only [C.bind_ok e8]
+  rw [C.bind_ok (load_written_state _ _ _)]
+  simp only [copyBufState]
   simp only [c, Bool.false_eq_true, ↓reduceIte]
   rfl
 

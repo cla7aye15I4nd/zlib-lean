@@ -30,9 +30,7 @@ theorem deflate_slow_finish_run_full_storage {h after : Heap} {r : ZStreamRef} {
     boundary frontier buffers positive pointer memory wrap publish inputValid loop
   rcases stopped with returned | ⟨running, broke⟩
   · have earlyRun : deflate_slow (some (.tab ds)) Z_FINISH h = .ok (need_more, loopHeap) := by
-      rw [deflate_slow_eof_tail_source, bind_app, loop]
-      simp only [returned]
-      rfl
+      simp only [deflate_slow_eof_tail_source loop, returned, pure_app]
     have eq := (Prod.mk.inj (Except.ok.inj (earlyRun.symm.trans run))).2
     rw [← eq]
     exact ⟨shapeL, frameL, full_shape_live_change shapeL, allocL, nextL⟩
@@ -51,7 +49,7 @@ theorem deflate_slow_finish_run_full_storage {h after : Heap} {r : ZStreamRef} {
       slow_eof_finish_full_storage_execution localState endL buffersL eof.1 (by rw [levelL]; exact positive)
         pointerL readyL.2.1 (by rw [memoryL]; exact memory) readyL.1 (wrapL.trans wrap)
     have wholeRun : deflate_slow (some (.tab ds)) Z_FINISH h = .ok (tailRet, tailHeap) := by
-      rw [deflate_slow_eof_tail_source, bind_app, loop]
+      rw [deflate_slow_eof_tail_source loop]
       simp only [running]
       exact tailRun
     have eq := (Prod.mk.inj (Except.ok.inj (wholeRun.symm.trans run))).2

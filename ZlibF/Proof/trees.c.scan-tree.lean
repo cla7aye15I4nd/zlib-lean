@@ -31,6 +31,11 @@ def scTail (n curlen nextlen : Int32) : SCLocals :=
     if nextlen == 0 then (138, 3) else if curlen == nextlen then (6, 3) else (7, 4)
   (n, curlen, nextlen, 0, mx, mn, 0)
 
+theorem finishTreeRun_eq (n curlen nextlen : Int32) :
+    finishTreeRun n curlen nextlen = pure (scTail n curlen nextlen) := by
+  by_cases hz : nextlen == 0 <;> by_cases heq : curlen == nextlen <;>
+    simp [finishTreeRun, scTail, hz, heq]
+
 /-- The actual loop body, retaining its early continue. -/
 def scBody (s : DeflateStatePtr) (tree : CtDataPtr) : SCLocals → M SCLocals :=
   fun (n, prevlen, nextlen, count, max_count, min_count, _) => do
@@ -54,8 +59,8 @@ theorem scan_tree_eq (s : DeflateStatePtr) (tree : CtDataPtr) (mc : Int32) :
       setDl tree (← iadd mc 1).toInt 0xffff
       let _ ← scLoop s tree mc (0, -1, nextlen0, 0, mx0, mn0, 0)
       pure ()) := by
-  unfold scan_tree scLoop scBody scCounts scTail
-  simp only [M_bind_assoc, merge_ite_bind]
+  unfold scan_tree cforIntLe cinline scLoop scBody scCounts
+  simp only [finishTreeRun_eq, M_bind_assoc, merge_ite_bind, apply_ite Prod.fst, apply_ite Prod.snd]
 
 /-- Array effects of a finished run. This data model leaves 16-bit frequency
 addition wrapping, exactly as the actual stores do. -/

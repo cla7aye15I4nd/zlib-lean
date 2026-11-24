@@ -1,3 +1,4 @@
+import ZlibF.Proof.«deflate.c.engine.fill-refinement»
 import ZlibF.Proof.«deflate.c.engine.fill-prime-end-frontier»
 import ZlibF.Spec.Functional.Checksums
 
@@ -91,7 +92,7 @@ theorem fill_window_pending_complete_end_frontier {h : Heap} {r : ZStreamRef} {d
   let result := paddedState dp
   let output := fillRange copied (paddingStart dp) (paddingCount dp) 0
   have run : fill_window (some (.tab ds)) h = .ok ((), after) := by
-    rw [fill_window_source]
+    apply fill_window_of_return
     simp only [bind_app, rdD_eq, good.live.hs, loop]
     exact pad
   have readFrame : ByteFrame h hr (DeflateOwned ds d) :=

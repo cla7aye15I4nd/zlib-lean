@@ -1,3 +1,4 @@
+import ZlibF.Proof.«inflate.c.window-stream»
 import ZlibF.Proof.«crc32.c»
 import ZlibF.Proof.«inflate.c.window-physical-history»
 import ZlibF.Proof.«inflate.c.completes-keep-run»
@@ -681,7 +682,9 @@ theorem RCFrame.window_exit (r : ZStreamRef) (owner : InflateStatePtr) (strm : Z
 its mode and `length`. -/
 theorem rcFrame_inflate_leave (r : ZStreamRef) (c : Ctx) (root : c.strm = some r) (l : IL) :
     RCFrame r c.st (inflate_leave c l) := by
-  unfold inflate_leave
+  rw [Zlib.Inflate.Proofs.WindowStream.inflate_leave_eq_saved]
+  unfold leaveWindow leaveAccounting
+  simp only [Zlib.Inflate.Proofs.WindowStream.savedOutput_bind]
   rw [root]
   repeat' first
     | with_reducible exact RCFrame.pure r c.st _

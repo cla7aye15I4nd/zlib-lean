@@ -34,8 +34,17 @@ theorem pack32_unpack32 (v : Int32) :
 theorem pack64_unpack64 (v : UInt64) :
     packLE64 v.toUInt8 (v >>> 8).toUInt8 (v >>> 16).toUInt8 (v >>> 24).toUInt8
       (v >>> 32).toUInt8 (v >>> 40).toUInt8 (v >>> 48).toUInt8 (v >>> 56).toUInt8 = v := by
-  dsimp [packLE64]
-  bv_decide
+  apply UInt64.toNat_inj.mp
+  have disjoint (acc b n : Nat) (ha : acc < 2^n) (hb : b * 2^n < 2^64) :
+      acc ||| (b <<< n) % 2^64 = acc + b * 2^n := by
+    rw [Nat.shiftLeft_eq, Nat.mod_eq_of_lt hb, ← Nat.shiftLeft_eq, Nat.or_comm, ← Nat.shiftLeft_add_eq_or_of_lt ha, Nat.shiftLeft_eq]
+    omega
+  have hv := v.toNat_lt
+  simp only [packLE64, UInt64.toNat_or, UInt64.toNat_shiftLeft, UInt64.toNat_shiftRight, UInt8.toNat_toUInt64,
+    UInt64.toNat_toUInt8, UInt64.reduceToNat, Nat.reduceMod, Nat.shiftRight_eq_div_pow, Nat.reducePow]
+  simp (disch := first | omega | (simp only [Nat.reducePow]; omega)) only [disjoint]
+  simp only [Nat.reducePow]
+  omega
 
 /-- Array updated with four little-endian bytes of `v : Int32` at `off`. -/
 def writeLE32 (a : Array UInt8) (off : Nat) (v : Int32) : Array UInt8 :=

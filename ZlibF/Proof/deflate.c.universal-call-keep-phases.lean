@@ -25,6 +25,7 @@ theorem keep_HCRC_UPDATE (p : ZStreamPtr) (s : DeflateStatePtr) (beg : UInt64) :
 theorem keep_gz_string_loop (p : ZStreamPtr) (s : DeflateStatePtr) (sel : GzHeader → BPtr) :
     KeepM (gz_string_loop p s sel) := by
   unfold gz_string_loop
+  simp only [cdecl_eq]
   repeat' first
     | exact keep_HCRC_UPDATE _ _ _
     | exact keep_flush_pending _
