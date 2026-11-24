@@ -1,15 +1,14 @@
 # Working in zlib-lean
 
-The maintained verification scope is **safety-only** for the patched zlib build identified in `pins.json`. Unreachable non-safety modules have been pruned from `ZlibF/`, and `ZlibF/Results.lean` registers and checks safety goals (`ZlibF.Spec.Safety.*`, plus `compressBound` / `compressBound_z`) only. Some safety proofs still reuse internal lemmas from retained `Spec/Functional` modules; directory names alone are insufficient grounds to remove a dependency. [Safety claim and TCB](docs/SAFETY.md) · [Proof registry](ZlibF/Results.lean)
+The maintained scope on branch `dev` is **safety-only** for the patched zlib build identified in [`pins.json`](pins.json), authored directly in a C-like Lean 4 DSL ([`C99/DSL/`](C99/DSL)) whose C emission matches all 15 patched zlib `.o` objects and `libz.a` byte for byte. Do **not** add differential test harnesses or mock filesystems; byte-for-byte binary equality replaces differential testing.
 
-## Safety documentation
+## Safety Documentation & Contracts
 
-- To document a function, use its `safety_goal` in the API inventory. Read the statement in `ZlibF/Spec/`, follow any common predicates, and check its entry in `ZlibF/Results.lean`. Distinguish exclusion of `Fault.ub` from a proof of return when a goal admits `Fault.outOfFuel`. [API inventory](tests/public-api.json)
-- Record manual decisions about C undefined behavior in the exception register. Cite the operation in both the runtime and the patched source, its exact guard, and the effect on the safety claim. Keep a newly discovered discrepancy open until its scope and disposition are understood. [Exception register](docs/SAFETY.md#3-manual-undefined-behavior-exceptions)
-- For source comparisons, use the revision and ordered patches in the pins. `make reference` reconstructs them in `build/reference/`. [Pins](pins.json) · [Reference reconstruction](tools/reference.py)
+- Public API safety contracts live directly on `c_fn` declarations inside `Zlib/*.lean` as Verus-style `requires` / `modifies` / `ensures` clauses, aggregated into [`Zlib.allContracts`](Zlib.lean#L46-L63) and [`Goal.libz_safety`](Zlib/Spec/Safety.lean#L101-L111). Distinguish exclusion of `RunState.ub` (`C99.Sem.Safe`) from bounded termination (`C99.Sem.TerminatesSafely` when `os.readBudget.isSome`).
+- Record manual decisions about C undefined behavior in the exception register ([`docs/SAFETY.md#3-manual-undefined-behavior-exceptions`](docs/SAFETY.md#3-manual-undefined-behavior-exceptions)). Cite the operation in both the semantics ([`C99/Semantics.lean`](C99/Semantics.lean)) and the patched C + Lean sources, its exact guard, and the effect on the safety claim. Keep newly discovered discrepancies open until resolved.
+- For source comparisons and binary verification, always use the revision and ordered patches in [`pins.json`](pins.json). `make reference` reconstructs patched zlib in `build/reference/` ([`tools/reference.py`](tools/reference.py)).
 
-## Working alongside proof and translator changes
+## Verification Rules
 
-For a documentation task, edit the README, [docs/SAFETY.md](docs/SAFETY.md), or these instructions. Check the current diff before touching a shared file. Leave changes to theorem statements, runtime semantics, extraction, and CI to the task that owns them. If the documentation exposes a mismatch, name the affected definition or command so the implementation change can be made separately.
-
-Match the check to the change. Verify documentation links, Lean declaration names, and Make targets for prose edits. For proof changes, `make proof` builds and replays the safety registry. For translation or binary integration changes, run `make binary`, `make audit`, `make test`, and `make differential`. Report each result with its scope. [Commands](README.md#commands)
+- Always keep [`C99/`](C99.lean) (`AST.lean`, `Mem.lean`, `Libc.lean`, `Semantics.lean`, `EmitC.lean`, `C99.lean`, `DSL/Contract.lean`) 100% zlib-agnostic and within the LOC budgets enforced by [`tools/check_tcb.py`](tools/check_tcb.py).
+- Match checks to changes: verify markdown links, Lean declaration names, and Make targets for doc edits; run `make build && make check-api && make check-tcb && make check-kernel` for Lean/DSL/spec edits; run `make binary-equal` (and `make archive-equal` on pinned Linux) whenever C translation or ABI headers change.

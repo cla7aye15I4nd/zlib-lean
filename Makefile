@@ -1,74 +1,32 @@
 export LEAN_NUM_THREADS ?= 3
+export PATH := $(HOME)/.elan/bin:$(PATH)
+LAKE ?= $(shell command -v lake 2>/dev/null || echo $(HOME)/.elan/bin/lake)
 
-.PHONY: audit audit-pinned archive-equal source-bounds source-byteswap source-zerror source-length-guards source-restore source-tally ast-equal binary binary-pinned emit reference bytes differential proof library-safety test
+.PHONY: build reference emit binary-equal archive-equal archive-equal-compcert check-api check-tcb check-kernel
 
-audit:
-	python3 tools/audit.py
-
-audit-pinned:
-	python3 tools/audit.py --pinned
-
-archive-equal:
-	python3 tools/archive.py --pinned
-
-source-bounds:
-	python3 tools/source_bounds.py
-
-source-byteswap:
-	python3 tools/source_byteswap.py
-
-source-zerror:
-	python3 tools/source_zerror.py
-
-source-length-guards:
-	python3 tools/source_length_guards.py
-
-.PHONY: source-compress-lengths source-uncompress-lengths
-source-compress-lengths:
-	python3 tools/source_compress_lengths.py
-
-source-uncompress-lengths:
-	python3 tools/source_uncompress_lengths.py
-
-source-restore:
-	python3 tools/source_restore.py
-
-source-tally:
-	python3 tools/source_tally.py
-
-ast-equal:
-	python3 tools/audit.py --require-equal
-
-binary:
-	python3 tools/binary_audit.py
-
-binary-pinned:
-	python3 tools/binary_audit.py --pinned
-
-emit:
-	bin/lean2c emit build/generated
+build:
+	$(LAKE) build --wfail C99 Zlib Zlib.Spec.Safety lean2c
 
 reference:
 	python3 tools/reference.py
 
-bytes: reference emit
-	bin/lean2c compare build/reference build/generated build/bytes.json
+emit:
+	bin/lean2c emit build/generated
 
-differential:
-	python3 tools/differential.py
+binary-equal:
+	python3 tools/verify_binary.py
 
-proof:
-	lake build --wfail ZlibF
-	lake env leanchecker --fresh ZlibF.Results
+archive-equal:
+	python3 tools/archive.py --pinned
 
-library-safety: proof
-	python3 tools/check_public_safety.py
-	python3 tools/check_baseline_equiv.py
+archive-equal-compcert:
+	python3 tools/archive.py --compcert
 
-test:
-	lake build --wfail Lean2C.Lower Lean2C.Soundness Lean2C.OriginalWrapperSafety ZlibF.Results
-	lake env lean -DwarningAsError=true tests/ShiftLowering.lean
-	lake env lean -DwarningAsError=true tests/SafetyRules.lean
-	lake env lean -DwarningAsError=true tests/LemmaEquivalence.lean
-	lake env lean -DwarningAsError=true tests/CSourceSoundness.lean
-	python3 -m unittest discover -s tests -p 'test_*.py'
+check-api:
+	python3 tools/check_public_api.py
+
+check-tcb:
+	python3 tools/check_tcb.py
+
+check-kernel: build
+	$(LAKE) env leanchecker --fresh Zlib.Spec.Safety

@@ -1,49 +1,30 @@
 # Repository Architecture
 
-`zlib-lean` separates the Lean 4 model of zlib, the runtime/libc semantics, the formal safety proofs, and the Lean-to-C compiler (`Lean2C`) and its formal soundness layer into independent layers.
+`zlib-lean` is organized around a single-source-of-truth C99 representation: every zlib module is authored directly in a C-like Lean 4 macro DSL with Verus-style embedded function contracts, elaborated into one `C99.TU` AST consumed identically by the formal C99 small-step semantics and the 1-to-1 C printer.
 
-## 1. Directory Layout
+## 1. Directory Layout & Size Summary
 
-| Path | Responsibility |
-| --- | --- |
-| `ZlibF/Runtime/` | Memory model (`Space`, `Ptr`, `Monad`, `Schema`, `Tables`, `Address`), split C library models (`LibcMemory`, `LibcAllocation`, `LibcCString`, `LibcStrings`, `LibcTables`, `Libc`), and C ABI type annotations (`CAbi`). |
-| `ZlibF/Zlib/` | Lean 4 translations of the 15 zlib translation units, internal headers (`crc32.h`, `inffixed.h`, `trees.h`, `gzguts.h`, `zlib.h`), and the POSIX `gz*` I/O model (`gzfs.lean`). |
-| `ZlibF/Spec/` | Common invariants (`Spec/Common/`), retained bound/query specifications (`Spec/Functional/Queries.lean`), public safety goals (`Spec/Safety/`, including `UtilitiesCAbi.lean` and `MultiStream.lean`), and the whole-library contract selectors (`Spec/Safety/WholeLibrary.lean`). |
-| `ZlibF/Proof/` | Reusable Hoare/frame/loop/scalar combinators (`HeapWP`, `CountedLoop`, `LibcArray`, `LibcMemory`, `LibcScalar`), per-module safety proofs, C-ABI companion proofs (`public-compress-safe-c.lean`), and disjoint multi-stream proofs (`public-multi-stream-safety.lean`). |
-| `ZlibF/Results.lean` | Safety goal registry, `whole_library_safety` & `extended_library_safety` assembly, and `#eval checkWith` completeness check ([ResultsCheck.lean](../ZlibF/ResultsCheck.lean)). |
-| `Lean2C/` | Standalone Lean-to-C compiler ([Simple.lean](../Lean2C/Simple.lean), [Lower.lean](../Lean2C/Lower.lean), [C.lean](../Lean2C/C.lean), [ABI.lean](../Lean2C/ABI.lean), [Archive.lean](../Lean2C/Archive.lean), [Headers.lean](../Lean2C/Headers.lean)) plus formal C99 LP64 operational semantics ([Semantics.lean](../Lean2C/Semantics.lean)) and lowering soundness proofs ([Soundness.lean](../Lean2C/Soundness.lean)). |
-| `tools/` & `tests/` | Public API coverage verification (`check_public_safety.py`), baseline equivalence checker (`check_baseline_equiv.py`), differential test runner (`differential.py`), binary/AST checks (`binary_audit.py`, `audit.py`), and Lean/Python regression suites (`ShiftLowering.lean`, `SafetyRules.lean`, `LemmaEquivalence.lean`, `CSourceSoundness.lean`, `test_*.py`). |
+| Layer / Path | LOC | Responsibility |
+| --- | ---: | --- |
+| [`C99/`](../C99.lean) (Core TCB) | 2,179 | Zlib-agnostic LP64 C99 AST ([`AST.lean`](../C99/AST.lean), 406), flat byte-block memory ([`Mem.lean`](../C99/Mem.lean), 222), safety-only libc/POSIX ([`Libc.lean`](../C99/Libc.lean), 233), continuation semantics ([`Semantics.lean`](../C99/Semantics.lean), 978), 1-to-1 C printer ([`EmitC.lean`](../C99/EmitC.lean), 335), umbrella ([`C99.lean`](../C99.lean), 5). |
+| [`C99/DSL/`](../C99/DSL.lean) | 1,618 | C99 grammar ([`Syntax.lean`](../C99/DSL/Syntax.lean)), unhygienic C preprocessor expander ([`Macro.lean`](../C99/DSL/Macro.lean)), scoped header/TU state ([`Env.lean`](../C99/DSL/Env.lean)), Verus contract record ([`Contract.lean`](../C99/DSL/Contract.lean), 22), fast elaborator ([`Elab.lean`](../C99/DSL/Elab.lean)), smoke test ([`Smoke.lean`](../C99/DSL/Smoke.lean)), umbrella ([`DSL.lean`](../C99/DSL.lean)). |
+| [`Zlib/Headers/Common.lean`](../Zlib/Headers/Common.lean) & [`Zlib/Tables/`](../Zlib/Tables) | 1,612 | Shared ABI headers (`abi_common.h`, `abi_deflate.h`, `abi_inflate.h`, `abi_gz.h`), `c_spec_view Zlib.Spec.ClientView`, and static tables (`crc32.h`, `inffixed.h`, `trees.h`). |
+| `Zlib/*.lean` (15 TUs + [`Zlib.lean`](../Zlib.lean)) | 6,780 | Human-readable C-like translations of all 15 zlib source files plus 86 Verus-style `c_fn` safety contracts. |
+| [`Zlib/Spec/`](../Zlib/Spec/Safety.lean) | 316 | Safety-only memory/handle predicates ([`Memory.lean`](../Zlib/Spec/Memory.lean), 203) and whole-library safety goal [`Safety.lean`](../Zlib/Spec/Safety.lean) (113). |
+| [`Main.lean`](../Main.lean) & [`tools/`](../tools/verify_binary.py) | — | C/layout emitter CLI (`abi-sources`, `emit`, `layout-json`), binary/archive identity checkers, API & TCB audits. |
 
-## 2. Runtime & LibC Model
+## 2. Single-Source-of-Truth Pipeline
 
-- **Heap and pointers**: [`Space.lean`](../ZlibF/Runtime/Space.lean), [`Monad.lean`](../ZlibF/Runtime/Monad.lean), and [`Ptr.lean`](../ZlibF/Runtime/Ptr.lean) define the computation monad `C.M` (`StateT Heap (Except Fault)`) and checked pointer operations (`Ptr.add`, `Ptr.load`, `Ptr.index`, `Ptr.store`, `Ptr.diff`, `Ptr.lt`).
-- **Modular C library semantics**: [`Libc.lean`](../ZlibF/Runtime/Libc.lean) re-exports the split libc/table modules (alongside [`Alloc.lean`](../ZlibF/Runtime/Alloc.lean) for backward-compatible imports):
-  - [`LibcMemory.lean`](../ZlibF/Runtime/LibcMemory.lean): `Ptr.memcpy`, `Ptr.memmove`, `Ptr.fill`, `Ptr.memset`, `memcpyB`, `memmoveB`, `memsetB`, and byte-repeat instances.
-  - [`LibcAllocation.lean`](../ZlibF/Runtime/LibcAllocation.lean): byte/word/struct block allocation and `free` (`allocB`, `freeB`, `allocK`, `freeK`), oracle-driven allocation failure, and `PTRDIFF_MAX` guards.
-  - [`LibcCString.lean`](../ZlibF/Runtime/LibcCString.lean) & [`LibcStrings.lean`](../ZlibF/Runtime/LibcStrings.lean): `strlenB`, string-array predicates, and read-only string literal tables (`strLitRef`).
-  - [`LibcTables.lean`](../ZlibF/Runtime/LibcTables.lean): whole-record `copyK` / `zeroK` operations on modeled zlib structs.
-- **File system & C ABI surface**: [`gzfs.lean`](../ZlibF/Zlib/gzfs.lean) models file descriptors, buffered reads/writes, `lseek`, `fcntl`, `snprintf`, and `errno`. [`CAbi.lean`](../ZlibF/Runtime/CAbi.lean) provides zero-overhead `[reducible]` / `abbrev` wrappers (`CExport`, `CStatic`, `CHidden`, `COrder`, `ZOffT`, `ZOff64T`, `ZWordT`, `ZCrcT`, pointer qualifiers, out-parameters, and stack storage markers) so C ABI metadata lives in Lean function types without changing safety proofs.
+1. **C-like DSL & Verus Contract Elaboration ([`C99/DSL/`](../C99/DSL.lean))**:
+   - `c_header_begin` .. `c_header_end` persists typedefs, struct/enum tags, constants, and preprocessor macros (`persistedScopeExt`) across module imports while emitting exact ABI header ASTs.
+   - `c_tu_begin` .. `c_tu_end` elaborates C code with unhygienic macro expansion (`c_define`, `c_define_field`, `c_macro`, `c_stmt_macro`) into per-function helpers `{tu}_fn_{name} : C99.FnDef` and symbolic chunked `TU` lists for fast kernel compilation.
+   - Optional Verus-style `requires ...;`, `modifies ...;`, and `ensures ...;` clauses directly on `c_fn` automatically unpack C parameters (`tags`, `owned`, `view`, `m`, C parameters / `vaArgs`, `ret`, `m'`, `view'`) into `def {name}_contract : C99.FnContract View` and collect `<tu>Contracts` at `c_tu_end`. All contract terms are completely erased from `C99.FnDef`, `C99.TU`, `C99.Semantics`, and `C99.EmitC`.
 
-## 3. Proof Architecture
+2. **Operational Semantics ([`C99/Semantics.lean`](../C99/Semantics.lean))**:
+   - Evaluates `C99.AST` directly on LP64 x86-64 via deterministic step reduction (`stepDet`) plus nondeterministic relations (`Step`) for heap/stack/string allocation, OS/libc transitions (`C99.Libc.ExtStep`), and caller callbacks (`userExt`).
+   - Parameterizes the two accepted C17 pointer-arithmetic rules explicitly through `PointerConfig`.
 
-- **Weakest-precondition interface ([HeapWP.lean](../ZlibF/Proof/HeapWP.lean))**: `open scoped C.HeapWP` equips `StateT Heap (Except Fault)` for `Std.WP` reasoning and connects fault-free `OkOn` obligations to Hoare triples (`okOn_iff_triple`, `Ptr.index_spec`).
-- **Frame rules ([Proof/LibcMemory.lean](../ZlibF/Proof/LibcMemory.lean), [LibcArray.lean](../ZlibF/Proof/LibcArray.lean), [LibcScalar.lean](../ZlibF/Proof/LibcScalar.lean))**:
-  - `Proof/LibcMemory.lean`: reusable frame rules across byte copies and fills (`memcpyB_frame`, `memcpyB_range_frame`, `memmoveB_frame`, `memmoveB_range_frame`, `memsetB_frame`, `memsetB_range_frame`, `freeB_spec`, `freeB_frame`).
-  - `LibcArray.lean`: array slice lemmas (`copyRange.succ`, `copyRange.getElem?`, `fillRange.succ`, `fillRange.getElem?`).
-  - `LibcScalar.lean`: little-endian 32-bit/64-bit scalar memory contracts (`packLE32`/`packLE64`, `load32_spec`/`load64_spec`, `store32_frame`/`store64_frame`, `store32_load32_spec`/`store64_load64_spec`, and `bv_decide`-verified roundtrips).
-- **Counted & invariant loops ([CountedLoop.lean](../ZlibF/Proof/CountedLoop.lean))**: `cwhile_steps_spec`, `cwhile_inv_spec`, `cdoWhile_steps_spec`, and `cdoWhile_inv_spec` package strict iteration-count fuel bounds and loop-exit invariants into reusable `Std.WP` contracts.
-- **Whole-library & extended safety closure ([WholeLibrary.lean](../ZlibF/Spec/Safety/WholeLibrary.lean), [Results.lean](../ZlibF/Results.lean))**: All **134** safety goals (**0** unproved, **109** required) are registered in `ZlibF/Results.lean` and assembled into `ZlibF.Results.whole_library_safety` (`PublicEntry` for all **86** documented `zlib.h` functions + single-object `StreamProtocol`) and `ZlibF.Results.extended_library_safety` (`whole_library_safety` ∧ `CAbiCompanion` for `compress*_c` pointer-cell wrappers ∧ `MultiStreamContract` for disjoint multi-stream interleaving).
-
-## 4. Lean-to-C Compiler (`Lean2C`) & Lowering Soundness
-
-- **Zlib-agnostic `MetaM` C compiler ([Lower.lean](../Lean2C/Lower.lean), [C.lean](../Lean2C/C.lean), [Simple.lean](../Lean2C/Simple.lean), [ABI.lean](../Lean2C/ABI.lean), [Archive.lean](../Lean2C/Archive.lean))**: Extracts `Stmt` ASTs via `lowerStmts?`, renders C via `lower?` / `renderBody`, emits standalone C99 functions and structs from `CAbi` annotations, and verifies struct layouts against C via `_Static_assert`.
-- **Header emitters ([Headers.lean](../Lean2C/Headers.lean))**: Renders `crc32.h`, `inffixed.h`, and `trees.h` directly from Lean model tables.
-- **Formal C99 LP64 semantics & soundness ([Semantics.lean](../Lean2C/Semantics.lean), [Soundness.lean](../Lean2C/Soundness.lean))**: Models `evalValue`, `execStmt`, and `runCFn` on C99 `Stmt` trees, proving zero C99 §6.5.7 shift UB, load/store and loop simulation, and end-to-end `runCFn` soundness & `Goal.*` safety transfer for the lowered ASTs of `compressBound_z`, `compressBound`, `zlibCompileFlags`, `byte_swap`, and `adler32_combine_`.
-- **Current coverage & gaps**: **5 / 15** zlib units (`adler32.c`, `compress.c`, `gzclose.c`, `uncompr.c`, `zutil.c`) emit standalone compilable C, **3 / 3** table headers match reference bytes, and **10** core ABI structs (**163** fields) pass `_Static_assert` size/offset verification. The remaining **10 / 15** C translation units rely on reference C splicing, and C pretty-printing (`renderStmts`) plus downstream `clang` compilation remain outside the kernel proof.
-
-## 5. Local Verification
-
-- **Safety proofs, API coverage & baseline equivalence**: `make library-safety` (requires `upstream` submodule initialized via `git submodule update --init upstream`) builds `ZlibF` with `--wfail`, replays `ZlibF.Results` via `leanchecker --fresh`, runs [check_public_safety.py](../tools/check_public_safety.py), and runs [check_baseline_equiv.py](../tools/check_baseline_equiv.py).
-- **Regression tests**: `make test` builds `Lean2C.Lower`, `Lean2C.Soundness`, `ZlibF.Proof.LibcMemory`, and `ZlibF.Proof.LibcScalar` with `--wfail`, executes [tests/ShiftLowering.lean](../tests/ShiftLowering.lean), [tests/SafetyRules.lean](../tests/SafetyRules.lean), [tests/LemmaEquivalence.lean](../tests/LemmaEquivalence.lean), and [tests/CSourceSoundness.lean](../tests/CSourceSoundness.lean) with `-DwarningAsError=true`, and runs all Python unit tests (`test_*.py`, including [test_baseline_equiv.py](../tests/test_baseline_equiv.py)).
-- **Differential testing**: `make differential` compiles the Lean model and patched C `libz.a` on fixed-seed inputs ([tools/differential.py](../tools/differential.py)). Because the Lean model hardcodes `C.OS_CODE = 3` for Linux LP64 whereas Apple hosts preprocess `OS_CODE = 19` in patched `zutil.h`, running `gz` and `deflate` differential suites to full parity requires a Linux x86-64 LP64 environment (`CC=/usr/bin/clang-18` on Ubuntu `24.04`).
-- **Binary compilation check**: `make binary` runs [binary_audit.py](../tools/binary_audit.py) to compile generated standalone C, check `_Static_assert` ABI layouts, and verify object/archive parity under `build/`.
+3. **Pure 1-to-1 C99 Emission ([`C99/EmitC.lean`](../C99/EmitC.lean)) & Byte-Identity Verification**:
+   - `C99.EmitC` is a 335-LOC pure AST printer with zero metaprogramming or zlib knowledge.
+   - [`Main.lean`](../Main.lean) emits all ABI headers (`abi_*.h`), table headers (`crc32.h`, `inffixed.h`, `trees.h`), and all 15 `.c` units (`bin/lean2c abi-sources` / `bin/lean2c emit`), plus `layout-json` so C `_Static_assert` checks verify every size and field offset of all 10 ABI structs (163 fields).
+   - [`tools/verify_binary.py`](../tools/verify_binary.py) and [`tools/archive.py`](../tools/archive.py) compile both reconstructed patched zlib (`build/reference/`) and Lean-emitted C with the pinned Clang flags and assert **15/15 byte-identical `.o` object files** and **byte-identical `libz.a`**, replacing differential test suites completely.

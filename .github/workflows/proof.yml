@@ -5,19 +5,18 @@ permissions:
 jobs:
   kernel:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 60
     env:
       LEAN_NUM_THREADS: 3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           submodules: true
-          fetch-depth: 0
       - name: Install pinned Lean
         run: |
           sudo apt-get update -qq && sudo apt-get install -y elan
           elan toolchain install "$(cat lean-toolchain)"
-      - name: Check the preserved safety contracts and replay their proofs in a fresh kernel
-        run: make library-safety
-      - name: Check historical lemma statements and runtime equivalences
-        run: lake env lean -DwarningAsError=true tests/LemmaEquivalence.lean
+      - name: Replay specification and DSL definitions in a fresh kernel
+        run: make check-kernel
+      - name: Verify TCB cleanliness and public API coverage
+        run: make check-tcb && make check-api

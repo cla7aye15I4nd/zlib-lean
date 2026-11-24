@@ -3,7 +3,7 @@ on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
-  inspect:
+  clang-archive-equal:
     runs-on: ubuntu-24.04
     env:
       LEAN_NUM_THREADS: 3
@@ -11,32 +11,73 @@ jobs:
       CC: /usr/bin/clang-18
       AR: /usr/bin/llvm-ar-18
       RANLIB: /usr/bin/llvm-ranlib-18
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [archive-equal, audit-pinned, binary-pinned, differential]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           submodules: true
-      - name: Install the pinned Lean toolchain
+      - name: Install the pinned Lean and LLVM toolchains
         run: |
           sudo apt-get update -qq && sudo apt-get install -y elan clang-18 llvm-18
           elan toolchain install "$(cat lean-toolchain)"
-      - run: make ${{ matrix.target }}
-      - if: matrix.target == 'archive-equal' && always()
+      - name: Build Lean libraries and C emitter
+        run: make build
+      - name: Verify public API Verus contract coverage and TCB hygiene
+        run: make check-api && make check-tcb
+      - name: Emit standalone C ABI units
+        run: bin/lean2c abi-sources build/abi-sources
+      - name: Verify 15/15 byte-for-byte archive equality with pinned Clang
+        run: python3 tools/archive.py --pinned --lean-dir build/abi-sources
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lean-abi-sources
+          path: build/abi-sources
+          if-no-files-found: error
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: linux-archive-comparison
+          name: linux-clang-archive-comparison
           path: build/archive-*/report.json
           if-no-files-found: error
-      - if: matrix.target == 'audit-pinned'
-        run: make binary-pinned && make test
-      - if: matrix.target == 'audit-pinned' && always()
+
+  compcert-archive-equal:
+    runs-on: ubuntu-24.04
+    needs: clang-archive-equal
+    container: coqorg/coq:8.20
+    env:
+      OPAMYES: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          submodules: true
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory '*'
+      - name: Download Lean-emitted C sources
+        uses: actions/download-artifact@v4
+        with:
+          name: lean-abi-sources
+          path: build/abi-sources
+      - name: Cache OPAM switch with CompCert
+        uses: actions/cache@v4
+        with:
+          path: /home/coq/.opam
+          key: compcert-coq-8.20-v1
+      - name: Install CompCert toolchain
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y python3 gcc make binutils git
+          eval "$(opam env)"
+          if ! command -v ccomp >/dev/null 2>&1; then
+            opam repo add coq-released https://coq.inria.fr/opam/released || true
+            opam update -y
+            opam install -y -j "$(nproc)" coq-compcert
+          fi
+          ccomp -version || ccomp --version
+      - name: Verify 15/15 byte-for-byte archive equality with CompCert
+        run: |
+          eval "$(opam env)"
+          python3 tools/archive.py --compcert --lean-dir build/abi-sources
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: clang-ast-report
-          path: |
-            build/ast-report.json
-            build/binary-report.json
+          name: linux-compcert-archive-comparison
+          path: build/archive-*/report.json
           if-no-files-found: error

@@ -1,75 +1,58 @@
 # zlib-lean
 
-**Memory and execution safety of the Lean 4 model of patched zlib (`1.4.0.1-motley`).**
+**Modernized, C-like Lean 4 source and Verus-style safety specification of patched zlib (`1.4.0.1-motley`), byte-for-byte identical to compiled C across all 15 translation units.**
 
-The model targets the default x86-64 Linux LP64 static build. Its contracts cover 86 documented public functions and specify legal memory accesses, allocation ownership, permitted stream histories, and when a call must return. `make archive-equal` compares the library generated from Lean with the library built from the pinned C sources. Applying a model theorem to the original C also requires a correspondence proof for the operations it uses. [Source and patches](pins.json) · [Safety scope and open correspondence issues](docs/SAFETY.md)
+The repository targets the default x86-64 LP64 static library build defined in [pins.json](pins.json) (`zlib` commit `617e19a8` + 6 patches). Rather than maintaining separate Lean models and C differential test suites, every zlib C unit is written directly in a thin C-like Lean 4 macro DSL ([C99/DSL/](C99/DSL)), elaborated to a single C99 AST ([C99/AST.lean](C99/AST.lean)) shared between small-step C99 operational semantics ([C99/Semantics.lean](C99/Semantics.lean)) and a 335-LOC 1-to-1 C printer ([C99/EmitC.lean](C99/EmitC.lean)).
 
-## Using the Safety Theorems
+Every one of the **86 documented public APIs** in `zlib.h` carries an embedded Verus-style `requires` / `modifies` / `ensures` safety contract directly on its `c_fn` definition in `Zlib/*.lean`, aggregated into [Zlib.allContracts](Zlib.lean#L46-L63) and [Goal.libz_safety](Zlib/Spec/Safety.lean#L101-L111). Formal proof migration for `Goal.libz_safety` (reusing and adapting lemmas from the pre-modernization proof suite preserved on `origin/main`) is the next phase on branch `dev`.
 
-`whole_library_safety` selects the baseline contract for each documented function and the four stream protocols for deflate, inflate, inflateBack, and gzip. `extended_library_safety` also requires the contracts for C-ABI companions and for sequential calls interleaved across disjoint streams. `make proof` checks that each selection has a registered proof. [Proof registry](ZlibF/Results.lean) · [Contract selectors](ZlibF/Spec/Safety/WholeLibrary.lean)
-
-```lean
-import ZlibF.Results
-
-open ZlibF.Results ZlibF.Spec.Public
-
-example : Goal.compressBound_z := whole_library_safety.1 .compressBound_z
-example : Goal.inflateCopy_safety := whole_library_safety.1 .inflateCopy
-example : Goal.gz_sequence_safety := whole_library_safety.2 .gzip
-
-example : Goal.compress2_c_safety := extended_library_safety.2.1 .compress2_c
-example : Goal.multi_stream_step_safety := extended_library_safety.2.2 .stepSafety
-```
-
-See [ZlibF/Spec/Safety/WholeLibrary.lean](ZlibF/Spec/Safety/WholeLibrary.lean) for the selector definitions, [tests/public-api.json](tests/public-api.json) for the per-API mapping from C functions to Lean goals, and [docs/SAFETY.md](docs/SAFETY.md) for a C-auditor walkthrough of the safety predicates.
-
-## What Is Verified (and What Is Not)
+## Architecture at a Glance
 
 ```mermaid
 flowchart LR
-    Model["Lean 4 Model & Runtime\n(ZlibF/Zlib, Runtime)"] --> Safety["Registered safety theorems\n(ZlibF.Results)"]
-    Safety --> Kernel["leanchecker --fresh\n(ZlibF.Results)"]
-    Safety --> Coverage["make library-safety\n(zlib.h + baseline equiv check)"]
-    Model --> Diff["make differential\n(Model vs patched C libz.a)"]
-    Model --> Generated["Independent C units\n(make archive-equal)"]
-    Model -. "five checked functions" .-> Lean2C["C99 AST semantics and soundness"]
+    Src["Zlib/*.lean\n(C-like DSL + Verus c_fn contracts)"] --> Elab["C99/DSL/\n(Macro expander & Verus contract elab)"]
+    Elab --> AST["C99.TU / Prog\n(Single C99 AST representation)"]
+    Elab --> Contracts["Zlib.allContracts\n(86 Prop contracts)"]
+    AST --> Sem["C99.Semantics\n(Small-step LP64 semantics + safety-only Libc/Mem)"]
+    AST --> EmitC["C99.EmitC (335 LOC)\n(1-to-1 C99 printer)"]
+    Contracts --> Spec["Zlib.Spec.Goal.libz_safety\n(Zlib/Spec/Safety.lean)"]
+    Sem --> Spec
+    EmitC --> Clang["Clang & CompCert C compilation"]
+    Clang --> Eq["Byte-for-byte identity vs patched zlib\n(15/15 .o & libz.a, 10 ABI structs)"]
 ```
 
-- **Safety proof replay.** `make proof` checks the [registry](ZlibF/Results.lean) and replays it in a fresh kernel. It fails if a required contract lacks a registered theorem or depends on an axiom beyond `propext`, `Classical.choice`, and `Quot.sound`. `make library-safety` also checks coverage against patched `zlib.h` and preservation of the baseline contracts at `85cd20c` and the C-ABI and multi-stream contracts at `50c4359`. Both this check and the independent Linux archive comparison run on every push and pull request. [Baseline check](tools/check_baseline_equiv.py) · [Lean equivalence tests](tests/LemmaEquivalence.lean)
-- **Formal C99 AST semantics & soundness for lowered kernels**: [Lean2C/Semantics.lean](Lean2C/Semantics.lean) and [Lean2C/Soundness.lean](Lean2C/Soundness.lean) (tested in [CSourceSoundness.lean](tests/CSourceSoundness.lean)) prove C99 §6.5.7 shift UB-freedom, load/store and loop simulation, and end-to-end `runCFn` soundness for the live lowered C ASTs of `compressBound_z`, `compressBound`, `zlibCompileFlags`, `byte_swap`, and `adler32_combine_`.
-- **Executable model differential checks**: Fixed-seed test suites compare executables compiled from the Lean model against patched C `libz.a` across the default Linux LP64 configuration (`make differential`).
-- **Independent Linux translation.** For the x86-64 Linux build in [pins.json](pins.json), Clang compiled the 15 C units generated independently from Lean. Every object and the full `libz.a` matched the patched C build byte for byte. The [archive check](tools/archive.py) builds both sides and compares each object and the complete static library. See the [translation assumptions](docs/SAFETY.md#2-trusted-computing-base-tcb) for the scope of the source-level proofs.
+| Layer | Purpose | Key Files |
+| --- | --- | --- |
+| **Core C99 TCB (2,179 LOC)** | Zlib-agnostic LP64 C99 AST, byte-block memory, safety-only POSIX/libc, small-step semantics, 1-to-1 C printer | [AST.lean](C99/AST.lean) · [Mem.lean](C99/Mem.lean) · [Libc.lean](C99/Libc.lean) · [Semantics.lean](C99/Semantics.lean) · [EmitC.lean](C99/EmitC.lean) |
+| **C-like DSL + Verus Interface** | C99 parser/macros/elaborator erasing Verus `requires`/`modifies`/`ensures` clauses from C output | [Contract.lean](C99/DSL/Contract.lean) · [Syntax.lean](C99/DSL/Syntax.lean) · [Macro.lean](C99/DSL/Macro.lean) · [Elab.lean](C99/DSL/Elab.lean) |
+| **Patched zlib in Lean** | All 4 shared ABI headers, 3 static tables, and all 15 C translation units with 86 Verus contracts | [Headers/Common.lean](Zlib/Headers/Common.lean) · [Tables/](Zlib/Tables) · [Zlib.lean](Zlib.lean) |
+| **Safety-Only Spec (316 LOC)** | Client handle view, buffer/ownership predicates, and top-level `Goal.libz_safety` target | [Memory.lean](Zlib/Spec/Memory.lean) · [Safety.lean](Zlib/Spec/Safety.lean) |
+| **Binary Equality & Audits** | 15/15 object/archive byte comparison, ABI `_Static_assert` verification, API coverage, TCB hygiene | [verify_binary.py](tools/verify_binary.py) · [archive.py](tools/archive.py) · [check_public_api.py](tools/check_public_api.py) · [check_tcb.py](tools/check_tcb.py) |
 
-For assumptions, C undefined-behavior boundaries, and the C-auditor walkthrough, see [docs/SAFETY.md](docs/SAFETY.md). For runtime, proof, and compiler module layout, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+For detailed module responsibilities and design rationale, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). For safety scope, Trusted Computing Base limits, and C17 UB exceptions, see [docs/SAFETY.md](docs/SAFETY.md).
 
 ## Commands
 
-Requires Git, Python 3.9+, Make, Clang, and the Lean toolchain specified in [lean-toolchain](lean-toolchain).
+Requires Git, Python 3.9+, Make, Clang (`clang-18` + `llvm-18` on Linux for pinned archive comparison), and the Lean toolchain in [lean-toolchain](lean-toolchain).
 
 ```sh
 git clone --recurse-submodules https://github.com/cla7aye15I4nd/zlib-lean
 cd zlib-lean
-make library-safety && make test
+make build && make binary-equal && make check-api && make check-tcb
 ```
 
 | Command | Purpose |
 | --- | --- |
-| `make library-safety` | Build `ZlibF` with `--wfail`, replay `ZlibF.Results` via `leanchecker --fresh`, verify all 86 public APIs against patched `zlib.h` ([check_public_safety.py](tools/check_public_safety.py)), and verify baseline equivalence against `85cd20c` ([check_baseline_equiv.py](tools/check_baseline_equiv.py)). |
-| `make proof` | Build `ZlibF` with `--wfail` and replay `ZlibF.Results` in a fresh Lean kernel (~10 GB RAM). |
-| `make test` | Build `Lean2C.Lower`, `Lean2C.Soundness`, and the `ZlibF.Results` registry imported by the tests with `--wfail`, run Lean tests with `-DwarningAsError=true` ([ShiftLowering.lean](tests/ShiftLowering.lean), [SafetyRules.lean](tests/SafetyRules.lean), [LemmaEquivalence.lean](tests/LemmaEquivalence.lean), [CSourceSoundness.lean](tests/CSourceSoundness.lean)), and run Python unit tests ([test_public_safety.py](tests/test_public_safety.py), [test_baseline_equiv.py](tests/test_baseline_equiv.py), [test_fidelity.py](tests/test_fidelity.py)). |
-| `make differential` | Build patched C `libz.a` and Lean drivers, then compare outputs across 10 fixed-seed test suites ([tests/list.txt](tests/list.txt); full Linux parity targets x86-64 LP64). |
-| `make binary` | Diagnostic C compilation check: verify `_Static_assert` ABI layouts across 10 structs, compile generated standalone units and spliced C units, and emit `build/binary-report.json`. |
-| `make source-bounds` | Check the two length-bound definitions in patched and generated `compress.c` against [machine-checked LP64 proofs](Lean2C/OriginalBounds.lean). Change one shift in each source and require Lean to reject each altered definition. |
-| `make source-byteswap` | Check the complete `byte_swap` body in both versions of `crc32.c`, including Clang’s integer conversions. For every 32-bit word, both return the model’s byte swap and preserve the heap. [Proof](Lean2C/OriginalByteSwap.lean) |
-| `make source-zerror` | Check both `zError` bodies and their ten string literals. Every signed input selects an in-bounds entry and returns the expected read-only message. [Proof](Lean2C/OriginalError.lean) |
-| `make source-length-guards` | Check the argument guards in both C versions of `compress2_z` and `uncompress2_z`, including short-circuiting before a length dereference. |
-| `make source-compress-lengths` | Check both source wrappers from argument validation to return with modeled deflate calls. Replay the [wrapper correspondence](Lean2C/OriginalCompress.lean) and its alignment and pointer-subtraction conditions. |
-| `make source-uncompress-lengths` | Check both `uncompress2_z` wrappers through return, including the [zero-capacity member address](Lean2C/OriginalUncompressReturn.lean) and [aliased length cells](Lean2C/OriginalUncompressLengths.lean) in the shared ABI frame. |
-| `make source-restore` | Check both decoder sources against Lean for register writebacks, 37 input-byte steps, four `lens[have++]` stores, four `order[have++]` reads, both length-repeat loops, and both forward match-copy loops. Check the two extra-bit loop guards, 19 callback sites, the complete stored-block case and the operands of all three `inflate_table` calls, the fast path, and the final callback and stream writeback in `inflateBack`. Replay the addressed and bounded callback theorems in a fresh kernel. Reject targeted mutations. |
-| `make source-tally` | Check the 24 symbol-byte writes and both pairs of checksum reads in the dictionary header and zlib trailer, in patched and generated C. Lean must reject a changed destination and a wrong checksum field. [Compression checks](docs/SAFETY.md) |
-| `make archive-equal` | Use the pinned Linux toolchain to compare independently generated objects and the full `libz.a` with patched C. The command exits unsuccessfully if an object is missing or any bytes differ. |
-| `make reference` | Reconstruct the 26-file patched C baseline in `build/reference/` from [upstream/](upstream) and [patches/](patches). |
+| `make build` | Build `C99`, `Zlib`, `Zlib.Spec.Safety`, and `lean2c` with `--wfail`. |
+| `make binary-equal` | Emit C sources, verify 10 ABI struct layouts (163 fields) via `_Static_assert`, compile all 15 units, and verify byte-for-byte equality of every `.o` and `libz.a` against configured reference zlib ([verify_binary.py](tools/verify_binary.py)). |
+| `make archive-equal` | Strict pinned Linux `clang-18` / `llvm-ar-18` archive equality check for CI ([archive.py](tools/archive.py)). |
+| `make archive-equal-compcert` | Byte-for-byte Linux archive equality check compiled with CompCert `ccomp` ([archive.py](tools/archive.py)). |
+| `make check-api` | Verify 86/86 Verus contracts in `Zlib.allContracts`, 95/95 POSIX exports in `Zlib.allTUs`, and exact ABI type alignment against `zlib.h` ([check_public_api.py](tools/check_public_api.py)). |
+| `make check-tcb` | Audit 0 `sorry`, 0 `axiom`, 0 zlib identifiers in the Core C99 TCB, and enforce Core TCB ≤ 2,300 LOC and `Zlib/Spec/` ≤ 500 LOC ([check_tcb.py](tools/check_tcb.py)). |
+| `make check-kernel` | Build with `--wfail` and replay `Zlib.Spec.Safety` in a fresh Lean kernel (`leanchecker --fresh`). |
+| `make emit` | Emit the standalone C headers and 15 translation units into `build/generated/`. |
+| `make reference` | Reconstruct the pinned patched C reference tree in `build/reference/` ([reference.py](tools/reference.py)). |
 
 ## Provenance & License
 
-Derived from [oss-proof](https://github.com/cla7aye15I4nd/oss-proof/blob/0784b3e17eb85bb7699f55cb975ed1d47c1452dc/projects/zlib/README.md) at commit `0784b3e` and focused on the safety verification closure. Upstream zlib source pins and patch SHA-256 digests are recorded in [pins.json](pins.json); modified zlib sources retain [patches/ZLIB-LICENSE](patches/ZLIB-LICENSE).
+Upstream zlib source pins and patch SHA-256 digests are recorded in [pins.json](pins.json); modified zlib sources retain [patches/ZLIB-LICENSE](patches/ZLIB-LICENSE).
