@@ -42,9 +42,14 @@ jobs:
   compcert-archive-equal:
     runs-on: ubuntu-24.04
     needs: clang-archive-equal
-    container: coqorg/coq:8.20
+    container:
+      image: coqorg/coq:8.20
+      options: --user root
     env:
       OPAMYES: "1"
+      OPAMROOT: /home/coq/.opam
+      OPAMROOTISOK: "1"
+      DEBIAN_FRONTEND: noninteractive
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -60,24 +65,24 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/coq/.opam
-          key: compcert-coq-8.20-v1
+          key: compcert-coq-8.20-v2
       - name: Install CompCert toolchain
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y python3 gcc make binutils git
-          eval "$(opam env)"
+          apt-get update -qq && apt-get install -y python3 gcc make binutils git m4 unzip pkg-config libgmp-dev
+          eval "$(opam env --root=/home/coq/.opam --set-root)"
           if ! command -v ccomp >/dev/null 2>&1; then
-            opam repo add coq-released https://coq.inria.fr/opam/released || true
+            opam repo list --short | grep -qx coq-released || opam repo add coq-released https://coq.inria.fr/opam/released
             opam update -y
             opam install -y -j "$(nproc)" coq-compcert
           fi
           ccomp -version || ccomp --version
       - name: Verify 15/15 byte-for-byte archive equality with CompCert
         run: |
-          eval "$(opam env)"
+          eval "$(opam env --root=/home/coq/.opam --set-root)"
           python3 tools/archive.py --compcert --lean-dir build/abi-sources
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: linux-compcert-archive-comparison
           path: build/archive-*/report.json
-          if-no-files-found: error
+          if-no-files-found: warn
