@@ -1,4 +1,5 @@
-import C99.Proof
+import C99.Proof.Mem
+import C99.Proof.WP
 import Zlib.Proof.ProgLookup
 import Zlib.Spec.Safety
 
