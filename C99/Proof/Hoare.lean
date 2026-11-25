@@ -4460,6 +4460,29 @@ theorem ExprSpec.deref {prog : Prog} {cfg : PointerConfig} {ext : ExtHandler}
     simp only [hrp, bind, opt_bind_some, opt_pure_some]
   exact WPTerm.of_exprPure hstep (hcont rv rty m' os' mods' hpost)
 
+theorem ExprSpec.deref_fnPtr {prog : Prog} {cfg : PointerConfig} {ext : ExtHandler}
+    {Q : Val → Mem → OSState → Prop} {env : Env} {blks : List BlockId}
+    {m : Mem} {os : OSState} {mods : ModSet} {e : CExpr}
+    {P : Val → CTy → Mem → OSState → ModSet → Prop}
+    {Post : Val → CTy → Mem → OSState → ModSet → Prop}
+    (he : ExprSpec prog cfg ext Q env blks m os mods e P)
+    (hf : ∀ v t m' os' mods', P v t m' os' mods' →
+      ∃ sym rt ps va, v = .fnPtr sym ∧ t.unqual = .fnPtr rt ps va ∧
+        Post (.fnPtr sym) (.fnPtr rt ps va) m' os' mods') :
+    ExprSpec prog cfg ext Q env blks m os mods (.deref e) Post := by
+  intro fs ctx cont hcont
+  refine WPTerm.of_exprPure rfl ?_
+  refine he (.derefF .rval :: fs) ctx cont ?_
+  intro v t m' os' mods' hpe
+  obtain ⟨sym, rt, ps, va, rfl, hfn, hpost⟩ := hf v t m' os' mods' hpe
+  have hstep : Sem.stepExprPure prog cfg env m' mods' (.ret (.rval (.fnPtr sym) t) (.derefF .rval :: fs)) =
+      some (.ret (.rval (.fnPtr sym) (.fnPtr rt ps va)) fs, m', mods') := by
+    unfold Sem.stepExprPure
+    dsimp only
+    rw [hfn]
+    rfl
+  exact WPTerm.of_exprPure hstep (hcont (.fnPtr sym) (.fnPtr rt ps va) m' os' mods' hpost)
+
 theorem LvalSpec.index {prog : Prog} {cfg : PointerConfig} {ext : ExtHandler}
     {Q : Val → Mem → OSState → Prop} {env : Env} {blks : List BlockId}
     {m : Mem} {os : OSState} {mods : ModSet} {base idx : CExpr}

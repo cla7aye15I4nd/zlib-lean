@@ -11,6 +11,7 @@ import Zlib.Proof.Crc32
 import Zlib.Proof.Math.Inftrees
 import Zlib.Proof.Math.Trees
 import Zlib.Proof.Math.Gz
+import Zlib.Proof.Invariant
 
 /-!
 # Top-Level Safety Proof Entrypoint for `zlib-lean` (`Zlib.Proof`)

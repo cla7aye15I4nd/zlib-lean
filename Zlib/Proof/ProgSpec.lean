@@ -420,9 +420,18 @@ private theorem mapM_castVal_of_list {m : Mem} :
   | [], _ :: _, _, hmap, _, _, _ => by simp at hmap
   | _ :: _, _ :: _, [], _, hlen, _, _ => by simp at hlen
 
+def ArgsHaveCTy (paramTys : List CTy) (variadic : Bool) (args : List Val) : Prop :=
+  (if variadic then paramTys.length ≤ args.length else args.length = paramTys.length) ∧
+  ∀ i (_ : i < paramTys.length),
+    match args[i]? with | some v => Zlib.Spec.ValHasCTy paramTys[i] v | none => False
+
+theorem argsWellTyped_to_haveCTy {prog : Prog} {paramTys : List CTy} {variadic : Bool}
+    {args : List Val} (h : Zlib.Spec.ArgsWellTyped prog paramTys variadic args) :
+    ArgsHaveCTy paramTys variadic args := ⟨h.1, h.2.1⟩
+
 theorem coerceCallArgs_of_argsWellTyped {m : Mem} {ptys cParamTys : List CTy} {args : List Val}
     (hmap : ptys.map CTy.unqual = cParamTys.map CTy.unqual)
-    (hawt : Zlib.Spec.ArgsWellTyped cParamTys false args)
+    (hawt : ArgsHaveCTy cParamTys false args)
     (htys : ∀ p ∈ ptys, match p.unqual with
       | .void | .int _ | .enumTy _ _ | .ptr _ | .fnPtr _ _ | .vaList => True
       | _ => False) :
@@ -476,7 +485,7 @@ private theorem mapM_castVal_produces_valHasCTy {m : Mem} :
 theorem coerceCallArgs_produces_argsWellTyped {m : Mem} {ptys : List CTy}
     {argVals : List (Val × CTy)} {coerced : List Val}
     (hc : Sem.coerceCallArgs m ptys false argVals = some coerced) :
-    Zlib.Spec.ArgsWellTyped ptys false coerced := by
+    ArgsHaveCTy ptys false coerced := by
   have ⟨hlenC, hlenA⟩ := coerceCallArgs_length hc
   unfold Sem.coerceCallArgs at hc
   simp only [Bool.false_eq_true, ↓reduceIte, bind, Option.bind, hlenA, beq_self_eq_true,
@@ -558,7 +567,7 @@ private theorem pushCallParams_exists_go (tags : TypeEnv) :
 theorem pushCallParams_exists_base0 (tags : TypeEnv) {fn : FnDef} {args : List Val}
     {m : Mem} {env : Env}
     (hsimp : ∀ p ∈ fn.params, IsSimpleParamTy p.ty)
-    (hawt : Zlib.Spec.ArgsWellTyped (fn.params.map (·.ty)) false args) :
+    (hawt : ArgsHaveCTy (fn.params.map (·.ty)) false args) :
     ∃ callEnv callBlks m',
       Sem.pushCallParams tags m (fun _ => 0) 0 (fn.params.zip args) env [] = some (callEnv, callBlks, m') := by
   rcases hawt with ⟨hlen, hval⟩
@@ -618,7 +627,7 @@ theorem FuncBodySpec.call
   simp only [List.length_map] at hlenC
   have htake : List.take fn.params.length coerced = coerced :=
     List.take_of_length_le (by omega)
-  have hawt : Zlib.Spec.ArgsWellTyped (fn.params.map (·.ty)) false coerced :=
+  have hawt : ArgsHaveCTy (fn.params.map (·.ty)) false coerced :=
     coerceCallArgs_produces_argsWellTyped hcoerce
   have hex0 : ∃ callEnv0 callBlks0 m0',
       Sem.pushCallParams prog.tags m (fun _ => 0) 0 (fn.params.zip coerced)
@@ -678,11 +687,11 @@ theorem FuncBodySpec.to_contractSafe
     (hpreImp : ∀ v owned m os args,
       BaseInv m0 os0 v owned m os →
       c.pre prog.tags owned v m args →
-      Zlib.Spec.ArgsWellTyped c.paramTys false args →
+      Zlib.Spec.ArgsWellTyped prog c.paramTys false args →
       Pre m args)
     (hpostImp : ∀ v owned m args ret m',
       c.pre prog.tags owned v m args →
-      Zlib.Spec.ArgsWellTyped c.paramTys false args →
+      Zlib.Spec.ArgsWellTyped prog c.paramTys false args →
       ROExt m m' →
       Post m args ret m' →
       (if protoRetTy.isVoid = true then
@@ -692,7 +701,7 @@ theorem FuncBodySpec.to_contractSafe
           c.post prog.tags owned v m args cv m' v)) :
     Zlib.Spec.ContractSafe prog gEnv ext Inv userWrite c := by
   intro v owned m os args s0 hInv hpre hawt hcs
-  have hawt' : Zlib.Spec.ArgsWellTyped c.paramTys false args := by
+  have hawt' : Zlib.Spec.ArgsWellTyped prog c.paramTys false args := by
     simpa [hnonvar.1] using hawt
   have hb : BaseInv m0 os0 v owned m os := hInvBase v owned m os hInv
   have hPre : Pre m args := hpreImp v owned m os args hb hpre hawt'
@@ -700,7 +709,7 @@ theorem FuncBodySpec.to_contractSafe
     simpa [List.map_map, Function.comp_def] using hptys
   have hcoerce : Sem.coerceCallArgs m (fn.params.map (·.ty)) false
       (args.map (fun x => (x, .void))) = some args :=
-    coerceCallArgs_of_argsWellTyped hmapTy hawt' (fun p hp => by
+    coerceCallArgs_of_argsWellTyped hmapTy (argsWellTyped_to_haveCTy hawt') (fun p hp => by
       simp only [List.mem_map] at hp
       rcases hp with ⟨q, hq, rfl⟩
       exact simple_is_cast_ok (hsimple q hq))

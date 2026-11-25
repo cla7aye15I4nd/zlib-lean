@@ -1430,11 +1430,11 @@ private theorem adler32_combine_wrapper_spec
   simp [Cont.topRetTy, hretTy, CTy.isVoid, CTy.unqual, hcast, unwindReturn, freeStack_nil]
   rfl
 
-private theorem argsWellTyped_u64_u64_i64 {paramTys : List CTy} {args : List Val}
+private theorem argsWellTyped_u64_u64_i64 {prog : Prog} {paramTys : List CTy} {args : List Val}
     (hp : paramTys.map CTy.unqual = [.int .u64, .int .u64, .int .i64])
-    (hawt : Zlib.Spec.ArgsWellTyped paramTys false args) :
+    (hawt : Zlib.Spec.ArgsWellTyped prog paramTys false args) :
     ∃ (a1 a2 len2 : BitVec 64), args = [.int .u64 a1, .int .u64 a2, .int .i64 len2] := by
-  rcases hawt with ⟨hlen, hval⟩
+  rcases hawt with ⟨hlen, hval, _⟩
   have hlen3 : args.length = 3 := by
     have hplen : paramTys.length = 3 := by
       have := congrArg List.length hp
@@ -3214,12 +3214,12 @@ theorem adler32_z_spec (prog : Prog) (ext : ExtHandler) :
         exact hcont (.int .u64 retBv) _
           (localFrameMem_roExt_unwind2 [b_n, b_sum2] [b_len, b_buf, b_adler] hf10) ⟨retBv, rfl⟩
 
-private theorem argsWellTyped_u64_ptr_int {k3 : IntKind} {paramTys : List CTy} {args : List Val} {el : CTy}
+private theorem argsWellTyped_u64_ptr_int {k3 : IntKind} {prog : Prog} {paramTys : List CTy} {args : List Val} {el : CTy}
     (hp : paramTys.map CTy.unqual = [.int .u64, .ptr el, .int k3])
-    (hawt : Zlib.Spec.ArgsWellTyped paramTys false args) :
+    (hawt : Zlib.Spec.ArgsWellTyped prog paramTys false args) :
     ∃ (a : BitVec 64) (buf : Val) (len : BitVec k3.bits),
       args = [.int .u64 a, buf, .int k3 len] ∧ (buf = .null ∨ ∃ pb poff, buf = .ptr pb poff) := by
-  rcases hawt with ⟨hlen, hval⟩
+  rcases hawt with ⟨hlen, hval, _⟩
   have hlen3 : args.length = 3 := by
     have hplen : paramTys.length = 3 := by
       have := congrArg List.length hp

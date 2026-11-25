@@ -2938,6 +2938,18 @@ theorem wp_deref_rval {prog : Prog} {cfg : PointerConfig} {ext : ExtHandler}
       (.running (.expr (.ret (.rval (.ptr b off) pty) (.derefF .rval :: fs)) ctx mods) env blks m os k) :=
   WPTerm.of_exprPure (by unfold stepExprPure; simp [hp, hr, bind, Option.bind, pure, Pure.pure]) hw
 
+theorem wp_deref_fnPtr {prog : Prog} {cfg : PointerConfig} {ext : ExtHandler}
+    {Q : Val → Mem → OSState → Prop}
+    {sym : SymId} {pty rt : CTy} {ps : List CTy} {va : Bool}
+    {fs : List ExprFrame} {ctx : ExprCtx} {mods : ModSet}
+    {env : Env} {blks : List BlockId} {m : Mem} {os : OSState} {k : Cont}
+    (hp : pty.unqual = .fnPtr rt ps va)
+    (hw : WPTerm prog cfg ext Q
+      (.running (.expr (.ret (.rval (.fnPtr sym) (.fnPtr rt ps va)) fs) ctx mods) env blks m os k)) :
+    WPTerm prog cfg ext Q
+      (.running (.expr (.ret (.rval (.fnPtr sym) pty) (.derefF .rval :: fs)) ctx mods) env blks m os k) :=
+  WPTerm.of_exprPure (by unfold stepExprPure; simp [hp, bind, Option.bind, pure, Pure.pure]) hw
+
 theorem wp_index {prog : Prog} {cfg : PointerConfig} {ext : ExtHandler}
     {Q : Val → Mem → OSState → Prop}
     {w : Want} {base idx : CExpr} {fs : List ExprFrame} {ctx : ExprCtx} {mods : ModSet}
@@ -6200,7 +6212,7 @@ def runCEvalStep : TacticM Bool := do
         ``C99.Proof.wp_binRhs_ptrCmp_rel, ``C99.Proof.wp_binRhs_ptrDiff, ``C99.Proof.wp_binRhs_ret]
     if fFn == some ``C99.Sem.ExprFrame.derefF then
       return ← tryApplyList [``C99.Proof.wp_deref_lval, ``C99.Proof.wp_deref_rval_array,
-        ``C99.Proof.wp_deref_rval_scalar, ``C99.Proof.wp_deref_rval]
+        ``C99.Proof.wp_deref_rval_scalar, ``C99.Proof.wp_deref_rval, ``C99.Proof.wp_deref_fnPtr]
     if fFn == some ``C99.Sem.ExprFrame.indexIdxF then
       return ← tryApplyList [``C99.Proof.wp_indexIdx_lval, ``C99.Proof.wp_indexIdx_rval_scalar,
         ``C99.Proof.wp_indexIdx]

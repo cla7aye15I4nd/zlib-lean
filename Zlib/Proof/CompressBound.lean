@@ -244,7 +244,7 @@ theorem compressBound_z_safe {prog gEnv m0 os0 userExt userWrite Inv}
       exact isSimpleParamTy_iff.mpr (Or.inl ⟨.u64, rfl⟩))
     compressBound_z_spec ?_ ?_
   · intro v owned m os args _ _ hawt
-    rcases hawt with ⟨hlen, hval⟩
+    rcases hawt with ⟨hlen, hval, _⟩
     simp only [Bool.false_eq_true, ↓reduceIte, Zlib.Compress.compressBound_z_contract,
       Zlib.Compress.compressTU_fn_compressBound_z, List.map_cons, List.map_nil,
       List.length_cons, List.length_nil] at hlen hval
@@ -259,7 +259,7 @@ theorem compressBound_z_safe {prog gEnv m0 os0 userExt userWrite Inv}
         rcases hv0 with ⟨bv, rfl⟩
         exact ⟨bv, rfl⟩
   · intro v owned m args ret m' _ hawt _ hpost
-    rcases hawt with ⟨hlen, hval⟩
+    rcases hawt with ⟨hlen, hval, _⟩
     simp only [Bool.false_eq_true, ↓reduceIte, Zlib.Compress.compressBound_z_contract,
       Zlib.Compress.compressTU_fn_compressBound_z, List.map_cons, List.map_nil,
       List.length_cons, List.length_nil] at hlen hval
@@ -442,7 +442,7 @@ theorem compressBound_safe {prog gEnv m0 os0 userExt userWrite Inv}
       exact isSimpleParamTy_iff.mpr (Or.inl ⟨.u64, rfl⟩))
     (compressBound_spec hlib) ?_ ?_
   · intro v owned m os args _ _ hawt
-    rcases hawt with ⟨hlen, hval⟩
+    rcases hawt with ⟨hlen, hval, _⟩
     simp only [Bool.false_eq_true, ↓reduceIte, Zlib.Compress.compressBound_contract,
       Zlib.Compress.compressTU_fn_compressBound, List.map_cons, List.map_nil,
       List.length_cons, List.length_nil] at hlen hval
@@ -457,7 +457,7 @@ theorem compressBound_safe {prog gEnv m0 os0 userExt userWrite Inv}
         rcases hv0 with ⟨bv, rfl⟩
         exact ⟨bv, rfl⟩
   · intro v owned m args ret m' _ hawt _ hpost
-    rcases hawt with ⟨hlen, hval⟩
+    rcases hawt with ⟨hlen, hval, _⟩
     simp only [Bool.false_eq_true, ↓reduceIte, Zlib.Compress.compressBound_contract,
       Zlib.Compress.compressTU_fn_compressBound, List.map_cons, List.map_nil,
       List.length_cons, List.length_nil] at hlen hval

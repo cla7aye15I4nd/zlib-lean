@@ -68,15 +68,30 @@ def ClientFrame (tags : TypeEnv) (m0 : Mem) (v : ClientView) (owned : BlockSet)
       Writable m' win wsz)
 
 /-- Safety contract required of caller-supplied `inflateBack` `in_func` / `out_func` callbacks. -/
-def SafeUserCallbacks (owned userWrite : BlockSet) (userExt : ExtHandler) : Prop :=
+def SafeUserCallbacks (tags : TypeEnv) (m0 : Mem) (v : ClientView)
+    (owned userWrite : BlockSet) (userExt : ExtHandler) : Prop :=
+  (∀ sym args m os, os.readBudget.isSome → (args.length = 2 ∨ args.length = 3) →
+    ∃ ret m' os', userExt sym args m os (.ok ret m' os')) ∧
   ∀ sym args m os out, userExt sym args m os out →
     out ≠ .ub ∧
     ∀ ret m' os', out = .ok ret m' os' →
       os'.errnoBlk = os.errnoBlk ∧
       os'.strerrorBlk = os.strerrorBlk ∧
       FramePreserved m m' (fun b =>
-        userWrite b ∨ (m.blocks b).isNone ∨
-        (¬ owned b ∧ ∃ blk, m.blocks b = some blk ∧ blk.kind = .stack))
+        ¬ LibProtected m0 owned os m b ∧ (∀ k, (b, k) ∉ v.streams) ∧
+        (∀ sb, (sb, .inflateBack) ∈ v.streams →
+          PtrBlock ((readField? tags m ((readField? tags m (.ptr sb 0) "z_stream_s" "state").getD .null)
+            "inflate_state" "window").getD .null) ≠ some b) ∧
+        (userWrite b ∨ (m.blocks b).isNone ∨
+          (∃ blk, m.blocks b = some blk ∧ blk.kind = .stack))) ∧
+      NoHeapLeak m m' owned ∧
+      (∀ op nb noff, args = [op, .ptr nb noff] →
+        ∃ avail : BitVec 32, ret = .int .u32 avail ∧
+          (avail.toNat = 0 ∨ ∃ bs pb po, m'.readBytes nb noff 8 = some bs ∧
+            Mem.decodePtr bs = some (.ptr pb po) ∧ Readable m' (.ptr pb po) avail.toNat) ∧
+          (∀ k, os.readBudget = some k → ∃ k', os'.readBudget = some k' ∧ (avail.toNat > 0 → k' < k))) ∧
+      (∀ op buf len, args = [op, buf, len] →
+        (∃ r : BitVec 32, ret = .int .i32 r) ∧ os'.readBudget = os.readBudget)
 
 /-- C ABI well-typedness predicate for incoming arguments passed to `callState`. -/
 def ValHasCTy (ty : CTy) (v : Val) : Prop :=
@@ -90,10 +105,15 @@ def ValHasCTy (ty : CTy) (v : Val) : Prop :=
   | _ => True
 
 /-- Arity and fixed-parameter C ABI typing check for `callState` arguments. -/
-def ArgsWellTyped (paramTys : List CTy) (variadic : Bool) (args : List Val) : Prop :=
+def ArgsWellTyped (prog : Prog) (paramTys : List CTy) (variadic : Bool) (args : List Val) : Prop :=
   (if variadic then paramTys.length ≤ args.length else args.length = paramTys.length) ∧
+  (∀ i (_ : i < paramTys.length),
+    match args[i]? with | some v => ValHasCTy paramTys[i] v | none => False) ∧
   ∀ i (_ : i < paramTys.length),
-    match args[i]? with | some v => ValHasCTy paramTys[i] v | none => False
+    match paramTys[i].unqual, args[i]? with
+    | .fnPtr _ _ _, some (.fnPtr sym) =>
+        prog.fns sym = none ∧ sym ≠ "LSEEK" ∧ isStdLibcSym sym = false
+    | _, _ => True
 
 /-- Safety, bounded termination, frame, and leak-freedom obligations for one Verus contract `c`. -/
 def ContractSafe (prog : Prog) (gEnv : Env) (ext : ExtHandler)
@@ -102,7 +122,7 @@ def ContractSafe (prog : Prog) (gEnv : Env) (ext : ExtHandler)
   ∀ v owned m os args s0,
     Inv v owned m os →
     c.pre prog.tags owned v m args →
-    ArgsWellTyped c.paramTys c.variadic args →
+    ArgsWellTyped prog c.paramTys c.variadic args →
     callState prog gEnv m os c.fnName args = some s0 →
     Safe prog zlibPointerConfig ext s0 ∧
     (os.readBudget.isSome → TerminatesSafely prog zlibPointerConfig ext s0) ∧
@@ -112,7 +132,7 @@ def ContractSafe (prog : Prog) (gEnv : Env) (ext : ExtHandler)
         Inv v' owned' m' os' ∧
         FramePreserved m m' (fun b =>
           owned b ∨ owned' b ∨ c.modSet prog.tags owned v m args b ∨
-          userWrite b ∨ b = os.errnoBlk ∨ os'.strerrorBlk = some b) ∧
+          userWrite b ∨ b = os.errnoBlk ∨ os.strerrorBlk = some b ∨ os'.strerrorBlk = some b) ∧
         NoHeapLeak m m' owned' ∧
         (v'.isEmpty → ∀ b, ¬ owned' b))
 
@@ -125,7 +145,8 @@ def Goal.libz_safety : Prop :=
       (∀ v owned m m' os os', Inv v owned m os →
         ClientFrame prog.tags m0 v owned m m' os os' → Inv v owned m' os') ∧
       (∀ userExt userWrite,
-        (∀ owned, DisjointSets owned userWrite → SafeUserCallbacks owned userWrite userExt) →
+        (∀ v owned, DisjointSets owned userWrite →
+          SafeUserCallbacks prog.tags m0 v owned userWrite userExt) →
         ∀ c ∈ Zlib.allContracts, ContractSafe prog gEnv (zlibExt userExt) Inv userWrite c)
 
 end Zlib.Spec

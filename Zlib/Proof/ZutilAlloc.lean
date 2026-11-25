@@ -71,7 +71,7 @@ theorem HeapBodySpec.call
   simp only [List.length_map] at hlenC
   have htake : List.take fn.params.length coerced = coerced :=
     List.take_of_length_le (by omega)
-  have hawt : Zlib.Spec.ArgsWellTyped (fn.params.map (·.ty)) false coerced :=
+  have hawt : ArgsHaveCTy (fn.params.map (·.ty)) false coerced :=
     coerceCallArgs_produces_argsWellTyped hcoerce
   have hex0 : ∃ callEnv0 callBlks0 m0',
       Sem.pushCallParams prog.tags m (fun _ => 0) 0 (fn.params.zip coerced)

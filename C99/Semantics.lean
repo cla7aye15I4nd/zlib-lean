@@ -298,7 +298,12 @@ def exprType? (tags : TypeEnv) (env : Env) (fnProtos : String → Option FnSig) 
     if op == .logNot then some (.int .i32)
     else (exprType? tags env fnProtos e).bind fun t => t.intKind?.map fun k => .int k.promote
   | .addrOf e => (exprType? tags env fnProtos e).map .ptr
-  | .deref e | .index e _ => do
+  | .deref e => do
+    match (← exprType? tags env fnProtos e).decay.unqual with
+    | .ptr el => return el
+    | .fnPtr rt ps va => return .fnPtr rt ps va
+    | _ => none
+  | .index e _ => do
     let .ptr el := (← exprType? tags env fnProtos e).decay.unqual | none
     return el
   | .member b fld => (exprType? tags env fnProtos b).bind (fieldLayout? tags · fld) |>.map (·.2)
@@ -547,9 +552,15 @@ def stepExprPure (prog : Prog) (cfg : PointerConfig) (env : Env) (m : Mem) (mods
   | .ret _ (.commaF r :: fs) => some (.eval .rval r fs, m, [])
   | .ret (.rval v _) (.castF ty :: fs) => (castVal m ty v).map fun cv => (.ret (.rval cv ty) fs, m, mods)
   | .ret (.rval p pty) (.derefF w :: fs) => do
-    let .ptr el := pty.unqual | none
-    let (.ptr b off) := p | none
-    return (.ret (← readPlace prog.tags m mods w b off el) fs, m, mods)
+    match pty.unqual with
+    | .ptr el =>
+      let (.ptr b off) := p | none
+      return (.ret (← readPlace prog.tags m mods w b off el) fs, m, mods)
+    | .fnPtr rt ps va =>
+      guard (w == .rval)
+      let (.fnPtr sym) := p | none
+      return (.ret (.rval (.fnPtr sym) (.fnPtr rt ps va)) fs, m, mods)
+    | _ => none
   | .ret (.lval b off ty) (.addrOfF :: fs) => some (.ret (.rval (.ptr b off) (.ptr ty)) fs, m, mods)
   | .ret (.rval p pty) (.indexBaseF w idx :: fs) => some (.eval .rval idx (.indexIdxF w p pty :: fs), m, mods)
   | .ret (.rval iv _) (.indexIdxF w p pty :: fs) => do

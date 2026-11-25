@@ -1536,11 +1536,11 @@ private theorem wp_return_val_u64 {prog cfg ext Q innerEnv innerBlks m0 callBlks
     simp only [htop, hnv, Bool.false_eq_true, ↓reduceIte, hcast, hretUnw, Option.bind_some, Option.map_some]
   exact WPTerm.of_det hstep (hcont _ hro rfl)
 
-private theorem argsWellTyped_i64 {paramTys : List CTy} {args : List Val}
+private theorem argsWellTyped_i64 {prog : Prog} {paramTys : List CTy} {args : List Val}
     (hp : paramTys.map CTy.unqual = [.int .i64])
-    (hawt : Zlib.Spec.ArgsWellTyped paramTys false args) :
+    (hawt : Zlib.Spec.ArgsWellTyped prog paramTys false args) :
     ∃ len2 : BitVec 64, args = [.int .i64 len2] := by
-  rcases hawt with ⟨hlen, hval⟩
+  rcases hawt with ⟨hlen, hval, _⟩
   have hlen1 : args.length = 1 := by
     have hplen : paramTys.length = 1 := by
       have := congrArg List.length hp
@@ -1565,11 +1565,11 @@ private theorem argsWellTyped_i64 {paramTys : List CTy} {args : List Val}
           rcases hv0 with ⟨len2, rfl⟩
           exact ⟨len2, rfl⟩
 
-private theorem argsWellTyped_u64_u64_u64 {paramTys : List CTy} {args : List Val}
+private theorem argsWellTyped_u64_u64_u64 {prog : Prog} {paramTys : List CTy} {args : List Val}
     (hp : paramTys.map CTy.unqual = [.int .u64, .int .u64, .int .u64])
-    (hawt : Zlib.Spec.ArgsWellTyped paramTys false args) :
+    (hawt : Zlib.Spec.ArgsWellTyped prog paramTys false args) :
     ∃ (a1 a2 a3 : BitVec 64), args = [.int .u64 a1, .int .u64 a2, .int .u64 a3] := by
-  rcases hawt with ⟨hlen, hval⟩
+  rcases hawt with ⟨hlen, hval, _⟩
   have hlen3 : args.length = 3 := by
     have hplen : paramTys.length = 3 := by
       have := congrArg List.length hp
@@ -1598,11 +1598,11 @@ private theorem argsWellTyped_u64_u64_u64 {paramTys : List CTy} {args : List Val
       rcases hv2 with ⟨a3, rfl⟩
       exact ⟨a1, a2, a3, rfl⟩
 
-private theorem argsWellTyped_u64_u64_i64 {paramTys : List CTy} {args : List Val}
+private theorem argsWellTyped_u64_u64_i64 {prog : Prog} {paramTys : List CTy} {args : List Val}
     (hp : paramTys.map CTy.unqual = [.int .u64, .int .u64, .int .i64])
-    (hawt : Zlib.Spec.ArgsWellTyped paramTys false args) :
+    (hawt : Zlib.Spec.ArgsWellTyped prog paramTys false args) :
     ∃ (a1 a2 len2 : BitVec 64), args = [.int .u64 a1, .int .u64 a2, .int .i64 len2] := by
-  rcases hawt with ⟨hlen, hval⟩
+  rcases hawt with ⟨hlen, hval, _⟩
   have hlen3 : args.length = 3 := by
     have hplen : paramTys.length = 3 := by
       have := congrArg List.length hp

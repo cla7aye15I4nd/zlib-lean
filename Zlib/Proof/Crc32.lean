@@ -5297,12 +5297,12 @@ theorem crc32_z_spec {prog : Prog} {gEnv : Env} {m0 : Mem} {os0 : OSState}
       dsimp only [Option.getD]
       exact joinTail hf_not hs_crc_not hs_buf_not hs_len_not hr0'
 
-private theorem argsWellTyped_u64_ptr_int {k3 : IntKind} {paramTys : List CTy} {args : List Val} {el : CTy}
+private theorem argsWellTyped_u64_ptr_int {k3 : IntKind} {prog : Prog} {paramTys : List CTy} {args : List Val} {el : CTy}
     (hp : paramTys.map CTy.unqual = [.int .u64, .ptr el, .int k3])
-    (hawt : Zlib.Spec.ArgsWellTyped paramTys false args) :
+    (hawt : Zlib.Spec.ArgsWellTyped prog paramTys false args) :
     ∃ (a : BitVec 64) (buf : Val) (len : BitVec k3.bits),
       args = [.int .u64 a, buf, .int k3 len] ∧ (buf = .null ∨ ∃ pb poff, buf = .ptr pb poff) := by
-  rcases hawt with ⟨hlen, hval⟩
+  rcases hawt with ⟨hlen, hval, _⟩
   have hlen3 : args.length = 3 := by
     have hplen : paramTys.length = 3 := by
       have := congrArg List.length hp
