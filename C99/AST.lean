@@ -120,7 +120,11 @@ def stripConst : CTy → CTy
   | .typedef n t => .typedef n t.stripConst
   | t => t
 
-def isVoid (t : CTy) : Bool := t.unqual == .void
+def isVoid (t : CTy) : Bool :=
+  match t.unqual with | .void => true | _ => false
+
+def isVaList (t : CTy) : Bool :=
+  match t.unqual with | .vaList => true | _ => false
 
 def isPtr (t : CTy) : Bool :=
   match t.unqual with

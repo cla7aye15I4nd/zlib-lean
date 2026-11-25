@@ -24,6 +24,7 @@ abbrev Env := List (String × BlockId × CTy)
 structure Prog where
   tags : TypeEnv
   globals : List (Linkage × VarDecl)
+  globalEnv : Env := []
   fns : String → Option FnDef
   fnProtos : String → Option FnSig
   fnStatics : String → Env
@@ -72,7 +73,7 @@ def cmpOrd : BinOp → Int → Int → Bool
 
 def castVal (m : Mem) (target : CTy) (v : Val) : Option Val :=
   let ut := target.unqual
-  if ut == .void then some .void
+  if ut.isVoid then some .void
   else if let some k := ut.intKind? then
     match v with
     | .int k1 bv => some (ofIntCast k (if k1.signed then bv.toInt else (bv.toNat : Int)))
@@ -264,6 +265,10 @@ def writeVal (m : Mem) (b : BlockId) (off : Int64) (ty : CTy) (v : Val) : Option
     | .null => m.writeBytes b off Mem.encodeNull
     | .fnPtr s => m.writeBytes b off (Mem.encodeFnPtr s)
     | .int _ bv => if bv.toNat == 0 then m.writeBytes b off Mem.encodeNull else none
+    | _ => none
+  | .vaList =>
+    match v with
+    | .vaList true => m.writeBytes b off (List.replicate 24 (.byte 1))
     | _ => none
   | _ => none
 
@@ -516,11 +521,11 @@ def stepExprPure (prog : Prog) (cfg : PointerConfig) (env : Env) (m : Mem) (mods
   | .eval .rval (.incDec op l) fs => some (.eval .lval l (.incDecF op :: fs), m, mods)
   | .eval .rval (.call fn args) fs => some (.eval .rval fn (.callFnF args :: fs), m, mods)
   | .eval .rval (.vaStart ap _) fs => do
-    let (b, ty) ← env.lookup ap; guard (ty.unqual == .vaList)
+    let (b, ty) ← env.lookup ap; guard ty.isVaList
     let m' ← m.writeBytes b 0 (List.replicate (sizeofTy prog.tags .vaList) (.byte 1))
     return (.ret (.rval .void .void) fs, m', mods)
   | .eval .rval (.vaEnd ap) fs => do
-    let (b, ty) ← env.lookup ap; guard (ty.unqual == .vaList)
+    let (b, ty) ← env.lookup ap; guard ty.isVaList
     let m' ← m.writeBytes b 0 (List.replicate (sizeofTy prog.tags .vaList) .undef)
     return (.ret (.rval .void .void) fs, m', mods)
   | .ret (.rval v _) (.unaryF op :: fs) => (evalUnary op v).map fun (rv, rt) => (.ret (.rval rv rt) fs, m, mods)
@@ -702,7 +707,7 @@ def pushCallParams (tags : TypeEnv) (m : Mem) (base : Nat → UInt64) :
     let sz := max 1 (sizeofTy tags p.ty); let al := max 1 (alignofTy tags p.ty); let ba := base idx
     if hsz : sz < ptrDiffLimit then if hal : 0 < al then if hba : ba.toNat % al = 0 then
       let (bid, m1) := m.alloc sz al .rw .stack ba (fun _ => .undef) hsz hal hba
-      (writeVal m1 bid 0 p.ty v).bind fun m2 =>
+      (writeVal m1 bid 0 p.ty.stripConst v).bind fun m2 =>
         pushCallParams tags m2 base (idx + 1) rest ((p.name, bid, p.ty) :: env) (bid :: blks)
     else none else none else none
 
@@ -727,7 +732,7 @@ inductive Step (prog : Prog) (cfg : PointerConfig) (ext : ExtHandler) :
       (hba : base.toNat % max 1 (alignofTy prog.tags d.ty) = 0)
       (halloc : m.alloc (max 1 (sizeofTy prog.tags d.ty))
         (max 1 (alignofTy prog.tags d.ty)) .rw .stack base (fun _ => .undef) hsz hal hba = (bid, m1))
-      (hwr : match init? with | none => m2 = m1 | some rv => ∃ r, writePlace prog.tags m1 bid 0 d.ty rv = some (r, m2)) :
+      (hwr : match init? with | none => m2 = m1 | some rv => ∃ r, writePlace prog.tags m1 bid 0 d.ty.stripConst rv = some (r, m2)) :
       Step prog cfg ext s1
         (.running (.stmt (.decls rest)) ((d.name, bid, d.ty) :: env) (bid :: blks) m2 os k)
   | localDecl_ub {s1 : RunState} {d init? rest env blks m os k}
@@ -735,14 +740,14 @@ inductive Step (prog : Prog) (cfg : PointerConfig) (ext : ExtHandler) :
       (hbad : ∀ base m1 bid m2 hsz hal hba,
         m.alloc (max 1 (sizeofTy prog.tags d.ty)) (max 1 (alignofTy prog.tags d.ty)) .rw .stack base
           (fun _ => .undef) hsz hal hba = (bid, m1) →
-        ¬ match init? with | none => m2 = m1 | some rv => ∃ r, writePlace prog.tags m1 bid 0 d.ty rv = some (r, m2)) :
+        ¬ match init? with | none => m2 = m1 | some rv => ∃ r, writePlace prog.tags m1 bid 0 d.ty.stripConst rv = some (r, m2)) :
       Step prog cfg ext s1 .ub
   | call_internal {s1 : RunState} {sym fnTy fn argVals coerced fs ctx env callEnv blks callBlks base m m' os k}
       (hd : stepDet prog cfg s1 = some (.callFn sym fnTy argVals fs ctx env blks m os k))
       (hfn : prog.fns sym = some fn)
       (hcoerce : coerceCallArgs m (fn.params.map (·.ty)) fn.variadic argVals = some coerced)
       (hpush : pushCallParams prog.tags m base 0
-        (fn.params.zip (coerced.take fn.params.length)) ((prog.fnStatics sym) ++ env) [] =
+        (fn.params.zip (coerced.take fn.params.length)) ((prog.fnStatics sym) ++ prog.globalEnv) [] =
           some (callEnv, callBlks, m')) :
       Step prog cfg ext s1
         (.running (.stmt fn.body) callEnv callBlks m' os (.callFrame env blks fn.retTy fn.body fs ctx k))
@@ -752,7 +757,7 @@ inductive Step (prog : Prog) (cfg : PointerConfig) (ext : ExtHandler) :
       (hbad : ∀ coerced base callEnv callBlks m',
         coerceCallArgs m (fn.params.map (·.ty)) fn.variadic argVals = some coerced →
         pushCallParams prog.tags m base 0
-          (fn.params.zip (coerced.take fn.params.length)) ((prog.fnStatics sym) ++ env) [] ≠
+          (fn.params.zip (coerced.take fn.params.length)) ((prog.fnStatics sym) ++ prog.globalEnv) [] ≠
             some (callEnv, callBlks, m')) :
       Step prog cfg ext s1 .ub
   | call_ext {s1 : RunState} {sym fnTy retTy paramTys variadic argVals coerced fs ctx env blks m os out k}
@@ -971,7 +976,7 @@ def initProg (tus : List TU) (globBase staticBase strBase : Nat → UInt64) (err
         return ((d.name, bid, ty) :: sE, mB, iA + 1, nB)) ([], m, idx, ns)
       initStatics idx' ns' m' ((f.name, sEnv) :: fnAcc) frest
   let (fnStaticList, m2) ← initStatics 0 ns1 m1 [] fnDefs
-  let prog := { prog0 with fnStatics := fun s => (fnStaticList.lookup s).getD [] }
+  let prog := { prog0 with globalEnv := gEnv, fnStatics := fun s => (fnStaticList.lookup s).getD [] }
   return (prog, gEnv, m2, { errnoBlk := eBid })
 
 end Sem

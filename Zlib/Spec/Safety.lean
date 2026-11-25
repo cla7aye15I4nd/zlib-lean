@@ -78,6 +78,23 @@ def SafeUserCallbacks (owned userWrite : BlockSet) (userExt : ExtHandler) : Prop
         userWrite b ∨ (m.blocks b).isNone ∨
         (¬ owned b ∧ ∃ blk, m.blocks b = some blk ∧ blk.kind = .stack))
 
+/-- C ABI well-typedness predicate for incoming arguments passed to `callState`. -/
+def ValHasCTy (ty : CTy) (v : Val) : Prop :=
+  match ty.unqual with
+  | .int k => ∃ bv, v = .int k bv
+  | .enumTy _ isU => ∃ bv, v = .int (if isU then .u32 else .i32) bv
+  | .ptr _ | .array _ _ => v = .null ∨ ∃ b off, v = .ptr b off
+  | .fnPtr _ _ _ => v = .null ∨ ∃ sym, v = .fnPtr sym
+  | .vaList => v = .vaList true
+  | .void => v = .void
+  | _ => True
+
+/-- Arity and fixed-parameter C ABI typing check for `callState` arguments. -/
+def ArgsWellTyped (paramTys : List CTy) (variadic : Bool) (args : List Val) : Prop :=
+  (if variadic then paramTys.length ≤ args.length else args.length = paramTys.length) ∧
+  ∀ i (_ : i < paramTys.length),
+    match args[i]? with | some v => ValHasCTy paramTys[i] v | none => False
+
 /-- Safety, bounded termination, frame, and leak-freedom obligations for one Verus contract `c`. -/
 def ContractSafe (prog : Prog) (gEnv : Env) (ext : ExtHandler)
     (Inv : ClientView → BlockSet → Mem → OSState → Prop)
@@ -85,6 +102,7 @@ def ContractSafe (prog : Prog) (gEnv : Env) (ext : ExtHandler)
   ∀ v owned m os args s0,
     Inv v owned m os →
     c.pre prog.tags owned v m args →
+    ArgsWellTyped c.paramTys c.variadic args →
     callState prog gEnv m os c.fnName args = some s0 →
     Safe prog zlibPointerConfig ext s0 ∧
     (os.readBudget.isSome → TerminatesSafely prog zlibPointerConfig ext s0) ∧

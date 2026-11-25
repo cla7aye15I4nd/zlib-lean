@@ -428,7 +428,7 @@ private partial def transitiveImports (env : Lean.Environment) (roots : List Lea
 
 private def checkKernelEnv : IO (Option String) := do
   Lean.initSearchPath (← Lean.findSysroot) [System.FilePath.mk ".lake/build/lib/lean"]
-  let env ← Lean.importModules #[{ module := `Zlib.Spec.Safety }] {}
+  let env ← Lean.importModules #[{ module := `Zlib.Proof }] {}
   match transitiveImports env coreTcbModules with
   | .error e => return some e
   | .ok deps =>
@@ -461,7 +461,7 @@ private def runCheckTcb : IO UInt32 := do
   let mut files : Array System.FilePath := #[]
   for folder in ["C99", "Zlib"] do
     files := files ++ (← collectLeanFiles ⟨folder⟩)
-  files := (files.qsort (·.toString < ·.toString)).push ⟨"Zlib.lean"⟩ |>.push ⟨"Main.lean"⟩
+  files := (files.qsort (·.toString < ·.toString)).push ⟨"C99/Proof.lean"⟩ |>.push ⟨"Zlib/Proof.lean"⟩ |>.push ⟨"Zlib.lean"⟩ |>.push ⟨"Main.lean"⟩
 
   let mut sorryHits : List String := []
   let mut axiomHits : List String := []
@@ -496,8 +496,12 @@ private def runCheckTcb : IO UInt32 := do
 
   let dslFiles := (← collectLeanFiles ⟨"C99/DSL"⟩).toList.filter fun p => p.toString != "C99/DSL/Contract.lean"
   let dslLoc ← dslFiles.foldlM (fun acc p => do return acc + countLines (← IO.FS.readFile p)) 0
-  let zlibFiles := (← collectLeanFiles ⟨"Zlib"⟩).toList.filter fun p => !(p.toString.startsWith "Zlib/Spec/")
+  let zlibFiles := (← collectLeanFiles ⟨"Zlib"⟩).toList.filter fun p =>
+    !(p.toString.startsWith "Zlib/Spec/") && !(p.toString.startsWith "Zlib/Proof/")
   let zlibTusLoc ← zlibFiles.foldlM (fun acc p => do return acc + countLines (← IO.FS.readFile p)) 0
+  let proofFiles := (← collectLeanFiles ⟨"C99/Proof"⟩).toList ++ (← collectLeanFiles ⟨"Zlib/Proof"⟩).toList ++
+    [⟨"C99/Proof.lean"⟩, ⟨"Zlib/Proof.lean"⟩]
+  let proofLoc ← proofFiles.foldlM (fun acc p => do return acc + countLines (← IO.FS.readFile p)) 0
 
   if coreLoc > maxCoreTcbLoc then
     IO.eprintln s!"Core TCB LOC {coreLoc} exceeds budget {maxCoreTcbLoc}"
@@ -512,6 +516,7 @@ private def runCheckTcb : IO UInt32 := do
   IO.println s!"  C-like DSL Frontend (C99/DSL/*):                      {dslLoc} LOC"
   IO.println s!"  Safety-Only Spec (Zlib/Spec/*):                       {specLoc} LOC (limit {maxSpecLoc})"
   IO.println s!"  Zlib C-like Translation Units + Headers + Tables:     {zlibTusLoc} LOC"
+  IO.println s!"  Safety Proofs (C99/Proof/*, Zlib/Proof/*):            {proofLoc} LOC"
   IO.println "  Cleanliness: 0 sorry, 0 axiom, 0 zlib identifiers in Core TCB (kernel + source verified)."
   return 0
 

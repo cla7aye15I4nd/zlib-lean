@@ -315,7 +315,7 @@ c_fn uLong ZEXPORT crc32_combine_gen(z_off_t len2)
 }
 
 c_fn uLong ZEXPORT crc32_combine_op(uLong crc1, uLong crc2, uLong op)
-  requires True;
+  requires op = 0 ∨ (op &&& 0xffffffff) ≠ 0;
   ensures  view' = view;
 {
   if (op == 0)

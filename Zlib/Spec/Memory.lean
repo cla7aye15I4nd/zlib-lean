@@ -26,9 +26,10 @@ def DisjointFrom (p : Val) (owned : BlockSet) : Prop :=
 def writes (ps : List Val) : BlockSet :=
   fun b => ∃ p ∈ ps, PtrBlock p = some b
 
-/-- Readable byte slice `[p, p + len)` in `m`. -/
+/-- Readable byte slice `[p, p + len)` in `m` with initialized bytes. -/
 def Readable (m : Mem) (p : Val) (len : Nat) : Prop :=
-  ∃ b off blk, p = .ptr b off ∧ m.blocks b = some blk ∧ Mem.inBounds blk off len = true
+  ∃ b off blk, p = .ptr b off ∧ m.blocks b = some blk ∧ Mem.inBounds blk off len = true ∧
+    ∀ i < len, ∃ byte, blk.bytes (off.toInt.toNat + i) = .byte byte
 
 /-- Writable byte slice `[p, p + len)` in `m`. -/
 def Writable (m : Mem) (p : Val) (len : Nat) : Prop :=
