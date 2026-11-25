@@ -61,8 +61,9 @@ jobs:
         with:
           name: lean-abi-sources
           path: build/abi-sources
-      - name: Cache OPAM switch with CompCert
-        uses: actions/cache@v4
+      - name: Restore OPAM switch with CompCert
+        id: compcert-cache
+        uses: actions/cache/restore@v4
         with:
           path: /home/coq/.opam
           key: compcert-coq-8.20-v2
@@ -76,6 +77,12 @@ jobs:
             opam install -y -j "$(nproc)" coq-compcert
           fi
           ccomp -version || ccomp --version
+      - name: Save OPAM switch with CompCert
+        if: steps.compcert-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /home/coq/.opam
+          key: compcert-coq-8.20-v2
       - name: Verify 15/15 byte-for-byte archive equality with CompCert
         run: |
           eval "$(opam env --root=/home/coq/.opam --set-root)"

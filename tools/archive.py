@@ -50,7 +50,7 @@ def prepare_inputs(work, *, pinned=False, compcert=False, lean_dir=None):
         ranlib = shlex.split(os.environ.get("RANLIB", "ranlib -D"))
         version = _compiler_version(cc)
         target = output(["uname", "-m"]) + "-unknown-linux-gnu"
-        cflags = "-O -DNDEBUG -fstruct-passing -fbitfields"
+        cflags = "-O -DNDEBUG -fstruct-passing -fbitfields -D_POSIX_C_SOURCE=200809L"
     else:
         cc = shlex.split(os.environ.get("CC", "clang"))
         ar = shlex.split(os.environ.get("AR", "llvm-ar"))
@@ -109,24 +109,32 @@ def compare(work, *, pinned=False, compcert=False, lean_dir=None):
     expected = output([*ar, "t", reference / "libz.a"]).splitlines()
     if not expected or len(expected) != len(set(expected)):
         raise ValueError("unexpected reference archive layout")
+    compile_errors = []
     for source in sorted(lean.glob("*.c")):
-        subprocess.run(
+        proc = subprocess.run(
             [*cc, *flags, "-c", source.name, "-o", source.stem + ".o"],
             cwd=lean,
             env=env,
-            check=True,
+            text=True,
+            capture_output=True,
         )
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+            compile_errors.append((source.name, err))
     available = {p.name for p in lean.glob("*.o")}
     unexpected = sorted(available - set(expected))
     present = [n for n in expected if n in available]
     missing = [n for n in expected if n not in available]
     name = "libz.partial.a" if missing or unexpected else "libz.a"
     archive = lean / name
-    subprocess.run([*ar, "rcsD", name, *present, *unexpected], cwd=lean, env=env, check=True)
-    subprocess.run([*ranlib, name], cwd=lean, env=env, check=True)
-
     reference_bytes = (reference / "libz.a").read_bytes()
-    candidate_bytes = archive.read_bytes()
+    if not compile_errors:
+        subprocess.run([*ar, "rcsD", name, *present, *unexpected], cwd=lean, env=env, check=True)
+        subprocess.run([*ranlib, name], cwd=lean, env=env, check=True)
+        candidate_bytes = archive.read_bytes()
+    else:
+        candidate_bytes = b""
+
     objects = {}
     diffs = []
     for member in present:
@@ -142,7 +150,8 @@ def compare(work, *, pinned=False, compcert=False, lean_dir=None):
             diffs.append((member, len(original), len(generated)))
 
     equal = (
-        not missing
+        not compile_errors
+        and not missing
         and not unexpected
         and all(obj["equal"] for obj in objects.values())
         and candidate_bytes == reference_bytes
@@ -161,6 +170,7 @@ def compare(work, *, pinned=False, compcert=False, lean_dir=None):
         "lean": "lean/" + name,
         "lean_sha256": sha(candidate_bytes),
         "objects": objects,
+        "compile_errors": compile_errors,
         "missing": missing,
         "unexpected": unexpected,
         "archive_equal": equal,
@@ -168,6 +178,8 @@ def compare(work, *, pinned=False, compcert=False, lean_dir=None):
     (work / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     count = sum(item["equal"] for item in objects.values())
     print(f"[{report['compiler_kind']}] {count}/{len(expected)} objects byte-identical; archive equal: {equal}")
+    for src_name, err in compile_errors:
+        print(f"  COMPILE ERROR {src_name}: {err}")
     for member, rlen, llen in diffs:
         print(f"  DIFF {member}: reference={rlen} bytes, lean={llen} bytes")
     print(work / "report.json")
