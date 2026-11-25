@@ -50,30 +50,30 @@ c_fn int ZEXPORT inflateBackInit_(z_streamp strm, int windowBits,
   return Z_OK;
 }
 
-c_stmt_macro LOAD() := {
+c_stmt_macro LOAD() := do {
   put = strm->next_out;
   left = strm->avail_out;
   next = strm->next_in;
   have = strm->avail_in;
   hold = state->hold;
   bits = state->bits;
-}
+} while (0);
 
-c_stmt_macro RESTORE() := {
+c_stmt_macro RESTORE() := do {
   strm->next_out = put;
   strm->avail_out = left;
   strm->next_in = next;
   strm->avail_in = have;
   state->hold = hold;
   state->bits = bits;
-}
+} while (0);
 
-c_stmt_macro INITBITS() := {
+c_stmt_macro INITBITS() := do {
   hold = 0;
   bits = 0;
-}
+} while (0);
 
-c_stmt_macro PULL() := {
+c_stmt_macro PULL() := do {
   if (have == 0) {
     have = in(in_desc, &next);
     if (have == 0) {
@@ -82,33 +82,33 @@ c_stmt_macro PULL() := {
       goto inf_leave;
     }
   }
-}
+} while (0);
 
-c_stmt_macro PULLBYTE() := {
+c_stmt_macro PULLBYTE() := do {
   PULL();
   have.-;
   hold += (unsigned long)(*next++) << bits;
   bits += 8;
-}
+} while (0);
 
-c_stmt_macro NEEDBITS(n) := {
+c_stmt_macro NEEDBITS(n) := do {
   while (bits < (unsigned)(n))
     PULLBYTE();
-}
+} while (0);
 
 c_macro BITS(n) := ((unsigned)hold & ((1U << (n)) - 1))
 
-c_stmt_macro DROPBITS(n) := {
+c_stmt_macro DROPBITS(n) := do {
   hold >>= (n);
   bits -= (unsigned)(n);
-}
+} while (0);
 
-c_stmt_macro BYTEBITS() := {
+c_stmt_macro BYTEBITS() := do {
   hold >>= bits & 7;
   bits -= bits & 7;
-}
+} while (0);
 
-c_stmt_macro ROOM() := {
+c_stmt_macro ROOM() := do {
   if (left == 0) {
     put = state->window;
     left = state->wsize;
@@ -118,7 +118,7 @@ c_stmt_macro ROOM() := {
       goto inf_leave;
     }
   }
-}
+} while (0);
 
 c_fn int ZEXPORT inflateBack(z_streamp strm, in_func in, void FAR *in_desc,
                              out_func out, void FAR *out_desc)

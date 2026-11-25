@@ -321,6 +321,17 @@ EOF
   echo "[$compiler_kind] $eq_count/$total objects byte-identical; archive equal: $arch_eq"
   [ -z "$compile_err_log" ] || printf '%s' "$compile_err_log"
   [ -z "$diffs" ] || printf '%s' "$diffs"
+  if [ -n "$diffs" ] && command -v objdump >/dev/null 2>&1; then
+    for m in $expected; do
+      if [ -f "$lean_work/$m" ] && ! cmp -s "$ref_work/$m" "$lean_work/$m"; then
+        echo "  --- objdump diff: $m ---"
+        if objdump -d "$ref_work/$m" > "$work/ref.asm" 2>/dev/null &&
+           objdump -d "$lean_work/$m" > "$work/lean.asm" 2>/dev/null; then
+          diff -u "$work/ref.asm" "$work/lean.asm" | head -n 60 || true
+        fi
+      fi
+    done
+  fi
   echo "$work/report.json"
   [ "$arch_eq" = "true" ]
 }

@@ -181,7 +181,7 @@ c_define_const OS_CODE := 19
 -- Utility globals, prototypes, and macros
 c_var extern z_const char * const z_errmsg[10];
 c_macro ERR_MSG(err) := z_errmsg[(err) < -6 || (err) > 2 ? 9 : 2 - (err)]
-c_stmt_macro ERR_RETURN(strm, err) := { (strm)->msg = ERR_MSG(err); return (err); }
+c_stmt_macro ERR_RETURN(strm, err) := return ((strm)->msg = ERR_MSG(err), (err));
 
 c_define zmemcpy := memcpy
 c_define zmemcmp := memcmp

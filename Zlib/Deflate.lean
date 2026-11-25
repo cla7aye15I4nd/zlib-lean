@@ -60,11 +60,11 @@ c_macro UPDATE_HASH(s, h, c) := (h = (((h) << s->hash_shift) ^ (c)) & s->hash_ma
 
 c_macro INSERT_STRING(s, str, match_head) := (UPDATE_HASH(s, s->ins_h, s->window[(str) + (MIN_MATCH - 1)]), match_head = s->prev[(str) & s->w_mask] = s->head[s->ins_h], s->head[s->ins_h] = (Pos)(str))
 
-c_stmt_macro CLEAR_HASH(s) := {
+c_stmt_macro CLEAR_HASH(s) := do {
   s->head[s->hash_size - 1] = NIL;
   zmemzero(s->head, (unsigned)(s->hash_size - 1) * sizeof(*(s->head)));
   s->slid = 0;
-}
+} while (0);
 
 c_fn local void slide_hash(deflate_state *s) {
   unsigned n, m;
@@ -686,11 +686,11 @@ c_fn local void flush_pending(z_streamp strm) {
   }
 }
 
-c_stmt_macro HCRC_UPDATE(beg) := {
+c_stmt_macro HCRC_UPDATE(beg) := do {
   if (s->gzhead->hcrc && s->pending > (beg))
     strm->adler = crc32_z(strm->adler, s->pending_buf + (beg),
                           s->pending - (beg));
-}
+} while (0);
 
 c_fn int ZEXPORT deflate(z_streamp strm, int flush)
   requires StreamReady tags owned view m strm .deflate;

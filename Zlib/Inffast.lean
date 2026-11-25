@@ -21,6 +21,8 @@ c_fn local Z_U8 load64(z_const unsigned char FAR *p) {
     zmemcpy(&v, p, 8);
     return v;
   }
+  zmemcpy(&v, p, 8);
+  return __builtin_bswap64(v);
   return (Z_U8)p[0] | ((Z_U8)p[1] << 8) | ((Z_U8)p[2] << 16) |
          ((Z_U8)p[3] << 24) | ((Z_U8)p[4] << 32) | ((Z_U8)p[5] << 40) |
          ((Z_U8)p[6] << 48) | ((Z_U8)p[7] << 56);
