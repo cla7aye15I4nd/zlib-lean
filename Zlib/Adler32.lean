@@ -27,8 +27,8 @@ c_stmt_macro MOD28(a) := a %= BASE;
 c_stmt_macro MOD63(a) := a %= BASE;
 
 c_fn uLong ZEXPORT adler32_z(uLong adler, const Bytef *buf, z_size_t len)
-  requires (len.toNat = 1 → Readable m buf 1) ∧ (len.toNat ≠ 1 → buf = .null ∨ len.toNat = 0 ∨ Readable m buf len.toNat);
-  ensures  view' = view;
+  requires (len == 1 ==> readable(buf, 1)) && (len != 1 ==> buf == NULL || len == 0 || readable(buf, len));
+  ensures  view' == view;
 {
   unsigned long sum2;
   unsigned n;
@@ -89,8 +89,8 @@ c_fn uLong ZEXPORT adler32_z(uLong adler, const Bytef *buf, z_size_t len)
 }
 
 c_fn uLong ZEXPORT adler32(uLong adler, const Bytef *buf, uInt len)
-  requires (len.toNat = 1 → Readable m buf 1) ∧ (len.toNat ≠ 1 → buf = .null ∨ len.toNat = 0 ∨ Readable m buf len.toNat);
-  ensures  view' = view;
+  requires (len == 1 ==> readable(buf, 1)) && (len != 1 ==> buf == NULL || len == 0 || readable(buf, len));
+  ensures  view' == view;
 {
   return adler32_z(adler, buf, len);
 }
@@ -118,15 +118,15 @@ c_fn local uLong adler32_combine_(uLong adler1, uLong adler2, z_off64_t len2) {
 }
 
 c_fn uLong ZEXPORT adler32_combine(uLong adler1, uLong adler2, z_off_t len2)
-  requires True;
-  ensures  view' = view;
+  requires true;
+  ensures  view' == view;
 {
   return adler32_combine_(adler1, adler2, len2);
 }
 
 c_fn uLong ZEXPORT adler32_combine64(uLong adler1, uLong adler2, z_off64_t len2)
-  requires True;
-  ensures  view' = view;
+  requires true;
+  ensures  view' == view;
 {
   return adler32_combine_(adler1, adler2, len2);
 }

@@ -14,9 +14,9 @@ c_tu_begin gzcloseTU "gzclose.c"
 c_include_local "abi_gz.h"
 
 c_fn int ZEXPORT gzclose(gzFile file)
-  requires GzReady view file;
-  modifies writes [file];
-  ensures  view' = view.closeGz file m';
+  requires gz_ready(file);
+  modifies file;
+  ensures  view' == view.closeGz(file, m');
 {
   gz_statep state;
 

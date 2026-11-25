@@ -992,6 +992,811 @@ def elabCSpecView : CommandElab := fun stx => do
   let viewName ← liftCoreM <| realizeGlobalConstNoOverloadWithInfo stx[1]
   modifyEnv fun env => pushScopeData env { specView := some viewName }
 
+@[command_elab cSpecLibCmd]
+def elabCSpecLib : CommandElab := fun stx => do
+  modifyEnv fun env => pushScopeData env { specLib := some stx[1].getId }
+
+private def validSpecCtxArgs : List String :=
+  ["tags", "owned", "view", "m", "m'", "view'", "ret"]
+
+@[command_elab cSpecPredCmd]
+def elabCSpecPred : CommandElab := fun stx => do
+  let predName := stx[1].getId.toString
+  let ctxArgs := stx[3].getSepArgs.toList.map (·.getId.toString)
+  for a in ctxArgs do
+    if !validSpecCtxArgs.contains a then
+      throwErrorAt stx[3] "invalid spec context argument `{a}`; expected one of {validSpecCtxArgs}"
+  let constName ← liftCoreM <| realizeGlobalConstNoOverloadWithInfo stx[6]
+  modifyEnv fun env => pushScopeData env { specPreds := [(predName, ctxArgs, constName)] }
+
+@[command_elab cSpecConstCmd]
+def elabCSpecConst : CommandElab := fun stx => do
+  let aliasName := stx[1].getId.toString
+  let constName ← liftCoreM <| realizeGlobalConstNoOverloadWithInfo stx[3]
+  modifyEnv fun env => pushScopeData env { specConsts := [(aliasName, constName)] }
+
+/-! ## C-Style Spec Elaborator (`c_spec`) -/
+
+private inductive SpecValTy where
+  | sint (k : IntKind)
+  | uint (k : IntKind)
+  | nat
+  | lit
+  | bool
+  | ptr (pointee : CTy)
+  | fnPtr
+  | val
+  | other
+  deriving Inhabited
+
+private def SpecValTy.isNumericLike : SpecValTy → Bool
+  | .sint _ | .uint _ | .nat | .lit => true
+  | _ => false
+
+private def shouldUseNatCmp (lTy rTy : SpecValTy) : Bool :=
+  lTy.isNumericLike && rTy.isNumericLike &&
+  match lTy, rTy with
+  | .nat, _ | _, .nat => true
+  | .sint _, _ | _, .sint _ => false
+  | .uint _, _ | _, .uint _ => true
+  | _, _ => false
+
+private def combineSpecArithTy (lTy rTy : SpecValTy) : SpecValTy :=
+  match lTy, rTy with
+  | .nat, _ | _, .nat => .nat
+  | .sint k, _ | _, .sint k => .sint k
+  | .uint k, _ | _, .uint k => .uint k
+  | .lit, .lit => .lit
+  | _, _ => .other
+
+private def classifyCTy (t : CTy) : SpecValTy :=
+  match t.intKind? with
+  | some k => if k.signed then .sint k else .uint k
+  | none =>
+    match t.unqual with
+    | .ptr inner => .ptr inner
+    | .array inner _ => .ptr inner
+    | .fnPtr .. => .fnPtr
+    | _ => .val
+
+private partial def ctyToTerm (ty : CTy) : CommandElabM Term := do
+  match ty.unqual with
+  | .void => `(term| C99.CTy.void)
+  | .int k =>
+    let kId := mkIdent (intKindCtorName k)
+    `(term| C99.CTy.int $kId)
+  | .ptr inner =>
+    let innerT ← ctyToTerm inner
+    `(term| C99.CTy.ptr $innerT)
+  | .structTy tag =>
+    let s := Syntax.mkStrLit tag
+    `(term| C99.CTy.structTy $s)
+  | .unionTy tag =>
+    let s := Syntax.mkStrLit tag
+    `(term| C99.CTy.unionTy $s)
+  | .enumTy tag isU =>
+    let s := Syntax.mkStrLit tag
+    let uId := mkIdent (if isU then ``Bool.true else ``Bool.false)
+    `(term| C99.CTy.enumTy $s $uId)
+  | .vaList => `(term| C99.CTy.vaList)
+  | .array elem len? =>
+    let elT ← ctyToTerm elem
+    match len? with
+    | none => `(term| C99.CTy.array $elT Option.none)
+    | some n =>
+      let nLit := Syntax.mkNumLit (toString n)
+      `(term| C99.CTy.array $elT (Option.some $nLit))
+  | .fnPtr r ps v =>
+    let rT ← ctyToTerm r
+    let psT ← ps.mapM ctyToTerm
+    let psArr := psT.toArray
+    let vId := mkIdent (if v then ``Bool.true else ``Bool.false)
+    `(term| C99.CTy.fnPtr $rT [$psArr,*] $vId)
+  | _ => throwError "unsupported pointee C type in spec"
+
+private inductive UnivRead where
+  | field (key : String) (readFn : Term) (memId : Ident) (pTerm : Term)
+      (tag fld : String) (varId : Ident) (ty : SpecValTy)
+  | strlen (key : String) (memId : Ident) (pTerm : Term) (bId oId lenId : Ident)
+  deriving Inhabited
+
+private def UnivRead.key : UnivRead → String
+  | .field k .. => k
+  | .strlen k .. => k
+
+private def UnivRead.boundEntry : UnivRead → String × Ident × SpecValTy
+  | .field k _ _ _ _ _ vId ty => (k, vId, ty)
+  | .strlen k _ _ _ _ lId => (k, lId, .nat)
+
+private structure ExistRead where
+  key : String
+  ptrName? : Option String
+  readTerm : Term
+  varId : Ident
+  deriving Inhabited
+
+private structure SpecState where
+  existReads : Array ExistRead := #[]
+  univReads : Array UnivRead := #[]
+  deriving Inhabited
+
+private structure SpecCtx where
+  env : Environment
+  libNs? : Option Name
+  tagsId : Ident
+  ownedId : Ident
+  viewId : Ident
+  view'Id : Ident
+  mId : Ident
+  m'Id : Ident
+  memId : Ident
+  retId : Ident
+  varTys : List (String × SpecValTy)
+  boundUniv : List (String × Ident × SpecValTy) := []
+
+private partial def stxShapeKey : Syntax → String
+  | .ident _ _ n _ => s!"I({n})"
+  | .atom _ s => s!"A({s})"
+  | .node _ k args => s!"N({k}:{(args.map stxShapeKey).toList |> String.intercalate ","})"
+  | .missing => "M"
+
+private def freshSpecId (pfx : String) : CommandElabM Ident :=
+  mkIdent <$> MonadQuotation.addMacroScope (Name.mkSimple pfx)
+
+private def requireSpecLibFn (ctx : SpecCtx) (stx : Syntax) (fnName : String) :
+    CommandElabM Term := do
+  let some ns := ctx.libNs?
+    | throwErrorAt stx "spec primitive `{fnName}` requires `c_spec_lib <Namespace>` in scope"
+  return mkIdent (ns ++ Name.mkSimple fnName)
+
+private def specCtxArgIdent (ctx : SpecCtx) : String → Ident
+  | "tags" => ctx.tagsId
+  | "owned" => ctx.ownedId
+  | "view" => ctx.viewId
+  | "m" => ctx.mId
+  | "m'" => ctx.m'Id
+  | "view'" => ctx.view'Id
+  | _ => ctx.retId
+
+private def specCtxArgTerm (ctx : SpecCtx) (s : String) : Term :=
+  specCtxArgIdent ctx s
+
+private def wrapExist (reads : List ExistRead) (body : Term) : CommandElabM Term :=
+  reads.foldrM (fun r acc =>
+    let vId := r.varId
+    let rd := r.readTerm
+    `(term| ∃ $vId:ident, $rd = Option.some $vId ∧ ($acc))) body
+
+private def wrapUniv (ctx : SpecCtx) (reads : List UnivRead) (body : Term) : CommandElabM Term :=
+  reads.foldrM (fun r acc => match r with
+    | .field _ readFn memId pTerm tag fld vId _ =>
+      let tagLit := Syntax.mkStrLit tag
+      let fldLit := Syntax.mkStrLit fld
+      `(term| ∀ $vId:ident, $readFn $ctx.tagsId $memId $pTerm $tagLit $fldLit = Option.some $vId → ($acc))
+    | .strlen _ memId pTerm bId oId lenId =>
+      `(term| ∀ $bId:ident $oId:ident $lenId:ident, $pTerm = C99.Val.ptr $bId $oId → ($memId).strlenAt $bId $oId = Option.some $lenId → ($acc))) body
+
+private partial def stripSpecParens (stx : Syntax) : Syntax :=
+  if stx.getKind == ``cSpecParen then stripSpecParens stx[1]! else stx
+
+private def varNameOfSpec? (stx : Syntax) : Option String :=
+  let s := stripSpecParens stx
+  if s.getKind == ``cSpecVar then some s[0]!.getId.toString else none
+
+private partial def nullGuardPtr? (stx : Syntax) : Option String :=
+  let s := stripSpecParens stx
+  if s.getKind == ``cSpecEq then
+    match varNameOfSpec? s[0]!, varNameOfSpec? s[2]! with
+    | some p, some "NULL" => some p
+    | some "NULL", some p => some p
+    | _, _ => none
+  else none
+
+private partial def nonNullGuardPtrs (stx : Syntax) : List String :=
+  let s := stripSpecParens stx
+  if s.getKind == ``cSpecAnd then
+    nonNullGuardPtrs s[0]! ++ nonNullGuardPtrs s[2]!
+  else if s.getKind == ``cSpecNe then
+    match varNameOfSpec? s[0]!, varNameOfSpec? s[2]! with
+    | some p, some "NULL" => [p]
+    | some "NULL", some p => [p]
+    | _, _ => []
+  else []
+
+private def lookupTagFieldTy? (env : Environment) (tag fld : String) : Option CTy := do
+  let flds ← match lookupTag? env tag with
+    | some (.structDef flds) | some (.unionDef flds) => some flds
+    | _ => none
+  flds.lookup fld
+
+private def resolveSpecArrowTarget (ctx : SpecCtx) (stx : Syntax) (pTy : SpecValTy) (fld : String) :
+    CommandElabM (String × CTy) := do
+  let .ptr inner := pTy
+    | throwErrorAt stx "spec `->` expects pointer target before field `{fld}`"
+  let tag ← match inner.unqual with
+    | .structTy t | .unionTy t => pure t
+    | _ => throwErrorAt stx "spec `->` requires struct/union pointer"
+  let some fldTy := lookupTagFieldTy? ctx.env tag fld
+    | throwErrorAt stx "unknown field `{fld}` on `struct {tag}`"
+  return (tag, fldTy)
+
+private def isPropLevelNode (stx : Syntax) : Bool :=
+  let s := stripSpecParens stx
+  let k := s.getKind
+  k == ``cSpecAnd || k == ``cSpecOr || k == ``cSpecImp || k == ``cSpecForall ||
+  k == ``cSpecForallIn || k == ``cSpecExists || k == ``cSpecLet || k == ``cSpecEq ||
+  k == ``cSpecNe || k == ``cSpecLt || k == ``cSpecLe || k == ``cSpecGt || k == ``cSpecGe
+
+mutual
+private partial def elabSpecExpr (ctx : SpecCtx) (stx : Syntax) (st : SpecState) :
+    CommandElabM ((Term × SpecValTy × Bool) × SpecState) := do
+  let k := stx.getKind
+  let args := stx.getArgs
+  if k == ``cSpecLean then
+    return ((⟨args[2]!⟩, .other, false), st)
+  else if k == ``cSpecNum then
+    return ((⟨args[0]!⟩, .lit, false), st)
+  else if k == ``cSpecParen then
+    let ((t, ty, bit), st1) ← elabSpecExpr ctx args[1]! st
+    return (((← `(term| ($t))), ty, bit), st1)
+  else if k == ``cSpecVar then
+    let nm := args[0]!.getId.toString
+    if nm == "NULL" then
+      return (((← `(term| C99.Val.null)), .val, false), st)
+    else if nm == "true" then
+      return ((mkIdent ``Bool.true, .bool, false), st)
+    else if nm == "false" then
+      return ((mkIdent ``Bool.false, .bool, false), st)
+    else if let some ty := ctx.varTys.lookup nm then
+      return ((mkIdent (Name.mkSimple nm), ty, false), st)
+    else if let some cname := lookupSpecConst? ctx.env nm then
+      return ((mkIdent cname, .other, false), st)
+    else if let some cval := lookupConst? ctx.env nm then
+      let t ← if cval < 0 then
+          let nLit := Syntax.mkNumLit (toString (-cval))
+          `(term| -$nLit)
+        else
+          pure (Syntax.mkNumLit (toString cval))
+      return ((t, .lit, false), st)
+    else
+      throwErrorAt stx "unknown identifier `{nm}` in C spec"
+  else if k == ``cSpecCast then
+    let expTy ← liftCoreM <| expandCMacros ctx.env [] 64 args[1]!
+    let castTy ← elabTyExpanded ctx.env expTy
+    let ((t, _, bit), st1) ← elabSpecExpr ctx args[3]! st
+    return ((t, classifyCTy castTy, bit), st1)
+  else if k == ``cSpecDeref then
+    let pStx := args[1]!
+    let ((pTerm, pTy, _), st1) ← elabSpecExpr ctx pStx st
+    let .ptr inner := pTy
+      | throwErrorAt stx "spec `*` requires a pointer operand"
+    if inner.unqual != .int .u64 then
+      throwErrorAt stx "spec `*` currently supports 64-bit integer pointers (`uint64`/`z_size_t`/`uLong`)"
+    let readFn ← requireSpecLibFn ctx stx "readU64?"
+    let key := "u64:" ++ stxShapeKey pTerm.raw
+    match st1.existReads.find? (·.key == key) with
+    | some er =>
+      return ((mkIdent er.varId.getId, .nat, false), st1)
+    | none =>
+      let vId ← freshSpecId "__val"
+      let readTerm ← `(term| $readFn $ctx.memId $pTerm)
+      let er : ExistRead := { key, ptrName? := varNameOfSpec? pStx, readTerm, varId := vId }
+      return ((mkIdent vId.getId, .nat, false), { st1 with existReads := st1.existReads.push er })
+  else if k == ``cSpecArrow then
+    let pStx := args[0]!
+    let fld := args[2]!.getId.toString
+    let ((pTerm, pTy, _), st1) ← elabSpecExpr ctx pStx st
+    let (tag, fldTy) ← resolveSpecArrowTarget ctx stx pTy fld
+    let isNat := fldTy.intKind?.isSome
+    let resTy := if isNat then .nat else classifyCTy fldTy
+    let key := s!"fld:{tag}.{fld}:{stxShapeKey pTerm.raw}"
+    if let some (_, vId, ty) := ctx.boundUniv.find? (·.1 == key) then
+      return ((mkIdent vId.getId, ty, false), st1)
+    if let some ur := st1.univReads.find? (·.key == key) then
+      let (_, vId, ty) := ur.boundEntry
+      return ((mkIdent vId.getId, ty, false), st1)
+    let readFn ← requireSpecLibFn ctx stx (if isNat then "readNatField?" else "readField?")
+    let vId ← freshSpecId s!"__{fld}"
+    let ur := UnivRead.field key readFn ctx.memId pTerm tag fld vId resTy
+    return ((mkIdent vId.getId, resTy, false), { st1 with univReads := st1.univReads.push ur })
+  else if k == ``cSpecField then
+    let ((rTerm, _, _), st1) ← elabSpecExpr ctx args[0]! st
+    let fldId := mkIdent (Name.mkSimple args[2]!.getId.toString)
+    return (((← `(term| ($rTerm).$fldId)), .other, false), st1)
+  else if k == ``cSpecApp then
+    let fnStx := stripSpecParens args[0]!
+    let argStxs := args[2]!.getSepArgs
+    if fnStx.getKind == ``cSpecVar then
+      let fnName := fnStx[0]!.getId.toString
+      if fnName == "block" then
+        if argStxs.size != 1 then throwErrorAt stx "`block(...)` takes 1 argument"
+        let ((pT, _, _), st1) ← elabSpecExpr ctx argStxs[0]! st
+        let ptrBlkFn ← requireSpecLibFn ctx stx "PtrBlock"
+        return (((← `(term| $ptrBlkFn $pT)), .other, false), st1)
+      else if fnName == "strlen" then
+        if argStxs.size != 1 then throwErrorAt stx "`strlen(...)` takes 1 argument"
+        let ((pT, _, _), st1) ← elabSpecExpr ctx argStxs[0]! st
+        let key := "strlen:" ++ stxShapeKey pT.raw
+        if let some (_, lenId, _) := ctx.boundUniv.find? (·.1 == key) then
+          return ((mkIdent lenId.getId, .nat, false), st1)
+        if let some ur := st1.univReads.find? (·.key == key) then
+          let (_, lenId, _) := ur.boundEntry
+          return ((mkIdent lenId.getId, .nat, false), st1)
+        let bId ← freshSpecId "__b"
+        let oId ← freshSpecId "__o"
+        let lenId ← freshSpecId "__len"
+        let ur := UnivRead.strlen key ctx.memId pT bId oId lenId
+        return ((mkIdent lenId.getId, .nat, false), { st1 with univReads := st1.univReads.push ur })
+      else if let some (ctxArgs, cName) := lookupSpecPred? ctx.env fnName then
+        let mut curSt := st
+        let mut argTerms : Array Term := ctxArgs.toArray.map (specCtxArgTerm ctx)
+        for a in argStxs do
+          let ((at_, _, _), nxt) ← elabSpecExpr ctx a curSt
+          argTerms := argTerms.push at_
+          curSt := nxt
+        let fnId := mkIdent cName
+        return (((← `(term| $fnId $argTerms*)), .other, false), curSt)
+      else
+        throwErrorAt stx "unknown function `{fnName}` in C spec expression"
+    else if fnStx.getKind == ``cSpecField then
+      let ((rT, _, _), st1) ← elabSpecExpr ctx fnStx[0]! st
+      let methId := mkIdent (Name.mkSimple fnStx[2]!.getId.toString)
+      let mut curSt := st1
+      let mut argTerms : Array Term := #[]
+      for a in argStxs do
+        let ((at_, _, _), nxt) ← elabSpecExpr ctx a curSt
+        argTerms := argTerms.push at_
+        curSt := nxt
+      return (((← `(term| ($rT).$methId $argTerms*)), .other, false), curSt)
+    else
+      throwErrorAt stx "unsupported call target in C spec expression"
+  else if k == ``cSpecNeg then
+    let ((t, ty, bit), st1) ← elabSpecExpr ctx args[1]! st
+    return (((← `(term| -$t)), ty, bit), st1)
+  else if k == ``cSpecBitNot then
+    let ((t, ty, _), st1) ← elabSpecExpr ctx args[1]! st
+    return (((← `(term| ~~~($t))), ty, true), st1)
+  else if k == ``cSpecCond then
+    let (cTerm, st1) ← elabSpecBool ctx args[0]! st
+    let ((tTerm, tTy, tBit), st2) ← elabSpecExpr ctx args[2]! st1
+    let ((fTerm, _, fBit), st3) ← elabSpecExpr ctx args[4]! st2
+    return (((← `(term| (if $cTerm then $tTerm else $fTerm))), tTy, tBit || fBit), st3)
+  else if k == ``cSpecMul || k == ``cSpecDiv || k == ``cSpecMod || k == ``cSpecAdd ||
+          k == ``cSpecSub || k == ``cSpecShl || k == ``cSpecShr ||
+          k == ``cSpecBitAnd || k == ``cSpecBitXor || k == ``cSpecBitOr then
+    let ((lt, lTy, lBit), st1) ← elabSpecExpr ctx args[0]! st
+    let ((rt, rTy, rBit), st2) ← elabSpecExpr ctx args[2]! st1
+    let resTy := combineSpecArithTy lTy rTy
+    let t ←
+      if k == ``cSpecMul then `(term| ($lt * $rt))
+      else if k == ``cSpecDiv then `(term| ($lt / $rt))
+      else if k == ``cSpecMod then `(term| ($lt % $rt))
+      else if k == ``cSpecAdd then `(term| ($lt + $rt))
+      else if k == ``cSpecSub then `(term| ($lt - $rt))
+      else if k == ``cSpecShl then `(term| ($lt <<< $rt))
+      else if k == ``cSpecShr then `(term| ($lt >>> $rt))
+      else if k == ``cSpecBitAnd then `(term| ($lt &&& $rt))
+      else if k == ``cSpecBitXor then `(term| ($lt ^^^ $rt))
+      else `(term| ($lt ||| $rt))
+    let isBit := lBit || rBit || k == ``cSpecBitAnd || k == ``cSpecBitXor || k == ``cSpecBitOr
+    return ((t, resTy, isBit), st2)
+  else
+    throwErrorAt stx "unsupported C spec expression `{k}`"
+
+private partial def elabSpecNat (ctx : SpecCtx) (stx : Syntax) (st : SpecState) :
+    CommandElabM (Term × SpecState) := do
+  let k := stx.getKind
+  let args := stx.getArgs
+  if k == ``cSpecNum then
+    return (⟨args[0]!⟩, st)
+  else if k == ``cSpecParen then
+    let (t, st1) ← elabSpecNat ctx args[1]! st
+    return ((← `(term| ($t))), st1)
+  else if k == ``cSpecMul || k == ``cSpecDiv || k == ``cSpecMod || k == ``cSpecAdd ||
+          k == ``cSpecSub || k == ``cSpecShl || k == ``cSpecShr then
+    let (lt, st1) ← elabSpecNat ctx args[0]! st
+    let (rt, st2) ← elabSpecNat ctx args[2]! st1
+    let t ←
+      if k == ``cSpecMul then `(term| ($lt * $rt))
+      else if k == ``cSpecDiv then `(term| ($lt / $rt))
+      else if k == ``cSpecMod then `(term| ($lt % $rt))
+      else if k == ``cSpecAdd then `(term| ($lt + $rt))
+      else if k == ``cSpecSub then `(term| ($lt - $rt))
+      else if k == ``cSpecShl then `(term| ($lt <<< $rt))
+      else `(term| ($lt >>> $rt))
+    return (t, st2)
+  else
+    let ((t, ty, _), st1) ← elabSpecExpr ctx stx st
+    let natT ← match ty with
+      | .nat | .lit => pure t
+      | .uint _ => `(term| ($t).toNat)
+      | .sint _ => `(term| ($t).toNatClampNeg)
+      | _ => pure t
+    return (natT, st1)
+
+private partial def elabSpecCmp (ctx : SpecCtx) (isBool : Bool) (stx : Syntax) (st : SpecState) :
+    CommandElabM (Term × SpecState) := do
+  let k := stx.getKind
+  let lStx := stx[0]!
+  let rStx := stx[2]!
+  let ((lt, lTy, lBit), stL) ← elabSpecExpr ctx lStx st
+  let ((rt, rTy, rBit), stLR) ← elabSpecExpr ctx rStx stL
+  let (lhs, rhs, stOut) ←
+    if !lBit && !rBit && shouldUseNatCmp lTy rTy then
+      let (ln, s1) ← elabSpecNat ctx lStx st
+      let (rn, s2) ← elabSpecNat ctx rStx s1
+      pure (ln, rn, s2)
+    else
+      pure (lt, rt, stLR)
+  if isBool then
+    let b ←
+      if k == ``cSpecEq then `(term| ($lhs == $rhs))
+      else if k == ``cSpecNe then `(term| ($lhs != $rhs))
+      else if k == ``cSpecLt then `(term| decide ($lhs < $rhs))
+      else if k == ``cSpecLe then `(term| decide ($lhs ≤ $rhs))
+      else if k == ``cSpecGt then `(term| decide ($lhs > $rhs))
+      else `(term| decide ($lhs ≥ $rhs))
+    return (b, stOut)
+  else
+    let p ←
+      if k == ``cSpecEq then `(term| $lhs = $rhs)
+      else if k == ``cSpecNe then `(term| $lhs ≠ $rhs)
+      else if k == ``cSpecLt then `(term| $lhs < $rhs)
+      else if k == ``cSpecLe then `(term| $lhs ≤ $rhs)
+      else if k == ``cSpecGt then `(term| $lhs > $rhs)
+      else `(term| $lhs ≥ $rhs)
+    return (p, stOut)
+
+private partial def elabSpecBool (ctx : SpecCtx) (stx : Syntax) (st : SpecState) :
+    CommandElabM (Term × SpecState) := do
+  let k := stx.getKind
+  let args := stx.getArgs
+  if k == ``cSpecParen then
+    elabSpecBool ctx args[1]! st
+  else if k == ``cSpecVar then
+    let nm := args[0]!.getId.toString
+    if nm == "true" then return (mkIdent ``Bool.true, st)
+    else if nm == "false" then return (mkIdent ``Bool.false, st)
+    else
+      let ((t, _, _), st1) ← elabSpecExpr ctx stx st
+      return (t, st1)
+  else if k == ``cSpecNot then
+    let (t, st1) ← elabSpecBool ctx args[1]! st
+    return ((← `(term| !$t)), st1)
+  else if k == ``cSpecAnd then
+    let (lt, st1) ← elabSpecBool ctx args[0]! st
+    let (rt, st2) ← elabSpecBool ctx args[2]! st1
+    return ((← `(term| ($lt && $rt))), st2)
+  else if k == ``cSpecOr then
+    let (lt, st1) ← elabSpecBool ctx args[0]! st
+    let (rt, st2) ← elabSpecBool ctx args[2]! st1
+    return ((← `(term| ($lt || $rt))), st2)
+  else if k == ``cSpecEq || k == ``cSpecNe || k == ``cSpecLt ||
+          k == ``cSpecLe || k == ``cSpecGt || k == ``cSpecGe then
+    elabSpecCmp ctx true stx st
+  else
+    let ((t, _, _), st1) ← elabSpecExpr ctx stx st
+    return (t, st1)
+
+private partial def elabSpecAppProp (ctx : SpecCtx) (stx : Syntax) (st : SpecState) :
+    CommandElabM (Term × SpecState) := do
+  let fnStx := stripSpecParens stx[0]!
+  let argStxs := stx[2]!.getSepArgs
+  if fnStx.getKind == ``cSpecVar then
+    let fnName := fnStx[0]!.getId.toString
+    if fnName == "valid" || fnName == "valid_or_null" then
+      if argStxs.size != 1 then throwErrorAt stx "`{fnName}(...)` takes 1 argument"
+      let ((pT, pTy, _), st1) ← elabSpecExpr ctx argStxs[0]! st
+      let .ptr inner := pTy
+        | throwErrorAt stx "`{fnName}(...)` requires a pointer argument"
+      let ctyT ← ctyToTerm inner
+      let predFn ← requireSpecLibFn ctx stx (if fnName == "valid" then "TypedCell" else "OptTypedCell")
+      return ((← `(term| $predFn $ctx.tagsId $ctx.memId $pT $ctyT)), st1)
+    else if fnName == "readable" || fnName == "writable" ||
+            fnName == "opt_readable" || fnName == "opt_writable" then
+      if argStxs.size != 2 then throwErrorAt stx "`{fnName}(...)` takes 2 arguments"
+      let ((pT, _, _), st1) ← elabSpecExpr ctx argStxs[0]! st
+      let (lenT, st2) ← elabSpecNat ctx argStxs[1]! st1
+      let libFnName :=
+        if fnName == "readable" then "Readable"
+        else if fnName == "writable" then "Writable"
+        else if fnName == "opt_readable" then "OptReadable"
+        else "OptWritable"
+      let predFn ← requireSpecLibFn ctx stx libFnName
+      return ((← `(term| $predFn $ctx.memId $pT $lenT)), st2)
+    else if fnName == "cstring" || fnName == "opt_cstring" || fnName == "safe_fmt" then
+      if argStxs.size != 1 then throwErrorAt stx "`{fnName}(...)` takes 1 argument"
+      let ((pT, _, _), st1) ← elabSpecExpr ctx argStxs[0]! st
+      let libFnName :=
+        if fnName == "cstring" then "CString"
+        else if fnName == "opt_cstring" then "OptCString"
+        else "SafeFmtString"
+      let predFn ← requireSpecLibFn ctx stx libFnName
+      return ((← `(term| $predFn $ctx.memId $pT)), st1)
+    else if fnName == "zero_ptr" then
+      if argStxs.size != 1 then throwErrorAt stx "`zero_ptr(...)` takes 1 argument"
+      let ((pT, _, _), st1) ← elabSpecExpr ctx argStxs[0]! st
+      let predFn ← requireSpecLibFn ctx stx "ZeroPtr"
+      return ((← `(term| $predFn $pT)), st1)
+    else if fnName == "fn_ptr" then
+      if argStxs.size != 1 then throwErrorAt stx "`fn_ptr(...)` takes 1 argument"
+      let ((pT, _, _), st1) ← elabSpecExpr ctx argStxs[0]! st
+      let fnSym ← freshSpecId "__fn"
+      return ((← `(term| ∃ $fnSym:ident, $pT = C99.Val.fnPtr $fnSym)), st1)
+    else if fnName == "ptr_or_null" then
+      if argStxs.size != 1 then throwErrorAt stx "`ptr_or_null(...)` takes 1 argument"
+      let ((pT, _, _), st1) ← elabSpecExpr ctx argStxs[0]! st
+      let bId ← freshSpecId "__b"
+      let oId ← freshSpecId "__off"
+      return ((← `(term| $pT = C99.Val.null ∨ ∃ $bId:ident $oId:ident, $pT = C99.Val.ptr $bId $oId)), st1)
+    else if fnName == "disjoint_owned" then
+      if argStxs.size == 0 then throwErrorAt stx "`disjoint_owned(...)` expects at least 1 argument"
+      let predFn ← requireSpecLibFn ctx stx "DisjointFrom"
+      let mut curSt := st
+      let mut ps : Array Term := #[]
+      for a in argStxs do
+        let ((pt, _, _), nxt) ← elabSpecExpr ctx a curSt
+        ps := ps.push pt
+        curSt := nxt
+      let mut acc ← `(term| $predFn $(ps.back!) $ctx.ownedId)
+      for i in [0 : ps.size - 1] do
+        let pT := ps[ps.size - 2 - i]!
+        acc ← `(term| $predFn $pT $ctx.ownedId ∧ ($acc))
+      return (acc, curSt)
+    else if fnName == "separated" then
+      if argStxs.size < 2 then throwErrorAt stx "`separated(...)` expects at least 2 arguments"
+      let predFn ← requireSpecLibFn ctx stx "PtrDisjoint"
+      let mut curSt := st
+      let mut ps : Array Term := #[]
+      for a in argStxs do
+        let ((pt, _, _), nxt) ← elabSpecExpr ctx a curSt
+        ps := ps.push pt
+        curSt := nxt
+      let mut pairs : Array (Term × Term) := #[]
+      for i in [:ps.size] do
+        for j in [i + 1 : ps.size] do
+          pairs := pairs.push (ps[i]!, ps[j]!)
+      let last := pairs.back!
+      let mut acc ← `(term| $predFn $(last.1) $(last.2))
+      for idx in [0 : pairs.size - 1] do
+        let pr := pairs[pairs.size - 2 - idx]!
+        acc ← `(term| $predFn $(pr.1) $(pr.2) ∧ ($acc))
+      return (acc, curSt)
+    else if fnName == "initialized" then
+      if argStxs.size != 1 then throwErrorAt stx "`initialized(...)` takes 1 argument"
+      let target := stripSpecParens argStxs[0]!
+      if target.getKind != ``cSpecArrow then
+        throwErrorAt argStxs[0]! "`initialized(...)` expects a field access `p->fld`"
+      let fld := target[2]!.getId.toString
+      let ((pT, pTy, _), st1) ← elabSpecExpr ctx target[0]! st
+      let (tag, fldTy) ← resolveSpecArrowTarget ctx target pTy fld
+      let readFn ← requireSpecLibFn ctx stx (if fldTy.intKind?.isSome then "readNatField?" else "readField?")
+      let vId ← freshSpecId s!"__{fld}"
+      let tagLit := Syntax.mkStrLit tag
+      let fldLit := Syntax.mkStrLit fld
+      return ((← `(term| ∃ $vId:ident, $readFn $ctx.tagsId $ctx.memId $pT $tagLit $fldLit = Option.some $vId)), st1)
+    else if let some (ctxArgs, cName) := lookupSpecPred? ctx.env fnName then
+      let mut curSt := st
+      let mut argTerms : Array Term := ctxArgs.toArray.map (specCtxArgTerm ctx)
+      for a in argStxs do
+        let ((at_, _, _), nxt) ← elabSpecExpr ctx a curSt
+        argTerms := argTerms.push at_
+        curSt := nxt
+      let fnId := mkIdent cName
+      return ((← `(term| $fnId $argTerms*)), curSt)
+    else
+      throwErrorAt stx "unknown predicate `{fnName}` in C spec"
+  else if fnStx.getKind == ``cSpecField then
+    let ((rT, _, _), st1) ← elabSpecExpr ctx fnStx[0]! st
+    let methId := mkIdent (Name.mkSimple fnStx[2]!.getId.toString)
+    let mut curSt := st1
+    let mut argTerms : Array Term := #[]
+    for a in argStxs do
+      let ((at_, _, _), nxt) ← elabSpecExpr ctx a curSt
+      argTerms := argTerms.push at_
+      curSt := nxt
+    return ((← `(term| ($rT).$methId $argTerms*)), curSt)
+  else
+    throwErrorAt stx "unsupported call target in C spec proposition"
+
+private partial def elabSpecPropNode (ctx : SpecCtx) (dischargeUniv : Bool) (stx : Syntax)
+    (st : SpecState) : CommandElabM (Term × SpecState) := do
+  let k := stx.getKind
+  let args := stx.getArgs
+  if k == ``cSpecParen then
+    elabSpecPropNode ctx dischargeUniv args[1]! st
+  else if k == ``cSpecAnd then
+    let (lt, st1) ← elabSpecPropNode ctx dischargeUniv args[0]! st
+    let (rt, st2) ← elabSpecPropNode ctx dischargeUniv args[2]! st1
+    return ((← `(term| ($lt) ∧ ($rt))), st2)
+  else if k == ``cSpecOr then
+    let (lt, st1) ← elabSpecPropNode ctx true args[0]! st
+    match nullGuardPtr? args[0]! with
+    | some guardPtr =>
+      let preKeys := st1.existReads.map (·.key)
+      let (rt, st2) ← elabSpecPropNode ctx true args[2]! { st1 with univReads := #[] }
+      let newExist := st2.existReads.extract st1.existReads.size st2.existReads.size
+      let (discharged, kept) := newExist.partition fun er =>
+        !preKeys.contains er.key && er.ptrName? == some guardPtr
+      let rtWrapped ← wrapExist discharged.toList rt
+      return ((← `(term| ($lt) ∨ ($rtWrapped))),
+        { existReads := st1.existReads ++ kept, univReads := st.univReads })
+    | none =>
+      let (rt, st2) ← elabSpecPropNode ctx true args[2]! { st1 with univReads := #[] }
+      return ((← `(term| ($lt) ∨ ($rt))), { st2 with univReads := st.univReads })
+  else if k == ``cSpecImp then
+    let preKeys := st.existReads.map (·.key)
+    let (lt, st1) ← elabSpecPropNode ctx false args[0]! { st with univReads := #[] }
+    let lUniv := st1.univReads
+    let newBound := lUniv.toList.map UnivRead.boundEntry
+    let guardPtrs := nonNullGuardPtrs args[0]!
+    let ctxR := { ctx with boundUniv := newBound ++ ctx.boundUniv }
+    let (rt, st2) ← elabSpecPropNode ctxR true args[2]! { st1 with univReads := #[] }
+    let newR := st2.existReads.extract st1.existReads.size st2.existReads.size
+    let (dischargedR, keptR) := newR.partition fun er =>
+      !preKeys.contains er.key && (er.ptrName?.map guardPtrs.contains |>.getD false)
+    let rtWrapped ← wrapExist dischargedR.toList rt
+    let impT ← `(term| ($lt) → ($rtWrapped))
+    if dischargeUniv then
+      return (← wrapUniv ctx lUniv.toList impT,
+        { existReads := st1.existReads ++ keptR, univReads := st.univReads })
+    else
+      return (impT, { existReads := st1.existReads ++ keptR, univReads := st.univReads ++ lUniv })
+  else if k == ``cSpecNot then
+    let sub := args[1]!
+    if isPropLevelNode sub || sub.getKind == ``cSpecApp then
+      let (pt, st1) ← elabSpecPropNode ctx false sub { st with univReads := #[] }
+      let negT ← `(term| ¬ ($pt))
+      if dischargeUniv then
+        return (← wrapUniv ctx st1.univReads.toList negT, { st1 with univReads := st.univReads })
+      else
+        return (negT, { st1 with univReads := st.univReads ++ st1.univReads })
+    else
+      let ((t, _, _), st1) ← elabSpecExpr ctx sub { st with univReads := #[] }
+      let eqT ← `(term| $t = Bool.true → False)
+      if dischargeUniv then
+        return (← wrapUniv ctx st1.univReads.toList eqT, { st1 with univReads := st.univReads })
+      else
+        return (eqT, { st1 with univReads := st.univReads ++ st1.univReads })
+  else if k == ``cSpecCond then
+    let (ct, st1) ← elabSpecBool ctx args[0]! { st with univReads := #[] }
+    let condUniv := st1.univReads
+    let ctxBr := { ctx with boundUniv := condUniv.toList.map UnivRead.boundEntry ++ ctx.boundUniv }
+    let (tt, st2) ← elabSpecPropNode ctxBr true args[2]! { st1 with univReads := #[] }
+    let (ft, st3) ← elabSpecPropNode ctxBr true args[4]! { st2 with univReads := #[] }
+    let iteT ← `(term| if $ct then ($tt) else ($ft))
+    if dischargeUniv then
+      return (← wrapUniv ctx condUniv.toList iteT, { st3 with univReads := st.univReads })
+    else
+      return (iteT, { st3 with univReads := st.univReads ++ condUniv })
+  else if k == ``cSpecForall || k == ``cSpecExists then
+    let isAll := k == ``cSpecForall
+    let nm := args[2]!.getId.toString
+    let vId := mkIdent (Name.mkSimple nm)
+    let ctxB := { ctx with varTys := (nm, .other) :: ctx.varTys }
+    let (bt, st1) ← elabSpecPropNode ctxB true args[4]! { existReads := st.existReads, univReads := #[] }
+    let newEx := st1.existReads.extract st.existReads.size st1.existReads.size
+    let bt' ← wrapExist newEx.toList bt
+    let qT ← if isAll then `(term| ∀ $vId:ident, ($bt')) else `(term| ∃ $vId:ident, ($bt'))
+    return (qT, st)
+  else if k == ``cSpecForallIn then
+    let nm := args[2]!.getId.toString
+    let vId := mkIdent (Name.mkSimple nm)
+    let ((colT, _, _), st1) ← elabSpecExpr ctx args[4]! { st with univReads := #[] }
+    let ctxB := { ctx with varTys := (nm, .val) :: ctx.varTys }
+    let (bt, st2) ← elabSpecPropNode ctxB true args[6]! { st1 with univReads := #[] }
+    let newEx := st2.existReads.extract st1.existReads.size st2.existReads.size
+    let bt' ← wrapExist newEx.toList bt
+    let qT ← `(term| ∀ $vId:ident ∈ $colT, ($bt'))
+    let outT ← if dischargeUniv then wrapUniv ctx st1.univReads.toList qT else pure qT
+    return (outT, { st with existReads := st1.existReads, univReads := if dischargeUniv then st.univReads else st.univReads ++ st1.univReads })
+  else if k == ``cSpecLet then
+    let xName := args[1]!.getId.toString
+    let xId := mkIdent (Name.mkSimple xName)
+    let baseEx := st.existReads.size
+    let ((eTerm, eTy, _), stE) ← elabSpecExpr ctx args[3]! { st with univReads := #[] }
+    let newUniv := stE.univReads
+    let newExist := stE.existReads.extract baseEx stE.existReads.size
+    let preExist := stE.existReads.extract 0 baseEx
+    let ctxB0 := { ctx with varTys := (xName, eTy) :: ctx.varTys }
+    if newExist.isEmpty && newUniv.size == 1 && eTerm.raw.isIdent then
+      let renamed? := match newUniv[0]! with
+        | .field key rf memId pT tag fld vId _ =>
+          if eTerm.raw.getId == vId.getId then
+            some (UnivRead.field key rf memId pT tag fld xId eTy)
+          else none
+        | .strlen key memId pT bId oId lId =>
+          if eTerm.raw.getId == lId.getId then
+            some (UnivRead.strlen key memId pT bId oId xId)
+          else none
+      if let some ur := renamed? then
+        let ctxB := { ctxB0 with boundUniv := ur.boundEntry :: ctxB0.boundUniv }
+        let (bt, stB) ← elabSpecPropNode ctxB true args[5]! { existReads := preExist, univReads := #[] }
+        return (← wrapUniv ctx [ur] bt, { existReads := stB.existReads, univReads := st.univReads })
+    if newUniv.isEmpty && newExist.size == 1 && eTerm.raw.isIdent then
+      let er := newExist[0]!
+      if eTerm.raw.getId == er.varId.getId then
+        let er' := { er with varId := xId }
+        let (bt, stB) ← elabSpecPropNode ctxB0 true args[5]! { existReads := preExist.push er', univReads := #[] }
+        return (bt, { existReads := stB.existReads, univReads := st.univReads })
+    let (bt, stB) ← elabSpecPropNode { ctxB0 with boundUniv := newUniv.toList.map UnivRead.boundEntry ++ ctxB0.boundUniv }
+      true args[5]! { existReads := stE.existReads, univReads := #[] }
+    let letT ← `(term| let $xId := $eTerm; ($bt))
+    return (← wrapUniv ctx newUniv.toList letT, { existReads := stB.existReads, univReads := st.univReads })
+  else
+    let baseUniv := st.univReads.size
+    let (atomT, st1) ←
+      if k == ``cSpecLean then
+        pure ((⟨args[2]!⟩ : Term), st)
+      else if k == ``cSpecVar then
+        let nm := args[0]!.getId.toString
+        if nm == "true" then pure (mkIdent ``True, st)
+        else if nm == "false" then pure (mkIdent ``False, st)
+        else
+          let ((t, _, _), s1) ← elabSpecExpr ctx stx st
+          pure (t, s1)
+      else if k == ``cSpecEq || k == ``cSpecNe || k == ``cSpecLt ||
+              k == ``cSpecLe || k == ``cSpecGt || k == ``cSpecGe then
+        elabSpecCmp ctx false stx st
+      else if k == ``cSpecApp then
+        elabSpecAppProp ctx stx st
+      else
+        let ((t, _, _), s1) ← elabSpecExpr ctx stx st
+        pure (t, s1)
+    let localUniv := (st1.univReads.extract baseUniv st1.univReads.size).toList
+    if dischargeUniv then
+      return (← wrapUniv ctx localUniv atomT,
+        { existReads := st1.existReads, univReads := st.univReads })
+    else
+      return (atomT, st1)
+end
+
+private def elabSpecClauseProp (ctx : SpecCtx) (stx : Syntax) : CommandElabM Term := do
+  let (t, st) ← elabSpecPropNode ctx true stx {}
+  wrapExist st.existReads.toList t
+
+private def elabSpecMod (ctx : SpecCtx) (args : Array Syntax) (bScrut : Ident) :
+    CommandElabM Term := do
+  if args.size == 1 then
+    let item := stripSpecParens args[0]!
+    if item.getKind == ``cSpecVar && item[0]!.getId.toString == "nothing" then
+      return ← `(term| False)
+    else if item.getKind == ``cSpecLean then
+      let t : Term := ⟨item[2]!⟩
+      return ← `(term| ($t) $bScrut)
+    else if item.getKind == ``cSpecApp then
+      let fnStx := stripSpecParens item[0]!
+      if fnStx.getKind == ``cSpecVar then
+        let fnName := fnStx[0]!.getId.toString
+        if let some (ctxArgs, cName) := lookupSpecPred? ctx.env fnName then
+          let mut curSt : SpecState := {}
+          let mut argTerms : Array Term := ctxArgs.toArray.map (specCtxArgTerm ctx)
+          for a in item[2]!.getSepArgs do
+            let ((at_, _, _), nxt) ← elabSpecExpr ctx a curSt
+            argTerms := argTerms.push at_
+            curSt := nxt
+          let fnId := mkIdent cName
+          return ← `(term| ($fnId $argTerms*) $bScrut)
+  let writesFn ← requireSpecLibFn ctx args[0]! "writes"
+  let mut curSt : SpecState := {}
+  let mut ptrTerms : Array Term := #[]
+  for a in args do
+    let ((pt, _, _), nxt) ← elabSpecExpr ctx a curSt
+    ptrTerms := ptrTerms.push pt
+    curSt := nxt
+  `(term| ($writesFn [$ptrTerms,*]) $bScrut)
+
+private def initialSpecVarTys (ps : List Param) (variadic : Bool) (retTy : CTy) (inEnsures : Bool) :
+    List (String × SpecValTy) :=
+  let paramTys := ps.filterMap fun p =>
+    if p.name == "" then none else some (p.name, classifyCTy p.ty)
+  let retEntry := if inEnsures then
+      [("ret", if retTy.isVoid then .other else classifyCTy retTy)]
+    else []
+  let vaEntry := if variadic then [("vaArgs", .other)] else []
+  let ctxEntries := [("view", .other), ("view'", .other), ("m", .other), ("m'", .other), ("tags", .other), ("owned", .other)]
+  paramTys ++ retEntry ++ vaEntry ++ ctxEntries
+
 @[command_elab cFnCmd]
 def elabCFn : CommandElab := fun stx => do
   let env ← getEnv
@@ -1008,25 +1813,37 @@ def elabCFn : CommandElab := fun stx => do
     let envAfter ← getEnv
     let some atu := activeTUExt.getState envAfter
       | throwErrorAt stx "Verus contracts on `c_fn` require an enclosing `c_tu_begin`"
-    let mut reqs : Array Term := #[]
-    let mut mods : Array Term := #[]
-    let mut enss : Array Term := #[]
-    for cl in clauses do
-      let ck := cl.getKind
-      let t : Term := ⟨cl[1]!⟩
-      if ck == ``cSpecRequires then reqs := reqs.push t
-      else if ck == ``cSpecModifies then mods := mods.push t
-      else if ck == ``cSpecEnsures then enss := enss.push t
-      else throwErrorAt cl "unsupported `c_fn` spec clause `{ck}`"
     let tagsId := mkIdent (Name.mkSimple "tags")
     let ownedId := mkIdent (Name.mkSimple "owned")
     let viewId := mkIdent (Name.mkSimple "view")
     let mId := mkIdent (Name.mkSimple "m")
     let m'Id := mkIdent (Name.mkSimple "m'")
     let view'Id := mkIdent (Name.mkSimple "view'")
+    let retId := mkIdent (Name.mkSimple "ret")
     let argsScrut ← mkIdent <$> MonadQuotation.addMacroScope (Name.mkSimple "args")
     let retScrut ← mkIdent <$> MonadQuotation.addMacroScope (Name.mkSimple "retVal")
     let bScrut ← mkIdent <$> MonadQuotation.addMacroScope (Name.mkSimple "b")
+    let baseCtx (inEnsures : Bool) : SpecCtx := {
+      env := envAfter
+      libNs? := lookupSpecLib? envAfter
+      tagsId, ownedId, viewId, view'Id, mId, m'Id
+      memId := if inEnsures then m'Id else mId
+      retId
+      varTys := initialSpecVarTys ps v ret inEnsures
+    }
+    let mut reqs : Array Term := #[]
+    let mut mods : Array Term := #[]
+    let mut enss : Array Term := #[]
+    for cl in clauses do
+      let ck := cl.getKind
+      if ck == ``cSpecRequires then
+        reqs := reqs.push (← elabSpecClauseProp (baseCtx false) cl[1]!)
+      else if ck == ``cSpecModifies then
+        mods := mods.push (← elabSpecMod (baseCtx false) cl[1]!.getSepArgs bScrut)
+      else if ck == ``cSpecEnsures then
+        enss := enss.push (← elabSpecClauseProp (baseCtx true) cl[1]!)
+      else
+        throwErrorAt cl "unsupported `c_fn` spec clause `{ck}`"
     let reqBody ← if reqs.size > 0 then
         let mut acc := reqs.back!
         for i in [0 : reqs.size - 1] do
@@ -1036,11 +1853,10 @@ def elabCFn : CommandElab := fun stx => do
         pure acc
       else `(term| True)
     let modBody ← if mods.size > 0 then
-        let first := mods[0]!
-        let mut acc ← `(term| ($first) $bScrut)
+        let mut acc := mods[0]!
         for i in [1 : mods.size] do
           let t := mods[i]!
-          acc ← `(term| ($acc) ∨ (($t) $bScrut))
+          acc ← `(term| ($acc) ∨ ($t))
         pure acc
       else `(term| False)
     let ensBody ← if enss.size > 0 then

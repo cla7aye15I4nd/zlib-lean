@@ -16,11 +16,12 @@ c_include_local "abi_inflate.h"
 c_fn int ZEXPORT inflateBackInit_(z_streamp strm, int windowBits,
                                   unsigned char FAR *window, const char *version,
                                   int stream_size)
-  requires InitStreamReady tags owned view m strm ∧ OptCString m version;
-  requires window = .null ∨ windowBits < 8 ∨ windowBits > 15 ∨
-    (Writable m window (1 <<< windowBits.toNatClampNeg) ∧ DisjointFrom window owned);
-  modifies writes [strm];
-  ensures  view' = if ret == 0 then view.addStream strm .inflateBack else view;
+  requires init_stream_ready(strm) && opt_cstring(version);
+  requires window == NULL || windowBits < 8 || windowBits > 15 ||
+    (writable(window, 1 << windowBits) && disjoint_owned(window) &&
+     block(window) != block(strm) && forall(k, !view.hasStream(window, k)));
+  modifies strm;
+  ensures  view' == (ret == 0 ? view.addStream(strm, STREAM_INFLATE_BACK) : view);
 {
   struct inflate_state FAR *state;
 
@@ -122,11 +123,13 @@ c_stmt_macro ROOM() := do {
 
 c_fn int ZEXPORT inflateBack(z_streamp strm, in_func in, void FAR *in_desc,
                              out_func out, void FAR *out_desc)
-  requires StreamReady tags owned view m strm .inflateBack;
-  requires strm = .null ∨ ((∃ s1, «in» = .fnPtr s1) ∧ (∃ s2, out = .fnPtr s2));
-  requires DisjointFrom in_desc owned ∧ DisjointFrom out_desc owned;
-  modifies writesStream tags m strm;
-  ensures  view' = view;
+  requires stream_ready(strm, STREAM_INFLATE_BACK);
+  requires strm == NULL || (fn_ptr(in) && fn_ptr(out));
+  requires strm == NULL || (let st = (struct inflate_state *)strm->state,
+    strm->avail_in == 0 || separated(strm->next_in, st->window));
+  requires disjoint_owned(in_desc, out_desc);
+  modifies writes_stream(strm);
+  ensures  view' == view;
 {
   struct inflate_state FAR *state;
   z_const unsigned char FAR *next;
@@ -456,9 +459,9 @@ inf_leave:
 }
 
 c_fn int ZEXPORT inflateBackEnd(z_streamp strm)
-  requires StreamAlive tags owned view m strm .inflateBack;
-  modifies writes [strm];
-  ensures  view' = if ret == 0 then view.removeStream strm else view;
+  requires stream_alive(strm, STREAM_INFLATE_BACK);
+  modifies strm;
+  ensures  view' == (ret == 0 ? view.removeStream(strm) : view);
 {
   if (strm == Z_NULL || strm->state == Z_NULL || strm->zfree == (free_func)0)
     return Z_STREAM_ERROR;

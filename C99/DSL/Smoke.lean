@@ -69,10 +69,10 @@ c_fn static unsigned rev_bits(unsigned code, int len) {
 }
 
 c_fn int smoke_entry(const byte_t *in, unsigned c_arg, enum smoke_mode mode, const char *fmt, ...)
-  requires («in» = C99.Val.null ∨ ∃ b off, «in» = C99.Val.ptr b off) ∧ fmt = fmt ∧ vaArgs = vaArgs;
-  requires c_arg ≥ 0 ∧ mode ≥ 0;
-  modifies fun _ => False;
-  ensures  ret = ret ∧ view' = view;
+  requires ptr_or_null(in) && fmt == fmt && vaArgs == vaArgs;
+  requires c_arg >= 0 && mode >= 0;
+  modifies nothing;
+  ensures  ret == ret && view' == view;
 {
   const byte_t *from = in;
   const byte_t *end = in + 4;

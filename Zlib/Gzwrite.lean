@@ -231,9 +231,9 @@ c_fn local z_size_t gz_write(gz_statep state, voidpc buf, z_size_t len) {
 }
 
 c_fn int ZEXPORT gzwrite(gzFile file, voidpc buf, unsigned len)
-  requires GzReady view file;
-  requires file = .null ∨ len.toNat = 0 ∨ len.toNat ≥ 2^31 ∨ Readable m buf len.toNat;
-  ensures  view' = view;
+  requires gz_ready(file) && disjoint_owned(buf);
+  requires file == NULL || len == 0 || len >= (1 << 31) || readable(buf, len);
+  ensures  view' == view;
 {
   gz_statep state;
 
@@ -254,10 +254,9 @@ c_fn int ZEXPORT gzwrite(gzFile file, voidpc buf, unsigned len)
 }
 
 c_fn z_size_t ZEXPORT gzfwrite(voidpc buf, z_size_t size, z_size_t nitems, gzFile file)
-  requires GzReady view file;
-  requires file = .null ∨ size.toNat * nitems.toNat = 0 ∨ size.toNat * nitems.toNat ≥ 2^64 ∨
-    Readable m buf (size.toNat * nitems.toNat);
-  ensures  view' = view;
+  requires gz_ready(file) && disjoint_owned(buf);
+  requires file == NULL || size * nitems == 0 || size * nitems >= (1 << 64) || readable(buf, size * nitems);
+  ensures  view' == view;
 {
   z_size_t len;
   gz_statep state;
@@ -280,8 +279,8 @@ c_fn z_size_t ZEXPORT gzfwrite(voidpc buf, z_size_t size, z_size_t nitems, gzFil
 }
 
 c_fn int ZEXPORT gzputc(gzFile file, int c)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   unsigned have;
   unsigned char buf[1];
@@ -319,8 +318,8 @@ c_fn int ZEXPORT gzputc(gzFile file, int c)
 }
 
 c_fn int ZEXPORT gzputs(gzFile file, const char *s)
-  requires GzReady view file ∧ (file = .null ∨ CString m s);
-  ensures  view' = view;
+  requires gz_ready(file) && disjoint_owned(s) && (file == NULL || cstring(s));
+  ensures  view' == view;
 {
   z_size_t len, put;
   gz_statep state;
@@ -420,9 +419,9 @@ c_fn int ZEXPORTVA gzvprintf(gzFile file, const char *format, va_list va) {
 }
 
 c_fn int ZEXPORTVA gzprintf(gzFile file, const char *format, ...)
-  requires GzReady view file ∧ (file = .null ∨ SafeFmtString m format);
-  requires ∀ a ∈ vaArgs, DisjointFrom a owned;
-  ensures  view' = view;
+  requires gz_ready(file) && disjoint_owned(format) && (file == NULL || safe_fmt(format));
+  requires forall(a in vaArgs, disjoint_owned(a));
+  ensures  view' == view;
 {
   va_list va;
   int ret;
@@ -434,8 +433,8 @@ c_fn int ZEXPORTVA gzprintf(gzFile file, const char *format, ...)
 }
 
 c_fn int ZEXPORT gzflush(gzFile file, int flush)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   gz_statep state;
 
@@ -458,8 +457,8 @@ c_fn int ZEXPORT gzflush(gzFile file, int flush)
 }
 
 c_fn int ZEXPORT gzsetparams(gzFile file, int level, int strategy)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   gz_statep state;
   z_streamp strm;
@@ -491,8 +490,8 @@ c_fn int ZEXPORT gzsetparams(gzFile file, int level, int strategy)
 }
 
 c_fn int ZEXPORT gzclose_w(gzFile file)
-  requires GzReady view file;
-  ensures  view' = view.closeGz file m';
+  requires gz_ready(file);
+  ensures  view' == view.closeGz(file, m');
 {
   int ret = Z_OK;
   gz_statep state;

@@ -21,21 +21,23 @@ private def cReservedWords : List String :=
 def isCReserved (s : String) : Bool :=
   cReservedWords.contains s
 
-private partial def scanCIdentEnd (c : InputContext) (p : String.Pos.Raw) : String.Pos.Raw :=
+private partial def scanCIdentEnd (allowPrime : Bool) (c : InputContext) (p : String.Pos.Raw) : String.Pos.Raw :=
   if c.atEnd p then p
   else
     let ch := c.get p
-    if ch.isAlphanum || ch == '_' then scanCIdentEnd c (c.next p)
+    if ch.isAlphanum || ch == '_' || (allowPrime && ch == '\'') then
+      scanCIdentEnd allowPrime c (c.next p)
     else p
 
-private def scanIdentToken (ok : Environment → String → Bool) (err : String) : ParserFn := fun c s =>
+private def scanIdentToken (ok : Environment → String → Bool) (err : String)
+    (allowPrime : Bool := false) : ParserFn := fun c s =>
   let iniPos := s.pos
   if c.atEnd iniPos then s.mkError err
   else
     let ch := c.get iniPos
     if !(ch.isAlpha || ch == '_') then s.mkError err
     else
-      let stopPos := scanCIdentEnd c (c.next iniPos)
+      let stopPos := scanCIdentEnd allowPrime c (c.next iniPos)
       let val := c.extract iniPos stopPos
       if !ok c.env val then s.mkError err
       else
@@ -60,6 +62,16 @@ def cIdentFn : ParserFn :=
 def cIdent : Parser := { fn := cIdentFn }
 @[combinator_formatter cIdent] def cIdent.formatter : PrettyPrinter.Formatter := fun _ => pure ()
 @[combinator_parenthesizer cIdent] def cIdent.parenthesizer : PrettyPrinter.Parenthesizer := fun _ => pure ()
+
+private def specReservedWords : List String := ["forall", "exists", "let", "lean"]
+
+def cSpecIdentFn : ParserFn :=
+  scanIdentToken (fun _ val => !specReservedWords.contains val)
+    "expected C spec identifier" (allowPrime := true)
+
+def cSpecIdent : Parser := { fn := cSpecIdentFn }
+@[combinator_formatter cSpecIdent] def cSpecIdent.formatter : PrettyPrinter.Formatter := fun _ => pure ()
+@[combinator_parenthesizer cSpecIdent] def cSpecIdent.parenthesizer : PrettyPrinter.Parenthesizer := fun _ => pure ()
 
 def cTypedefNameFn : ParserFn :=
   scanIdentToken (fun env val => !isCAliasOrReserved env val && (lookupTypedef? env val).isSome)
@@ -276,11 +288,55 @@ syntax (name := cUnionCmd) "c_union" cIdent "{" (c_field_decl ";")* "}" ";" : co
 syntax (name := cEnumCmd) "c_enum" (cIdent)? "{" c_enum_item,*,? "}" ";" : command
 syntax (name := cGlobalCmd) "c_global" (c_link_pre)? c_ty_spec (c_link_mid)? c_init_decl,+ ";" : command
 syntax (name := cProtoCmd) "c_proto" (c_link_pre)? c_ty_spec c_ptr_mod* (c_link_mid)? cIdent "(" c_param,* ")" ";" : command
+declare_syntax_cat c_spec
+syntax:max (name := cSpecLean) "lean" "(" term ")" : c_spec
+syntax:max (name := cSpecForallIn) (priority := high) atomic("forall" "(" cSpecIdent "in") c_spec:20 "," c_spec ")" : c_spec
+syntax:max (name := cSpecForall) "forall" "(" cSpecIdent "," c_spec ")" : c_spec
+syntax:max (name := cSpecExists) "exists" "(" cSpecIdent "," c_spec ")" : c_spec
+syntax:max (name := cSpecNum) num : c_spec
+syntax:max (name := cSpecVar) cSpecIdent : c_spec
+syntax:max (name := cSpecParen) "(" c_spec ")" : c_spec
+
+syntax:95 (name := cSpecArrow) c_spec:95 "->" cSpecIdent : c_spec
+syntax:95 (name := cSpecField) c_spec:95 "." cSpecIdent : c_spec
+syntax:95 (name := cSpecApp)   c_spec:95 "(" c_spec:20,* ")" : c_spec
+
+syntax:85 (name := cSpecCast)   (priority := high) atomic("(" c_ty ")") c_spec:85 : c_spec
+syntax:85 (name := cSpecNeg)    "-" c_spec:85 : c_spec
+syntax:85 (name := cSpecBitNot) "~" c_spec:85 : c_spec
+syntax:85 (name := cSpecNot)    "!" c_spec:85 : c_spec
+syntax:85 (name := cSpecDeref)  "*" c_spec:85 : c_spec
+
+syntax:75 (name := cSpecMul)    c_spec:75 " * " c_spec:76 : c_spec
+syntax:75 (name := cSpecDiv)    c_spec:75 " / " c_spec:76 : c_spec
+syntax:75 (name := cSpecMod)    c_spec:75 " % " c_spec:76 : c_spec
+syntax:70 (name := cSpecAdd)    c_spec:70 " + " c_spec:71 : c_spec
+syntax:70 (name := cSpecSub)    c_spec:70 " - " c_spec:71 : c_spec
+syntax:65 (name := cSpecShl)    c_spec:65 " << " c_spec:66 : c_spec
+syntax:65 (name := cSpecShr)    c_spec:65 " >> " c_spec:66 : c_spec
+syntax:60 (name := cSpecLt)     c_spec:61 " < " c_spec:61 : c_spec
+syntax:60 (name := cSpecLe)     c_spec:61 " <= " c_spec:61 : c_spec
+syntax:60 (name := cSpecGt)     c_spec:61 " > " c_spec:61 : c_spec
+syntax:60 (name := cSpecGe)     c_spec:61 " >= " c_spec:61 : c_spec
+syntax:55 (name := cSpecEq)     c_spec:56 " == " c_spec:56 : c_spec
+syntax:55 (name := cSpecNe)     c_spec:56 " != " c_spec:56 : c_spec
+syntax:50 (name := cSpecBitAnd) c_spec:50 " & " c_spec:51 : c_spec
+syntax:45 (name := cSpecBitXor) c_spec:45 " ^ " c_spec:46 : c_spec
+syntax:40 (name := cSpecBitOr)  c_spec:40 " | " c_spec:41 : c_spec
+syntax:35 (name := cSpecAnd)    c_spec:36 " && " c_spec:35 : c_spec
+syntax:30 (name := cSpecOr)     c_spec:31 " || " c_spec:30 : c_spec
+syntax:25 (name := cSpecCond)   c_spec:30 "?" c_spec:15 ":" c_spec:25 : c_spec
+syntax:20 (name := cSpecImp)    c_spec:21 " ==> " c_spec:15 : c_spec
+syntax:15 (name := cSpecLet)    "let" cSpecIdent "=" c_spec:25 "," c_spec:15 : c_spec
+
 declare_syntax_cat c_spec_clause
-syntax (name := cSpecRequires) "requires" term ";" : c_spec_clause
-syntax (name := cSpecModifies) "modifies" term ";" : c_spec_clause
-syntax (name := cSpecEnsures)  "ensures"  term ";" : c_spec_clause
-syntax (name := cSpecViewCmd) "c_spec_view" ident : command
+syntax (name := cSpecRequires) "requires" c_spec ";" : c_spec_clause
+syntax (name := cSpecModifies) "modifies" c_spec:20,+ ";" : c_spec_clause
+syntax (name := cSpecEnsures)  "ensures"  c_spec ";" : c_spec_clause
+syntax (name := cSpecViewCmd)  "c_spec_view" ident : command
+syntax (name := cSpecLibCmd)   "c_spec_lib" ident : command
+syntax (name := cSpecPredCmd)  "c_spec_pred" cSpecIdent "[" cSpecIdent,* "]" ":=" ident : command
+syntax (name := cSpecConstCmd) "c_spec_const" cSpecIdent ":=" ident : command
 
 syntax (name := cFnCmd) "c_fn" (c_link_pre)? c_ty_spec c_ptr_mod* (c_link_mid)? cIdent "(" c_param,* ")" c_spec_clause* c_stmt : command
 

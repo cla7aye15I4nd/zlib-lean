@@ -20,6 +20,12 @@ def PtrBlock : Val → Option BlockId
   | .ptr b _ => some b
   | _ => none
 
+def ZeroPtr (p : Val) : Prop :=
+  ∃ b, p = .ptr b 0
+
+def PtrDisjoint (p q : Val) : Prop :=
+  ∀ b, PtrBlock p = some b → PtrBlock q ≠ some b
+
 def DisjointFrom (p : Val) (owned : BlockSet) : Prop :=
   ∀ b, PtrBlock p = some b → ¬ owned b
 
@@ -136,7 +142,7 @@ end ClientView
 
 def InitStreamReady (tags : TypeEnv) (owned : BlockSet) (v : ClientView) (m : Mem) (strm : Val) : Prop :=
   strm = .null ∨
-  (TypedCell tags m strm (.structTy "z_stream_s") ∧ DisjointFrom strm owned ∧
+  (ZeroPtr strm ∧ TypedCell tags m strm (.structTy "z_stream_s") ∧ DisjointFrom strm owned ∧
     (∀ k, ¬ v.hasStream strm k) ∧
     readField? tags m strm "z_stream_s" "zalloc" = some .null ∧
     readField? tags m strm "z_stream_s" "zfree" = some .null)
@@ -144,21 +150,25 @@ def InitStreamReady (tags : TypeEnv) (owned : BlockSet) (v : ClientView) (m : Me
 def StreamAlive (tags : TypeEnv) (owned : BlockSet) (v : ClientView) (m : Mem)
     (strm : Val) (k : StreamKind) : Prop :=
   strm = .null ∨
-  (v.hasStream strm k ∧ TypedCell tags m strm (.structTy "z_stream_s") ∧ DisjointFrom strm owned)
+  (ZeroPtr strm ∧ v.hasStream strm k ∧ TypedCell tags m strm (.structTy "z_stream_s") ∧ DisjointFrom strm owned)
 
 def GzReady (v : ClientView) (file : Val) : Prop :=
-  file = .null ∨ v.hasGz file
+  file = .null ∨ (ZeroPtr file ∧ v.hasGz file)
 
 def StreamReady (tags : TypeEnv) (owned : BlockSet) (v : ClientView) (m : Mem)
     (strm : Val) (k : StreamKind) : Prop :=
   strm = .null ∨
-  (v.hasStream strm k ∧ TypedCell tags m strm (.structTy "z_stream_s") ∧ DisjointFrom strm owned ∧
-    (∃ nIn avIn, readField? tags m strm "z_stream_s" "next_in" = some nIn ∧
+  (ZeroPtr strm ∧ v.hasStream strm k ∧ TypedCell tags m strm (.structTy "z_stream_s") ∧ DisjointFrom strm owned ∧
+    (∃ ti, readNatField? tags m strm "z_stream_s" "total_in" = some ti) ∧
+    (∃ to_, readNatField? tags m strm "z_stream_s" "total_out" = some to_) ∧
+    (∃ nIn avIn nOut avOut,
+      readField? tags m strm "z_stream_s" "next_in" = some nIn ∧
       readNatField? tags m strm "z_stream_s" "avail_in" = some avIn ∧
-      (avIn = 0 ∨ Readable m nIn avIn)) ∧
-    (∃ nOut avOut, readField? tags m strm "z_stream_s" "next_out" = some nOut ∧
+      readField? tags m strm "z_stream_s" "next_out" = some nOut ∧
       readNatField? tags m strm "z_stream_s" "avail_out" = some avOut ∧
-      (avOut = 0 ∨ (Writable m nOut avOut ∧ DisjointFrom nOut owned))))
+      (avIn = 0 ∨ (Readable m nIn avIn ∧ DisjointFrom nIn (fun b => owned b ∨ PtrBlock strm = some b))) ∧
+      (avOut = 0 ∨ (Writable m nOut avOut ∧ DisjointFrom nOut (fun b => owned b ∨ PtrBlock strm = some b))) ∧
+      (avIn = 0 ∨ avOut = 0 ∨ PtrBlock nIn ≠ PtrBlock nOut)))
 
 /-- Caller blocks potentially mutated via `strm`, `strm->next_out`, `state->window`, or `state->head`. -/
 def writesStream (tags : TypeEnv) (m : Mem) (strm : Val) : BlockSet :=
@@ -174,28 +184,42 @@ def writesStream (tags : TypeEnv) (m : Mem) (strm : Val) : BlockSet :=
 def DeflateHeaderReady (tags : TypeEnv) (owned : BlockSet) (m : Mem) (head : Val) : Prop :=
   head = .null ∨
   (TypedCell tags m head (.structTy "gz_header_s") ∧ DisjointFrom head owned ∧
+    (∃ v, readField? tags m head "gz_header_s" "text" = some v) ∧
+    (∃ v, readField? tags m head "gz_header_s" "time" = some v) ∧
+    (∃ v, readField? tags m head "gz_header_s" "os" = some v) ∧
+    (∃ v, readField? tags m head "gz_header_s" "hcrc" = some v) ∧
     (∃ ep elen, readField? tags m head "gz_header_s" "extra" = some ep ∧
       readNatField? tags m head "gz_header_s" "extra_len" = some elen ∧
       (ep = .null ∨ Readable m ep (elen % 65536))) ∧
     (∃ np, readField? tags m head "gz_header_s" "name" = some np ∧ OptCString m np) ∧
     (∃ cp, readField? tags m head "gz_header_s" "comment" = some cp ∧ OptCString m cp))
 
+def HeaderDisjoint (tags : TypeEnv) (m : Mem) (head p : Val) : Prop :=
+  PtrDisjoint head p ∧
+  (∀ ep, readField? tags m head "gz_header_s" "extra" = some ep → PtrDisjoint ep p) ∧
+  (∀ np, readField? tags m head "gz_header_s" "name" = some np → PtrDisjoint np p) ∧
+  (∀ cp, readField? tags m head "gz_header_s" "comment" = some cp → PtrDisjoint cp p)
+
 def InflateHeaderReady (tags : TypeEnv) (owned : BlockSet) (m : Mem) (head : Val) : Prop :=
   TypedCell tags m head (.structTy "gz_header_s") ∧ DisjointFrom head owned ∧
-  (∃ ep emax, readField? tags m head "gz_header_s" "extra" = some ep ∧
+  (∃ elen, readNatField? tags m head "gz_header_s" "extra_len" = some elen) ∧
+  (∃ ep emax np nmax cp cmax,
+    readField? tags m head "gz_header_s" "extra" = some ep ∧
     readNatField? tags m head "gz_header_s" "extra_max" = some emax ∧
-    (ep = .null ∨ (Writable m ep emax ∧ DisjointFrom ep owned))) ∧
-  (∃ np nmax, readField? tags m head "gz_header_s" "name" = some np ∧
+    readField? tags m head "gz_header_s" "name" = some np ∧
     readNatField? tags m head "gz_header_s" "name_max" = some nmax ∧
-    (np = .null ∨ (Writable m np nmax ∧ DisjointFrom np owned))) ∧
-  (∃ cp cmax, readField? tags m head "gz_header_s" "comment" = some cp ∧
+    readField? tags m head "gz_header_s" "comment" = some cp ∧
     readNatField? tags m head "gz_header_s" "comm_max" = some cmax ∧
-    (cp = .null ∨ (Writable m cp cmax ∧ DisjointFrom cp owned)))
+    (ep = .null ∨ (Writable m ep emax ∧ DisjointFrom ep owned)) ∧
+    (np = .null ∨ (Writable m np nmax ∧ DisjointFrom np owned)) ∧
+    (cp = .null ∨ (Writable m cp cmax ∧ DisjointFrom cp owned)) ∧
+    PtrDisjoint head ep ∧ PtrDisjoint head np ∧ PtrDisjoint head cp ∧
+    PtrDisjoint ep np ∧ PtrDisjoint ep cp ∧ PtrDisjoint np cp)
 
 def DictWritable (tags : TypeEnv) (owned : BlockSet) (m : Mem)
     (strm dict : Val) (isDeflate : Bool) : Prop :=
   dict = .null ∨
-  (DisjointFrom dict owned ∧
+  (DisjointFrom dict owned ∧ PtrBlock dict ≠ PtrBlock strm ∧
     let st := (readField? tags m strm "z_stream_s" "state").getD .null
     let req := if isDeflate then (readNatField? tags m st "internal_state" "w_size").getD 32768
                else (readNatField? tags m st "inflate_state" "whave").getD 32768

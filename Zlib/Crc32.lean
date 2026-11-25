@@ -167,8 +167,8 @@ c_fn local uLong crc32_braid(uLong crc, const unsigned char FAR *buf, z_size_t l
 }
 
 c_fn uLong ZEXPORT crc32_z(uLong crc, const unsigned char FAR *buf, z_size_t len)
-  requires buf = .null ∨ len.toNat = 0 ∨ Readable m buf len.toNat;
-  ensures  view' = view;
+  requires buf == NULL || len == 0 || readable(buf, len);
+  ensures  view' == view;
 {
   if (buf == Z_NULL) return 0;
 
@@ -292,15 +292,15 @@ c_fn uLong ZEXPORT crc32_z(uLong crc, const unsigned char FAR *buf, z_size_t len
 }
 
 c_fn uLong ZEXPORT crc32(uLong crc, const unsigned char FAR *buf, uInt len)
-  requires buf = .null ∨ len.toNat = 0 ∨ Readable m buf len.toNat;
-  ensures  view' = view;
+  requires buf == NULL || len == 0 || readable(buf, len);
+  ensures  view' == view;
 {
   return crc32_z(crc, buf, len);
 }
 
 c_fn uLong ZEXPORT crc32_combine_gen64(z_off64_t len2)
-  requires True;
-  ensures  view' = view;
+  requires true;
+  ensures  view' == view;
 {
   if (len2 < 0)
     return 0;
@@ -308,15 +308,15 @@ c_fn uLong ZEXPORT crc32_combine_gen64(z_off64_t len2)
 }
 
 c_fn uLong ZEXPORT crc32_combine_gen(z_off_t len2)
-  requires True;
-  ensures  view' = view;
+  requires true;
+  ensures  view' == view;
 {
   return crc32_combine_gen64((z_off64_t)len2);
 }
 
 c_fn uLong ZEXPORT crc32_combine_op(uLong crc1, uLong crc2, uLong op)
-  requires op = 0 ∨ (op &&& 0xffffffff) ≠ 0;
-  ensures  view' = view;
+  requires op == 0 || (op & 0xffffffff) != 0;
+  ensures  view' == view;
 {
   if (op == 0)
     return 0;
@@ -324,15 +324,15 @@ c_fn uLong ZEXPORT crc32_combine_op(uLong crc1, uLong crc2, uLong op)
 }
 
 c_fn uLong ZEXPORT crc32_combine64(uLong crc1, uLong crc2, z_off64_t len2)
-  requires True;
-  ensures  view' = view;
+  requires true;
+  ensures  view' == view;
 {
   return crc32_combine_op(crc1, crc2, crc32_combine_gen64(len2));
 }
 
 c_fn uLong ZEXPORT crc32_combine(uLong crc1, uLong crc2, z_off_t len2)
-  requires True;
-  ensures  view' = view;
+  requires true;
+  ensures  view' == view;
 {
   return crc32_combine64(crc1, crc2, (z_off64_t)len2);
 }

@@ -11,15 +11,18 @@ import Zlib.Proof.Crc32Combine
 import Zlib.Proof.Math.Inftrees
 import Zlib.Proof.Math.Trees
 import Zlib.Proof.Math.Gz
-import C99.Proof.AutoWP
+import C99.Proof.Mem
+import C99.Proof.WP
 
 /-!
 # Phase 1 Unified Safety Invariant (`ZlibInv`) and Decoupled Cross-Module Spec Interfaces
 
 This module establishes the Phase 1 foundation for Waves 2–4:
-1. `HeapRwBlock`, `NonErrnoROGlobal`, `initLibz_nonErrnoROGlobal`, and `zErrmsgReady_of_initLibz`.
+1. `HeapRwBlock`, `MemBlocksUnchanged`, `PreservesBlockMeta`, `PreservesOutsideRange`,
+   `NonErrnoROGlobal`, `initLibz_nonErrnoROGlobal`, and `zErrmsgReady_of_initLibz`.
 2. `CodeTableValid`, `InflateWitness` / `InflateStateInv`, `InflateBackWitness` / `InflateBackInv`,
-   `DeflateWitness` / `DeflateStateInv`, and `GzWitness` / `GzStateInv`, with zero dependence on
+   `DeflateWitness` / `DeflateStateInv`, `GzWitness` / `GzStateInvCore` / `GzStateInv`, and
+   `InflateAccumulatorsInit` / `StreamAccumulatorsInit`, with zero dependence on
    client-mutable fields of external `z_stream_s` blocks (`next_in`, `avail_in`, `total_in`,
    `next_out`, `avail_out`, `total_out`, `msg`, `data_type`, `adler`, `reserved`).
 3. `ZlibInv`, ownership partition & pairwise disjointness lemmas, `ZlibInv.empty_owned`,
@@ -29,9 +32,9 @@ This module establishes the Phase 1 foundation for Waves 2–4:
 5. `CallWPTermSpec`, `CallSafeSpec`, `CallWPTermSpec.to_callWPSafe`, and `ZALLOC`/`ZFREE`/callback
    combinators (`zalloc_internal_call`, `zfree_internal_call`, `user_callback_wpTerm`,
    `user_callback_wpSafe`).
-6. All 10 decoupled cross-module specification records (`InftreesSpecs`, `InffastSpecs`,
-   `InflateCoreSpecs`, `InflateMainSpecs`, `TreesSpecs`, `DeflateCoreSpecs`, `DeflateMainSpecs`,
-   `GzlibSpecs`, `GzreadSpecs`, `GzwriteSpecs`).
+6. All 12 decoupled cross-module specification records (`InftreesSpecs`, `InffastSpecs`,
+   `InflateCoreSpecs`, `InflateMainSpecs`, `InfbackSpecs`, `TreesSpecs`, `DeflateCoreSpecs`,
+   `DeflateBlocksSpecs`, `DeflateMainSpecs`, `GzlibSpecs`, `GzreadSpecs`, `GzwriteSpecs`).
 -/
 
 namespace Zlib.Proof
@@ -141,6 +144,300 @@ theorem strlenAt_roExt {m1 m2 : Mem} {b : BlockId} {off : Int64} {len : Nat}
     cases h
   | some blk =>
     exact strlenAt_congr_block (hro.2.1 b (mem_lt_nextBlock hb)) h
+
+/-- `m'` leaves every block identical to `m` and only advances `nextBlock` (from freed locals). -/
+def MemBlocksUnchanged (m m' : Mem) : Prop :=
+  m.nextBlock ≤ m'.nextBlock ∧ ∀ b, m'.blocks b = m.blocks b
+
+theorem MemBlocksUnchanged.refl (m : Mem) : MemBlocksUnchanged m m :=
+  ⟨Nat.le_refl _, fun _ => rfl⟩
+
+theorem MemBlocksUnchanged.trans {m1 m2 m3 : Mem}
+    (h12 : MemBlocksUnchanged m1 m2) (h23 : MemBlocksUnchanged m2 m3) :
+    MemBlocksUnchanged m1 m3 :=
+  ⟨Nat.le_trans h12.1 h23.1, fun b => (h23.2 b).trans (h12.2 b)⟩
+
+theorem MemBlocksUnchanged.to_roExt {m m' : Mem} (h : MemBlocksUnchanged m m') :
+    C99.Proof.ROExt m m' := by
+  refine ⟨h.1, fun b _ => h.2 b, ?_⟩
+  intro b blk hle hs
+  rw [h.2 b, m.fresh b hle] at hs
+  cases hs
+
+theorem MemBlocksUnchanged.to_framePreserved {m m' : Mem} (h : MemBlocksUnchanged m m')
+    (allowed : BlockSet) : FramePreserved m m' allowed := by
+  refine ⟨fun b _ _ => h.2 b, fun b blk hnone hsome _ => ?_⟩
+  rw [h.2 b, hnone] at hsome
+  cases hsome
+
+theorem MemBlocksUnchanged.to_noHeapLeak {m m' : Mem} (h : MemBlocksUnchanged m m')
+    (owned' : BlockSet) : NoHeapLeak m m' owned' := by
+  intro b blk hsome _
+  left
+  rw [h.2 b] at hsome
+  simp [hsome]
+
+/-- `m'` preserves block existence and metadata (`size`, `align`, `perm`, `kind`, `baseAddr`) on `b`. -/
+def PreservesBlockMeta (m m' : Mem) (b : BlockId) : Prop :=
+  ∀ blk, m.blocks b = some blk →
+    ∃ blk', m'.blocks b = some blk' ∧
+      blk'.size = blk.size ∧ blk'.align = blk.align ∧
+      blk'.perm = blk.perm ∧ blk'.kind = blk.kind ∧ blk'.baseAddr = blk.baseAddr
+
+theorem PreservesBlockMeta.refl (m : Mem) (b : BlockId) : PreservesBlockMeta m m b :=
+  fun blk hb => ⟨blk, hb, rfl, rfl, rfl, rfl, rfl⟩
+
+theorem PreservesBlockMeta.trans {m1 m2 m3 : Mem} {b : BlockId}
+    (h12 : PreservesBlockMeta m1 m2 b) (h23 : PreservesBlockMeta m2 m3 b) :
+    PreservesBlockMeta m1 m3 b := by
+  intro blk1 hb1
+  obtain ⟨blk2, hb2, hsz1, hal1, hp1, hk1, hba1⟩ := h12 blk1 hb1
+  obtain ⟨blk3, hb3, hsz2, hal2, hp2, hk2, hba2⟩ := h23 blk2 hb2
+  exact ⟨blk3, hb3, hsz2.trans hsz1, hal2.trans hal1, hp2.trans hp1, hk2.trans hk1, hba2.trans hba1⟩
+
+theorem PreservesBlockMeta.of_blocks_eq {m m' : Mem} {b : BlockId}
+    (heq : m'.blocks b = m.blocks b) : PreservesBlockMeta m m' b :=
+  fun blk hb => ⟨blk, heq ▸ hb, rfl, rfl, rfl, rfl, rfl⟩
+
+theorem PreservesBlockMeta.writable {m m' : Mem} {b : BlockId} {off : Int64} {len : Nat}
+    (hpres : PreservesBlockMeta m m' b) (hw : Writable m (.ptr b off) len) :
+    Writable m' (.ptr b off) len := by
+  rcases hw with ⟨b', off', blk, hptr, hb, hperm, hin⟩
+  cases hptr
+  obtain ⟨blk', hb', hsz, _, hp, _, _⟩ := hpres blk hb
+  refine ⟨b, off, blk', rfl, hb', hp.trans hperm, ?_⟩
+  simpa [Mem.inBounds, hsz] using hin
+
+theorem PreservesBlockMeta.typedCell {tags : TypeEnv} {m m' : Mem} {b : BlockId} {off : Int64}
+    {ty : CTy} (hpres : PreservesBlockMeta m m' b) (htc : TypedCell tags m (.ptr b off) ty) :
+    TypedCell tags m' (.ptr b off) ty := by
+  rcases htc with ⟨b', off', blk, hptr, hb, hperm, hin, hal⟩
+  cases hptr
+  obtain ⟨blk', hb', hsz, _, hp, _, hba⟩ := hpres blk hb
+  refine ⟨b, off, blk', rfl, hb', hp.trans hperm, ?_, ?_⟩
+  · simpa [Mem.inBounds, hsz] using hin
+  · simpa [Mem.isAligned, hba] using hal
+
+/-- `m'` preserves block metadata on `b` and leaves all bytes outside `[off, off + len)` unchanged. -/
+def PreservesOutsideRange (m m' : Mem) (b : BlockId) (off : Int64) (len : Nat) : Prop :=
+  PreservesBlockMeta m m' b ∧
+  ∀ blk, m.blocks b = some blk →
+    ∃ blk', m'.blocks b = some blk' ∧
+      ∀ i : Nat, ((i : Int) < off.toInt ∨ off.toInt + len ≤ (i : Int)) → blk'.bytes i = blk.bytes i
+
+theorem PreservesOutsideRange.refl (m : Mem) (b : BlockId) (off : Int64) (len : Nat) :
+    PreservesOutsideRange m m b off len :=
+  ⟨PreservesBlockMeta.refl m b, fun blk hb => ⟨blk, hb, fun _ _ => rfl⟩⟩
+
+theorem PreservesOutsideRange.of_blocks_eq {m m' : Mem} {b : BlockId} {off : Int64} {len : Nat}
+    (heq : m'.blocks b = m.blocks b) : PreservesOutsideRange m m' b off len :=
+  ⟨PreservesBlockMeta.of_blocks_eq heq, fun blk hb => ⟨blk, heq ▸ hb, fun _ _ => rfl⟩⟩
+
+theorem PreservesOutsideRange.trans {m1 m2 m3 : Mem} {b : BlockId} {off : Int64} {len : Nat}
+    (h12 : PreservesOutsideRange m1 m2 b off len)
+    (h23 : PreservesOutsideRange m2 m3 b off len) :
+    PreservesOutsideRange m1 m3 b off len := by
+  refine ⟨h12.1.trans h23.1, fun blk1 hb1 => ?_⟩
+  obtain ⟨blk2, hb2, hbytes12⟩ := h12.2 blk1 hb1
+  obtain ⟨blk3, hb3, hbytes23⟩ := h23.2 blk2 hb2
+  exact ⟨blk3, hb3, fun i hi => (hbytes23 i hi).trans (hbytes12 i hi)⟩
+
+theorem PreservesOutsideRange.mono {m m' : Mem} {b : BlockId} {off1 off2 : Int64} {len1 len2 : Nat}
+    (h : PreservesOutsideRange m m' b off2 len2)
+    (hlo : off1.toInt ≤ off2.toInt) (hhi : off2.toInt + len2 ≤ off1.toInt + len1) :
+    PreservesOutsideRange m m' b off1 len1 := by
+  refine ⟨h.1, fun blk hb => ?_⟩
+  obtain ⟨blk', hb', hbytes⟩ := h.2 blk hb
+  exact ⟨blk', hb', fun i hi => hbytes i (by omega)⟩
+
+theorem PreservesOutsideRange.readBytes_outside {m m' : Mem} {b : BlockId}
+    {off roff : Int64} {len rlen : Nat}
+    (hpres : PreservesOutsideRange m m' b off len)
+    {blk : Block} (hb : m.blocks b = some blk)
+    (h0 : 0 ≤ roff.toInt)
+    (hdisj : roff.toInt + rlen ≤ off.toInt ∨ off.toInt + len ≤ roff.toInt) :
+    m'.readBytes b roff rlen = m.readBytes b roff rlen := by
+  obtain ⟨blk', hb', hsz, _, _, _, _⟩ := hpres.1 blk hb
+  obtain ⟨blk'', hb'', hbytes⟩ := hpres.2 blk hb
+  rw [hb'] at hb''
+  cases hb''
+  unfold Mem.readBytes
+  have hin : Mem.inBounds blk' roff rlen = Mem.inBounds blk roff rlen := by
+    simp [Mem.inBounds, hsz]
+  simp only [hb', hb, hin, bind, Option.bind]
+  cases Mem.inBounds blk roff rlen
+  · rfl
+  · simp only [guard, Pure.pure]
+    apply congrArg some
+    apply List.map_congr_left
+    intro i hi
+    have hlt : i < rlen := List.mem_range.mp hi
+    exact hbytes (roff.toInt.toNat + i) (by omega)
+
+private theorem cty_unqual_idem : ∀ ty : CTy, ty.unqual.unqual = ty.unqual
+  | .const_ t => by simp [CTy.unqual, cty_unqual_idem t]
+  | .typedef _ t => by simp [CTy.unqual, cty_unqual_idem t]
+  | .void | .int _ | .ptr _ | .array _ _ | .structTy _ | .unionTy _
+  | .anonStruct _ | .anonUnion _ | .enumTy _ _ | .fnPtr _ _ _ | .vaList => rfl
+
+private theorem sizeofAux_unqual (tags : TypeEnv) (fuel : Nat) :
+    ∀ ty : CTy, sizeofAux tags fuel ty.unqual = sizeofAux tags fuel ty
+  | .const_ t => by simp [CTy.unqual, sizeofAux_unqual tags fuel t]
+  | .typedef _ t => by simp [CTy.unqual, sizeofAux_unqual tags fuel t]
+  | .void | .int _ | .ptr _ | .array _ _ | .structTy _ | .unionTy _
+  | .anonStruct _ | .anonUnion _ | .enumTy _ _ | .fnPtr _ _ _ | .vaList => rfl
+
+private theorem sizeofTy_unqual (tags : TypeEnv) (ty : CTy) :
+    sizeofTy tags ty.unqual = sizeofTy tags ty :=
+  sizeofAux_unqual tags (tags.length + 1) ty
+
+theorem PreservesOutsideRange.readVal_outside (tags : TypeEnv) {m m' : Mem} {b : BlockId}
+    {off roff : Int64} {len : Nat} {ty : CTy}
+    (hpres : PreservesOutsideRange m m' b off len)
+    {blk : Block} (hb : m.blocks b = some blk)
+    (h0 : 0 ≤ roff.toInt)
+    (hdisj : roff.toInt + sizeofTy tags ty ≤ off.toInt ∨ off.toInt + len ≤ roff.toInt) :
+    Sem.readVal tags m' b roff ty = Sem.readVal tags m b roff ty := by
+  obtain ⟨blk', hb', _, _, _, _, hba⟩ := hpres.1 blk hb
+  have hsz : sizeofTy tags ty.unqual = sizeofTy tags ty := sizeofTy_unqual tags ty
+  have hal : Mem.isAligned blk' roff = Mem.isAligned blk roff := by
+    funext al
+    simp [Mem.isAligned, hba]
+  unfold Sem.readVal
+  cases hut : ty.unqual with
+  | array _ _ => rfl
+  | «int» k =>
+    have hk : k.bytes = sizeofTy tags ty := by
+      rw [← hsz, hut]; simp [sizeofTy]
+    have hrd := hpres.readBytes_outside hb h0 (hk ▸ hdisj)
+    simp [CTy.unqual, CTy.intKind?, hb', hb, hal, hrd]
+  | enumTy nm isU =>
+    have hk : (if isU then IntKind.u32 else IntKind.i32).bytes = sizeofTy tags ty := by
+      rw [← hsz, hut]; cases isU <;> simp [sizeofTy] <;> rfl
+    have hrd := hpres.readBytes_outside hb h0 (hk ▸ hdisj)
+    simp [CTy.unqual, CTy.intKind?, hb', hb, hal, hrd]
+  | ptr _ =>
+    have hk : (8 : Nat) = sizeofTy tags ty := by
+      rw [← hsz, hut]; simp [sizeofTy]
+    have hrd := hpres.readBytes_outside hb h0 (hk ▸ hdisj)
+    simp [hb', hb, hal, hrd]
+  | fnPtr _ _ _ =>
+    have hk : (8 : Nat) = sizeofTy tags ty := by
+      rw [← hsz, hut]; simp [sizeofTy]
+    have hrd := hpres.readBytes_outside hb h0 (hk ▸ hdisj)
+    simp [hb', hb, hal, hrd]
+  | vaList =>
+    have hk : (24 : Nat) = sizeofTy tags ty := by
+      rw [← hsz, hut]; simp [sizeofTy]
+    have hrd := hpres.readBytes_outside hb h0 (hk ▸ hdisj)
+    simp [sizeofTy, hrd]
+  | «void» => rfl
+  | const_ _ => rfl
+  | structTy _ => rfl
+  | unionTy _ => rfl
+  | anonStruct _ => rfl
+  | anonUnion _ => rfl
+  | typedef _ _ => rfl
+
+private theorem readVal_writeVal_same_ptr' (tags : TypeEnv) {m m' : Mem} {b : BlockId} {off : Int64}
+    {blk : Block} {tyw tyr elw elr : CTy} {v : Val}
+    (hwptr : tyw.unqual = .ptr elw) (hrptr : tyr.unqual = .ptr elr)
+    (hb : m.blocks b = some blk)
+    (hv : v = .null ∨ ∃ pb poff, v = .ptr pb poff)
+    (hwr : Sem.writeVal m b off tyw v = some m') :
+    Sem.readVal tags m' b off tyr = some v := by
+  unfold Sem.writeVal at hwr
+  by_cases hc : tyw.isConst
+  · simp [hc, bind, Option.bind, guard] at hwr
+  · simp only [hc, Bool.not_false, C99.Proof.guard_true, hb, hwptr, bind, Option.bind] at hwr
+    have hal : Mem.isAligned blk off 8 = true := by
+      cases hg : Mem.isAligned blk off 8
+      · simp [hg, guard] at hwr
+      · rfl
+    simp only [hal, C99.Proof.guard_true] at hwr
+    rcases hv with rfl | ⟨pb, poff, rfl⟩
+    · have hrd := C99.Proof.readBytes_writeBytes_same hb hwr
+      have hblk' := C99.Proof.writeBytes_blocks_eq hb hwr
+      have hal' : Mem.isAligned { blk with bytes := (fun i =>
+          if off.toInt.toNat ≤ i ∧ i < off.toInt.toNat + Mem.encodeNull.length then
+            Mem.encodeNull[i - off.toInt.toNat]?.getD .undef
+          else blk.bytes i) } off 8 = true := by
+        simpa [Mem.isAligned] using hal
+      unfold Sem.readVal
+      simp only [hrptr, hblk', hal', C99.Proof.guard_true, bind, Option.bind]
+      rw [← C99.Proof.encodeNull_length, hrd]
+      dsimp [pure]
+      rw [C99.Proof.decodePtr_encodeNull]
+    · have hrd := C99.Proof.readBytes_writeBytes_same hb hwr
+      have hblk' := C99.Proof.writeBytes_blocks_eq hb hwr
+      have hal' : Mem.isAligned { blk with bytes := (fun i =>
+          if off.toInt.toNat ≤ i ∧ i < off.toInt.toNat + (Mem.encodePtr pb poff).length then
+            (Mem.encodePtr pb poff)[i - off.toInt.toNat]?.getD .undef
+          else blk.bytes i) } off 8 = true := by
+        simpa [Mem.isAligned] using hal
+      unfold Sem.readVal
+      simp only [hrptr, hblk', hal', C99.Proof.guard_true, bind, Option.bind]
+      rw [← C99.Proof.encodePtr_length pb poff, hrd]
+      dsimp [pure]
+      rw [C99.Proof.decodePtr_encodePtr]
+
+theorem PreservesOutsideRange.readField?_outside (tags : TypeEnv) {m m' : Mem}
+    {b : BlockId} {pOff off : Int64} {len : Nat} {st fld : String} {foff : Nat} {fty : CTy}
+    (hpres : PreservesOutsideRange m m' b off len)
+    {blk : Block} (hb : m.blocks b = some blk)
+    (hfl : C99.fieldLayout? tags (.structTy st) fld = some (foff, fty))
+    (h0 : 0 ≤ pOff.toInt + foff) (hhi : pOff.toInt + foff < 2 ^ 63)
+    (hdisj : pOff.toInt + foff + sizeofTy tags fty ≤ off.toInt ∨
+      off.toInt + len ≤ pOff.toInt + foff) :
+    readField? tags m' (.ptr b pOff) st fld = readField? tags m (.ptr b pOff) st fld := by
+  unfold readField?
+  simp only [hfl, bind, Option.bind]
+  have hroff : (Int64.ofInt (pOff.toInt + foff)).toInt = pOff.toInt + foff :=
+    C99.Proof.int64_ofInt_toInt (by omega) hhi
+  exact hpres.readVal_outside tags hb (by rw [hroff]; exact h0) (by rw [hroff]; exact hdisj)
+
+theorem PreservesOutsideRange.readNatField?_outside (tags : TypeEnv) {m m' : Mem}
+    {b : BlockId} {pOff off : Int64} {len : Nat} {st fld : String} {foff : Nat} {fty : CTy}
+    (hpres : PreservesOutsideRange m m' b off len)
+    {blk : Block} (hb : m.blocks b = some blk)
+    (hfl : C99.fieldLayout? tags (.structTy st) fld = some (foff, fty))
+    (h0 : 0 ≤ pOff.toInt + foff) (hhi : pOff.toInt + foff < 2 ^ 63)
+    (hdisj : pOff.toInt + foff + sizeofTy tags fty ≤ off.toInt ∨
+      off.toInt + len ≤ pOff.toInt + foff) :
+    readNatField? tags m' (.ptr b pOff) st fld = readNatField? tags m (.ptr b pOff) st fld := by
+  unfold readNatField?
+  rw [hpres.readField?_outside tags hb hfl h0 hhi hdisj]
+
+theorem PreservesOutsideRange.readIntField?_outside (tags : TypeEnv) {m m' : Mem}
+    {b : BlockId} {pOff off : Int64} {len : Nat} {st fld : String} {foff : Nat} {fty : CTy}
+    (hpres : PreservesOutsideRange m m' b off len)
+    {blk : Block} (hb : m.blocks b = some blk)
+    (hfl : C99.fieldLayout? tags (.structTy st) fld = some (foff, fty))
+    (h0 : 0 ≤ pOff.toInt + foff) (hhi : pOff.toInt + foff < 2 ^ 63)
+    (hdisj : pOff.toInt + foff + sizeofTy tags fty ≤ off.toInt ∨
+      off.toInt + len ≤ pOff.toInt + foff) :
+    readIntField? tags m' (.ptr b pOff) st fld = readIntField? tags m (.ptr b pOff) st fld := by
+  unfold readIntField?
+  rw [hpres.readField?_outside tags hb hfl h0 hhi hdisj]
+
+theorem PreservesOutsideRange.readable_outside {m m' : Mem} {b : BlockId}
+    {off roff : Int64} {len rlen : Nat}
+    (hpres : PreservesOutsideRange m m' b off len)
+    (hr : Readable m (.ptr b roff) rlen)
+    (hdisj : roff.toInt + rlen ≤ off.toInt ∨ off.toInt + len ≤ roff.toInt) :
+    Readable m' (.ptr b roff) rlen := by
+  rcases hr with ⟨b', off', blk, hptr, hb, hin, hbytes⟩
+  cases hptr
+  obtain ⟨blk', hb', hsz, _, _, _, _⟩ := hpres.1 blk hb
+  obtain ⟨blk'', hb'', hbe⟩ := hpres.2 blk hb
+  rw [hb'] at hb''
+  cases hb''
+  have h0 : 0 ≤ roff.toInt := by
+    simp [Mem.inBounds] at hin
+    exact hin.1
+  refine ⟨b, roff, blk', rfl, hb', by simpa [Mem.inBounds, hsz] using hin, fun i hi => ?_⟩
+  rw [hbe (roff.toInt.toNat + i) (by omega)]
+  exact hbytes i hi
 
 /-- All blocks in `m` other than `errnoBlk` are read-only global blocks. -/
 def NonErrnoROGlobal (errnoBlk : BlockId) (m : Mem) : Prop :=
@@ -988,7 +1285,7 @@ private theorem writeInitList_zErrmsg_ge_lim {prog : Prog} {env : Env} {strBase 
           have hb1 : m1.blocks bid = some blk0 := by rw [hpres1.2 bid hblt, hb]
           have hrd2 : Sem.readVal prog.tags m2' bid (Int64.ofNat (8 * idx)) (.ptr (.const_ (.int .i8))) =
               some (.ptr sb 0) :=
-            C99.Proof.readVal_writeVal_same_ptr' prog.tags rfl rfl hb1 (Or.inr ⟨sb, 0, rfl⟩) hwr
+            readVal_writeVal_same_ptr' prog.tags rfl rfl hb1 (Or.inr ⟨sb, 0, rfl⟩) hwr
           obtain ⟨bs, hbs⟩ := C99.Proof.writeVal_writeBytes hwr
           have hnext2 : m2'.nextBlock = m1.nextBlock := C99.Proof.writeBytes_nextBlock hbs
           have hblt2 : bid < m2'.nextBlock := by rw [hnext2]; exact Nat.lt_of_lt_of_le hblt hpres1.1
@@ -1212,12 +1509,13 @@ def CodeSlotEntryValid (isRoot isDist : Bool) (count root : Nat) (op bits val : 
   1 ≤ bits ∧ bits ≤ 15 ∧
   if op &&& 16 ≠ 0 then
     (op &&& 15) ≤ 15 ∧ op &&& 64 = 0 ∧
-    if isDist then 1 ≤ val ∧ val + ((1 <<< (op &&& 15)) - 1) ≤ 32768
+    1 ≤ val ∧
+    if isDist then val + ((1 <<< (op &&& 15)) - 1) ≤ 32768
     else val + ((1 <<< (op &&& 15)) - 1) ≤ 258
   else if op &&& 64 = 0 ∧ op ≠ 0 then
     isRoot = true ∧ 1 ≤ op ∧ bits = root ∧ op + root ≤ 15 ∧ val + (1 <<< op) ≤ count
   else
-    op = 0 ∨ (op &&& 64) ≠ 0
+    (op = 0 ∧ isDist = false ∧ val ≤ 258) ∨ (op &&& 64) ≠ 0
 
 /-- Valid compiled Huffman decoding table (`code[count]`) rooted at `p` with `root` root bits. -/
 def CodeTableValid (tags : TypeEnv) (m : Mem) (p : Val) (root count : Nat) (isDist : Bool) : Prop :=
@@ -1320,8 +1618,8 @@ theorem codeTableValid_of_lenfix {prog : Prog} {gEnv : Env} {m0 : Mem} {os0 : OS
         rw [h0, Int.zero_add]; congr 1
       simpa [hcast] using hrv
     · refine ⟨by omega, by omega, ?_⟩
-      rcases hkind with ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨h16, h21, _, hbound⟩
-      · simp
+      rcases hkind with ⟨rfl, hv⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨h16, h21, hv, hbound⟩
+      · simp; omega
       · simp
       · simp
       · obtain ⟨h16', h15, h64⟩ := lenfix_extra_props op h21 h16
@@ -1375,6 +1673,10 @@ theorem codeTableValid_of_distfix {prog : Prog} {gEnv : Env} {m0 : Mem} {os0 : O
         simp only [h16', h15, h64, ne_eq, not_false_eq_true, ↓reduceIte, true_and]
         exact ⟨h1v, by omega⟩
 
+/-- Permutation table `order[0..18]` used by `inflate` in `LENLENS` (`mode = 16197`). -/
+def inflateOrder : List Nat :=
+  [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+
 /-- Owned heap block IDs of one live `inflate` stream. -/
 structure InflateWitness where
   stBid : BlockId
@@ -1402,8 +1704,10 @@ def InflateStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem)
   (∃ mode, readNatField? tags m st "inflate_state" "mode" = some mode ∧
     16180 ≤ mode ∧ mode ≤ 16211) ∧
   (∃ last_, readIntField? tags m st "inflate_state" "last" = some last_) ∧
-  (∃ wrap, readIntField? tags m st "inflate_state" "wrap" = some wrap ∧ 0 ≤ wrap ∧ wrap ≤ 7) ∧
-  (∃ reqwrap, readIntField? tags m st "inflate_state" "reqwrap" = some reqwrap ∧ 0 ≤ reqwrap ∧ reqwrap ≤ 7) ∧
+  (∃ wrap, readIntField? tags m st "inflate_state" "wrap" = some wrap ∧
+    0 ≤ wrap ∧ wrap ≤ 7 ∧ wrap ≠ 4) ∧
+  (∃ reqwrap, readIntField? tags m st "inflate_state" "reqwrap" = some reqwrap ∧
+    0 ≤ reqwrap ∧ reqwrap ≤ 7 ∧ reqwrap ≠ 4) ∧
   (∃ havedict, readIntField? tags m st "inflate_state" "havedict" = some havedict) ∧
   (∃ flags, readIntField? tags m st "inflate_state" "flags" = some flags) ∧
   (∃ dmax, readNatField? tags m st "inflate_state" "dmax" = some dmax) ∧
@@ -1411,14 +1715,20 @@ def InflateStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem)
   (∃ total, readNatField? tags m st "inflate_state" "total" = some total) ∧
   (∃ hd, readField? tags m st "inflate_state" "head" = some hd ∧
     (hd = .null ∨ ∃ hb hoff, hd = .ptr hb hoff)) ∧
-  (∃ reqbits wbits wsize whave wnext,
+  (∃ reqbits wbits wsize whave wnext wrap reqwrap mode,
     readNatField? tags m st "inflate_state" "reqbits" = some reqbits ∧
     readNatField? tags m st "inflate_state" "wbits" = some wbits ∧
     readNatField? tags m st "inflate_state" "wsize" = some wsize ∧
     readNatField? tags m st "inflate_state" "whave" = some whave ∧
     readNatField? tags m st "inflate_state" "wnext" = some wnext ∧
+    readIntField? tags m st "inflate_state" "wrap" = some wrap ∧
+    readIntField? tags m st "inflate_state" "reqwrap" = some reqwrap ∧
+    readNatField? tags m st "inflate_state" "mode" = some mode ∧
     (reqbits = 0 ∨ (8 ≤ reqbits ∧ reqbits ≤ 15)) ∧
     (wbits = 0 ∨ (8 ≤ wbits ∧ wbits ≤ 15)) ∧
+    (reqwrap = 0 → 8 ≤ reqbits) ∧
+    (wrap = 0 → 8 ≤ wbits) ∧
+    (16181 ≤ mode ∧ mode ≤ 16208 → 8 ≤ wbits) ∧
     match iw.win? with
     | none =>
       readField? tags m st "inflate_state" "window" = some .null ∧
@@ -1434,7 +1744,7 @@ def InflateStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem)
            ∀ j < whave, ∃ u : UInt8, wblk.bytes j = .byte u))) ∧
   (∃ hold bits length_ offset_ extra lenbits distbits ncode nlen ndist have_ sane back was,
     readNatField? tags m st "inflate_state" "hold" = some hold ∧
-    readNatField? tags m st "inflate_state" "bits" = some bits ∧ bits ≤ 63 ∧
+    readNatField? tags m st "inflate_state" "bits" = some bits ∧ bits ≤ 39 ∧
     readNatField? tags m st "inflate_state" "length" = some length_ ∧
     readNatField? tags m st "inflate_state" "offset" = some offset_ ∧
     readNatField? tags m st "inflate_state" "extra" = some extra ∧
@@ -1445,7 +1755,7 @@ def InflateStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem)
     readNatField? tags m st "inflate_state" "ndist" = some ndist ∧
     readNatField? tags m st "inflate_state" "have" = some have_ ∧
     readIntField? tags m st "inflate_state" "sane" = some sane ∧ sane = 1 ∧
-    readIntField? tags m st "inflate_state" "back" = some back ∧
+    readIntField? tags m st "inflate_state" "back" = some back ∧ -1 ≤ back ∧ back ≤ 256 ∧
     readNatField? tags m st "inflate_state" "was" = some was) ∧
   (∃ nextIdx : Nat, nextIdx ≤ 1732 ∧
     readField? tags m st "inflate_state" "next" =
@@ -1453,14 +1763,15 @@ def InflateStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem)
   (∃ lcode dcode,
     readField? tags m st "inflate_state" "lencode" = some lcode ∧
     readField? tags m st "inflate_state" "distcode" = some dcode ∧
-    (lcode = .ptr iw.stBid 1384 ∨
-      ∃ b_lf blk_lf, gEnv.lookup "lenfix" = some (b_lf, codeConstTy.array (some 512)) ∧
+    ((lcode = .ptr iw.stBid 1384 ∧
+        ∃ doff : Nat, dcode = .ptr iw.stBid (Int64.ofNat (1384 + 4 * doff)) ∧ doff ≤ 1732) ∨
+      (∃ b_lf blk_lf b_df blk_df,
+        gEnv.lookup "lenfix" = some (b_lf, codeConstTy.array (some 512)) ∧
         m.blocks b_lf = some blk_lf ∧ blk_lf.kind = .global ∧ blk_lf.perm = .ro ∧
-        lcode = .ptr b_lf 0) ∧
-    ((∃ doff : Nat, dcode = .ptr iw.stBid (Int64.ofNat (1384 + 4 * doff)) ∧ doff ≤ 1732) ∨
-      ∃ b_df blk_df, gEnv.lookup "distfix" = some (b_df, codeConstTy.array (some 32)) ∧
+        lcode = .ptr b_lf 0 ∧
+        gEnv.lookup "distfix" = some (b_df, codeConstTy.array (some 32)) ∧
         m.blocks b_df = some blk_df ∧ blk_df.kind = .global ∧ blk_df.perm = .ro ∧
-        dcode = .ptr b_df 0)) ∧
+        dcode = .ptr b_df 0))) ∧
   (∀ mode, readNatField? tags m st "inflate_state" "mode" = some mode →
     (mode = 16197 →
       ∃ ncode nlen ndist have_ : Nat,
@@ -1468,7 +1779,11 @@ def InflateStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem)
         readNatField? tags m st "inflate_state" "nlen" = some nlen ∧
         readNatField? tags m st "inflate_state" "ndist" = some ndist ∧
         readNatField? tags m st "inflate_state" "have" = some have_ ∧
-        ncode ≤ 19 ∧ 257 ≤ nlen ∧ nlen ≤ 286 ∧ 1 ≤ ndist ∧ ndist ≤ 30 ∧ have_ ≤ ncode) ∧
+        ncode ≤ 19 ∧ 257 ≤ nlen ∧ nlen ≤ 286 ∧ 1 ≤ ndist ∧ ndist ≤ 30 ∧ have_ ≤ ncode ∧
+        ∀ j < have_, ∃ v : BitVec 16,
+          Sem.readVal tags m iw.stBid
+            (Int64.ofNat (168 + 2 * inflateOrder[j]?.getD 0)) (.int .u16) =
+            some (.int .u16 v) ∧ v.toNat ≤ 15) ∧
     (mode = 16198 →
       ∃ nlen ndist have_ lenbits count : Nat,
         readNatField? tags m st "inflate_state" "nlen" = some nlen ∧
@@ -1482,18 +1797,25 @@ def InflateStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem)
           Sem.readVal tags m iw.stBid (Int64.ofNat (168 + 2 * i)) (.int .u16) = some (.int .u16 v) ∧
           v.toNat ≤ 15) ∧
     (16199 ≤ mode ∧ mode ≤ 16205 →
-      ∃ (lcode dcode : Val) (lenbits distbits length_ extra was : Nat),
+      ∃ (lcode dcode : Val) (lenbits distbits length_ offset_ extra was : Nat),
         readField? tags m st "inflate_state" "lencode" = some lcode ∧
         readField? tags m st "inflate_state" "distcode" = some dcode ∧
         readNatField? tags m st "inflate_state" "lenbits" = some lenbits ∧
         readNatField? tags m st "inflate_state" "distbits" = some distbits ∧
         readNatField? tags m st "inflate_state" "length" = some length_ ∧
+        readNatField? tags m st "inflate_state" "offset" = some offset_ ∧
         readNatField? tags m st "inflate_state" "extra" = some extra ∧
         readNatField? tags m st "inflate_state" "was" = some was ∧
-        lenbits ≤ 10 ∧ distbits ≤ 8 ∧ length_ ≤ 258 ∧ extra ≤ 15 ∧ was ≤ 258 ∧
+        lenbits ≤ 10 ∧ distbits ≤ 8 ∧
         (∃ lcount, CodeTableValid tags m lcode lenbits lcount false ∧
           (lcode = .ptr iw.stBid 1384 → lcount ≤ 1332)) ∧
-        (∃ dcount, CodeTableValid tags m dcode distbits dcount true)))
+        (∃ dcount, CodeTableValid tags m dcode distbits dcount true) ∧
+        (mode = 16201 → 1 ≤ length_ ∧ extra ≤ 15 ∧ length_ + (1 <<< extra) - 1 ≤ 258) ∧
+        (mode = 16202 → 1 ≤ length_ ∧ length_ ≤ 258 ∧ was = length_) ∧
+        (mode = 16203 → 1 ≤ length_ ∧ length_ ≤ 258 ∧ extra ≤ 15 ∧
+          1 ≤ offset_ ∧ offset_ + (1 <<< extra) - 1 ≤ 32768 ∧ length_ ≤ was ∧ was ≤ 258) ∧
+        (mode = 16204 → 1 ≤ length_ ∧ length_ ≤ 258 ∧
+          1 ≤ offset_ ∧ offset_ ≤ 32768 ∧ length_ ≤ was ∧ was ≤ 258)))
 
 /-- Ownership and state invariant for `inflateBack` stream (window block is caller-owned). -/
 structure InflateBackWitness where
@@ -1509,6 +1831,7 @@ def InflateBackWitness.ownedList (ibw : InflateBackWitness) : List BlockId :=
 def InflateBackInv (tags : TypeEnv) (m : Mem)
     (strmPtr : Val) (ibw : InflateBackWitness) : Prop :=
   HeapRwBlock m ibw.stBid 8328 8 ∧
+  PtrBlock strmPtr ≠ some ibw.winBid ∧ ibw.winBid ≠ ibw.stBid ∧
   8 ≤ ibw.wbits ∧ ibw.wbits ≤ 15 ∧
   Writable m (.ptr ibw.winBid ibw.winOff) (2 ^ ibw.wbits) ∧
   readField? tags m strmPtr "z_stream_s" "state" = some (.ptr ibw.stBid 0) ∧
@@ -1521,7 +1844,8 @@ def InflateBackInv (tags : TypeEnv) (m : Mem)
   readNatField? tags m st "inflate_state" "wbits" = some ibw.wbits ∧
   readNatField? tags m st "inflate_state" "wsize" = some (2 ^ ibw.wbits) ∧
   readNatField? tags m st "inflate_state" "wnext" = some 0 ∧
-  readNatField? tags m st "inflate_state" "whave" = some 0 ∧
+  (∃ whave, readNatField? tags m st "inflate_state" "whave" = some whave ∧
+    whave ≤ 2 ^ ibw.wbits) ∧
   readNatField? tags m st "inflate_state" "sane" = some 1 ∧
   readNatField? tags m st "inflate_state" "dmax" = some 32768
 
@@ -1537,9 +1861,51 @@ structure DeflateWitness where
 def DeflateWitness.ownedList (dw : DeflateWitness) : List BlockId :=
   [dw.stBid, dw.winBid, dw.prevBid, dw.headBid, dw.pbufBid]
 
+/-- Every match chain starting from `head[0..hsize-1]` within the un-overwritten window
+horizon `wsize` below `bound` stays initialized, strictly decreases along `prev`, and stays `≤ bound`. -/
+def ValidPrevChain (tags : TypeEnv) (m : Mem) (headBid prevBid : BlockId)
+    (hsize wsize bound : Nat) : Prop :=
+  (∀ i < hsize, ∃ hv : BitVec 16,
+    Sem.readVal tags m headBid (Int64.ofNat (2 * i)) (.int .u16) = some (.int .u16 hv) ∧
+    hv.toNat ≤ bound) ∧
+  (∀ p : Nat, 0 < p → p ≤ bound → bound < p + wsize →
+    ((∃ i < hsize,
+        Sem.readVal tags m headBid (Int64.ofNat (2 * i)) (.int .u16) =
+          some (.int .u16 (BitVec.ofNat 16 p))) ∨
+      (∃ q : Nat, 0 < q ∧ q ≤ bound ∧ bound < q + wsize ∧
+        Sem.readVal tags m prevBid (Int64.ofNat (2 * (q % wsize))) (.int .u16) =
+          some (.int .u16 (BitVec.ofNat 16 p)))) →
+    ∃ pv : BitVec 16,
+      Sem.readVal tags m prevBid (Int64.ofNat (2 * (p % wsize))) (.int .u16) =
+        some (.int .u16 pv) ∧
+      pv.toNat < p)
+
+theorem ValidPrevChain.congr_blocks {tags : TypeEnv} {m1 m2 : Mem}
+    {headBid prevBid : BlockId} {hsize wsize bound : Nat}
+    (hhd : m2.blocks headBid = m1.blocks headBid)
+    (hprv : m2.blocks prevBid = m1.blocks prevBid)
+    (h : ValidPrevChain tags m1 headBid prevBid hsize wsize bound) :
+    ValidPrevChain tags m2 headBid prevBid hsize wsize bound := by
+  refine ⟨fun i hi => ?_, fun p hp0 hple hphor hreach => ?_⟩
+  · rcases h.1 i hi with ⟨hv, hrv, hle⟩
+    exact ⟨hv, by rw [readVal_eq_of_blocks_eq tags hhd]; exact hrv, hle⟩
+  · have hreach1 : (∃ i < hsize,
+        Sem.readVal tags m1 headBid (Int64.ofNat (2 * i)) (.int .u16) =
+          some (.int .u16 (BitVec.ofNat 16 p))) ∨
+      (∃ q : Nat, 0 < q ∧ q ≤ bound ∧ bound < q + wsize ∧
+        Sem.readVal tags m1 prevBid (Int64.ofNat (2 * (q % wsize))) (.int .u16) =
+          some (.int .u16 (BitVec.ofNat 16 p))) := by
+      rcases hreach with ⟨i, hi, hrv⟩ | ⟨q, hq0, hqle, hqhor, hrv⟩
+      · left; exact ⟨i, hi, by rw [← readVal_eq_of_blocks_eq tags hhd]; exact hrv⟩
+      · right; exact ⟨q, hq0, hqle, hqhor, by rw [← readVal_eq_of_blocks_eq tags hprv]; exact hrv⟩
+    rcases h.2 p hp0 hple hphor hreach1 with ⟨pv, hrv, hlt⟩
+    exact ⟨pv, by rw [readVal_eq_of_blocks_eq tags hprv]; exact hrv, hlt⟩
+
 /-- Full memory invariant for an initialized `deflate` stream at `strmPtr`.
-`prev` bytes are NOT constrained to be initialized (see documented `slide_hash` exception),
-and client-mutable `z_stream_s` fields are NOT constrained. -/
+`prev` bytes outside active chains are NOT constrained to be initialized (see `slide_hash` exception);
+client-mutable `z_stream_s` fields (`next_in`, `avail_in`, `total_in`, `next_out`, `avail_out`,
+`total_out`, `msg`, `data_type`, `reserved`) are NOT constrained (`adler` is initialized by
+`deflateResetKeep`/`deflateCopy` and preserved by `ClientFrame`). -/
 def DeflateStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem)
     (strmPtr : Val) (dw : DeflateWitness) : Prop :=
   dw.ownedList.Nodup ∧
@@ -1549,6 +1915,7 @@ def DeflateStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem)
   readField? tags m strmPtr "z_stream_s" "zfree" = some (.fnPtr "zcfree") ∧
   (∃ op, readField? tags m strmPtr "z_stream_s" "opaque" = some op ∧
     (op = .null ∨ ∃ ob ooff, op = .ptr ob ooff)) ∧
+  (∃ ad, readNatField? tags m strmPtr "z_stream_s" "adler" = some ad) ∧
   let s : Val := .ptr dw.stBid 0
   readField? tags m s "internal_state" "strm" = some strmPtr ∧
   (∃ status, readIntField? tags m s "internal_state" "status" = some status ∧
@@ -1605,6 +1972,11 @@ def DeflateStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem)
       insert ≤ strstart ∧ strstart + lookahead ≤ winSize ∧ highWater ≤ winSize ∧
       strstart + lookahead ≤ highWater ∧
       -((winSize : Int)) ≤ blockStart ∧ blockStart ≤ (strstart : Int) ∧
+      (matchAvail = 0 ∨ matchAvail = 1) ∧ (matchAvail = 1 → 1 ≤ strstart) ∧
+      prevLen ≤ 258 ∧ matchLen ≤ 258 ∧ (slid = 0 ∨ slid = 1) ∧
+      (matchAvail = 1 ∧ 3 ≤ matchLen →
+        let d := (BitVec.ofNat 32 strstart - 1#32 - BitVec.ofNat 32 matchStart).toNat
+        1 ≤ d ∧ d ≤ wsize - 262) ∧
       m.blocks dw.winBid = some wblk ∧
       ∀ j < highWater, ∃ u : UInt8, wblk.bytes j = .byte u)) ∧
   (∃ litBuf pbufSize pOutOff pending symNext symEnd optLen staticLen matches_ biBuf biValid biUsed pblk,
@@ -1661,7 +2033,39 @@ def DeflateStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem)
   (∀ i < 16, ∃ bv : BitVec 16,
     Sem.readVal tags m dw.stBid (Int64.ofNat (2976 + 2 * i)) (.int .u16) = some (.int .u16 bv)) ∧
   (∀ i < 573, ∃ bv : BitVec 8,
-    Sem.readVal tags m dw.stBid (Int64.ofNat (5308 + i)) (.int .u8) = some (.int .u8 bv))
+    Sem.readVal tags m dw.stBid (Int64.ofNat (5308 + i)) (.int .u8) = some (.int .u8 bv)) ∧
+  (∀ level matches_ blockStart wsize hsize strstart,
+    readIntField? tags m s "internal_state" "level" = some level →
+    readNatField? tags m s "internal_state" "matches" = some matches_ →
+    readIntField? tags m s "internal_state" "block_start" = some blockStart →
+    readNatField? tags m s "internal_state" "w_size" = some wsize →
+    readNatField? tags m s "internal_state" "hash_size" = some hsize →
+    readNatField? tags m s "internal_state" "strstart" = some strstart →
+    (level ≠ 0 → matches_ = 0) ∧
+    (level = 0 → 0 ≤ blockStart) ∧
+    ((level ≠ 0 ∨ matches_ = 0) →
+      ValidPrevChain tags m dw.headBid dw.prevBid hsize wsize strstart) ∧
+    (level = 0 ∧ matches_ = 1 →
+      ∃ hBound, hBound ≤ strstart + wsize ∧ hBound < 2 * wsize ∧
+        ValidPrevChain tags m dw.headBid dw.prevBid hsize wsize hBound))
+
+/-- Client-mutable scalar fields on `z_stream_s` initialized by `inflate` (`total_in`, `total_out`,
+`data_type`, and `adler` whenever `wrap ≠ 0`). -/
+def InflateAccumulatorsInit (tags : TypeEnv) (m : Mem) (strmPtr : Val) (wrap : Int) : Prop :=
+  (∃ tin, readNatField? tags m strmPtr "z_stream_s" "total_in" = some tin) ∧
+  (∃ tout, readNatField? tags m strmPtr "z_stream_s" "total_out" = some tout) ∧
+  (wrap = 0 ∨ ∃ ad, readNatField? tags m strmPtr "z_stream_s" "adler" = some ad) ∧
+  (∃ dt, readIntField? tags m strmPtr "z_stream_s" "data_type" = some dt)
+
+theorem InflateAccumulatorsInit.congr_block {tags : TypeEnv} {m1 m2 : Mem} {b : BlockId}
+    {off : Int64} {wrap : Int} (heq : m2.blocks b = m1.blocks b)
+    (h : InflateAccumulatorsInit tags m1 (.ptr b off) wrap) :
+    InflateAccumulatorsInit tags m2 (.ptr b off) wrap := by
+  rcases h with ⟨⟨a, ha⟩, ⟨b', hb'⟩, h3, ⟨d, hd⟩⟩
+  refine ⟨⟨a, by rw [readNatField?_congr_block tags heq]; exact ha⟩,
+    ⟨b', by rw [readNatField?_congr_block tags heq]; exact hb'⟩,
+    h3.elim Or.inl (fun ⟨c, hc⟩ => Or.inr ⟨c, by rw [readNatField?_congr_block tags heq]; exact hc⟩),
+    ⟨d, by rw [readIntField?_congr_block tags heq]; exact hd⟩⟩
 
 /-- Client-mutable scalar accumulator fields on `z_stream_s` (`total_in`, `total_out`,
 `adler`, `data_type`) required initialized on internal/owned stream calls (`compress`,
@@ -1671,6 +2075,11 @@ def StreamAccumulatorsInit (tags : TypeEnv) (m : Mem) (strmPtr : Val) : Prop :=
   (∃ tout, readNatField? tags m strmPtr "z_stream_s" "total_out" = some tout) ∧
   (∃ ad, readNatField? tags m strmPtr "z_stream_s" "adler" = some ad) ∧
   (∃ dt, readIntField? tags m strmPtr "z_stream_s" "data_type" = some dt)
+
+theorem StreamAccumulatorsInit.to_inflateAccumulators {tags : TypeEnv} {m : Mem} {strmPtr : Val}
+    (wrap : Int) (h : StreamAccumulatorsInit tags m strmPtr) :
+    InflateAccumulatorsInit tags m strmPtr wrap :=
+  ⟨h.1, h.2.1, Or.inr h.2.2.1, h.2.2.2⟩
 
 theorem StreamAccumulatorsInit.congr_block {tags : TypeEnv} {m1 m2 : Mem} {b : BlockId} {off : Int64}
     (heq : m2.blocks b = m1.blocks b) (h : StreamAccumulatorsInit tags m1 (.ptr b off)) :
@@ -1739,13 +2148,18 @@ theorem InflateStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
   · simpa [readNatField?_congr_block tags hst] using hck
   · simpa [readNatField?_congr_block tags hst] using htot
   · simpa [readField?_congr_block tags hst] using hhead
-  · rcases hwin with ⟨rb, wb, ws, wh, wn, hrb, hwb, hws, hwh, hwn, hrb_b, hwb_b, hmatch⟩
-    refine ⟨rb, wb, ws, wh, wn, ?_, ?_, ?_, ?_, ?_, hrb_b, hwb_b, ?_⟩
+  · rcases hwin with ⟨rb, wb, ws, wh, wn, wr, rwr, md,
+      hrb, hwb, hws, hwh, hwn, hwr, hrwr, hmd, hrb_b, hwb_b, hrw_b, hw_b, hm_b, hmatch⟩
+    refine ⟨rb, wb, ws, wh, wn, wr, rwr, md,
+      ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hrb_b, hwb_b, hrw_b, hw_b, hm_b, ?_⟩
     · rw [readNatField?_congr_block tags hst]; exact hrb
     · rw [readNatField?_congr_block tags hst]; exact hwb
     · rw [readNatField?_congr_block tags hst]; exact hws
     · rw [readNatField?_congr_block tags hst]; exact hwh
     · rw [readNatField?_congr_block tags hst]; exact hwn
+    · rw [readIntField?_congr_block tags hst]; exact hwr
+    · rw [readIntField?_congr_block tags hst]; exact hrwr
+    · rw [readNatField?_congr_block tags hst]; exact hmd
     · cases hw_eq : iw.win? with
       | none =>
         rw [hw_eq] at hmatch
@@ -1758,26 +2172,35 @@ theorem InflateStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
         refine ⟨h1, h2, ?_, wblk, hwin_blk ▸ hmb, rest⟩
         rw [readField?_congr_block tags hst]; exact hwf
   · rcases hsc with ⟨ho, bi, le, off, ex, lb, db, nc, nl, nd, hv, sn, bk, ws,
-      h1, h2, h2b, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h12b, h13, h14⟩
+      h1, h2, h2b, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h12b, h13, h13b, h13c, h14⟩
     refine ⟨ho, bi, le, off, ex, lb, db, nc, nl, nd, hv, sn, bk, ws, ?_⟩
     simp only [readNatField?_congr_block tags hst, readIntField?_congr_block tags hst]
-    exact ⟨h1, h2, h2b, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h12b, h13, h14⟩
+    exact ⟨h1, h2, h2b, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h12b, h13, h13b, h13c, h14⟩
   · simpa [readField?_congr_block tags hst] using hnext
-  · rcases hcodes with ⟨lc, dc, hlc, hdc, hlc_p, hdc_p⟩
-    refine ⟨lc, dc, ?_, ?_, ?_, ?_⟩
+  · rcases hcodes with ⟨lc, dc, hlc, hdc, hcds⟩
+    refine ⟨lc, dc, ?_, ?_, ?_⟩
     · rw [readField?_congr_block tags hst]; exact hlc
     · rw [readField?_congr_block tags hst]; exact hdc
-    · rcases hlc_p with rfl | ⟨b_lf, blk_lf, hlu_lf, hm_lf, hk_lf, hp_lf, rfl⟩
-      · exact Or.inl rfl
-      · exact Or.inr ⟨b_lf, blk_lf, hlu_lf, (hroG b_lf blk_lf hm_lf hk_lf hp_lf).symm ▸ hm_lf, hk_lf, hp_lf, rfl⟩
-    · rcases hdc_p with ⟨doff, rfl, hdoff⟩ | ⟨b_df, blk_df, hlu_df, hm_df, hk_df, hp_df, rfl⟩
-      · exact Or.inl ⟨doff, rfl, hdoff⟩
-      · exact Or.inr ⟨b_df, blk_df, hlu_df, (hroG b_df blk_df hm_df hk_df hp_df).symm ▸ hm_df, hk_df, hp_df, rfl⟩
+    · rcases hcds with ⟨rfl, doff, rfl, hdoff⟩ |
+        ⟨b_lf, blk_lf, b_df, blk_df, hlu_lf, hm_lf, hk_lf, hp_lf, rfl, hlu_df, hm_df, hk_df, hp_df, rfl⟩
+      · exact Or.inl ⟨rfl, doff, rfl, hdoff⟩
+      · exact Or.inr ⟨b_lf, blk_lf, b_df, blk_df, hlu_lf,
+          (hroG b_lf blk_lf hm_lf hk_lf hp_lf).symm ▸ hm_lf, hk_lf, hp_lf, rfl, hlu_df,
+          (hroG b_df blk_df hm_df hk_df hp_df).symm ▸ hm_df, hk_df, hp_df, rfl⟩
   · intro mode hmd
     rw [readNatField?_congr_block tags hst] at hmd
     obtain ⟨hm1, hm2, hm3⟩ := hmodes mode hmd
     refine ⟨?_, ?_, ?_⟩
-    · intro hm; simp only [readNatField?_congr_block tags hst]; exact hm1 hm
+    · intro hm
+      rcases hm1 hm with ⟨nc, nl, nd, hv, h1, h2, h3, h4, b1, b2, b3, b4, b5, b6, hord⟩
+      refine ⟨nc, nl, nd, hv, ?_, ?_, ?_, ?_, b1, b2, b3, b4, b5, b6, ?_⟩
+      · rw [readNatField?_congr_block tags hst]; exact h1
+      · rw [readNatField?_congr_block tags hst]; exact h2
+      · rw [readNatField?_congr_block tags hst]; exact h3
+      · rw [readNatField?_congr_block tags hst]; exact h4
+      · intro j hj
+        rcases hord j hj with ⟨v, hrv, hvle⟩
+        exact ⟨v, by rw [readVal_eq_of_blocks_eq tags hst]; exact hrv, hvle⟩
     · intro hm
       rcases hm2 hm with ⟨nl, nd, hv, lb, cnt, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, htab, hcnt, hlens⟩
       refine ⟨nl, nd, hv, lb, cnt, ?_, ?_, ?_, ?_, h5, h6, h7, h8, h9, h10, ?_, hcnt, ?_⟩
@@ -1790,8 +2213,10 @@ theorem InflateStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
         rcases hlens i hi with ⟨v, hrv, hle⟩
         exact ⟨v, by rw [readVal_eq_of_blocks_eq tags hst]; exact hrv, hle⟩
     · intro hm
-      rcases hm3 hm with ⟨lc, dc, lb, db, len_, ex, ws, h1, h2, h3, h4, h5, h6, h7, hlb, hdb, hl_, hex, hws, ⟨lcnt, hlct, hlptr⟩, ⟨dcnt, hdct⟩⟩
-      refine ⟨lc, dc, lb, db, len_, ex, ws, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hlb, hdb, hl_, hex, hws, ?_, ?_⟩
+      rcases hm3 hm with ⟨lc, dc, lb, db, len_, off_, ex, ws,
+        h1, h2, h3, h4, h5, h6, h7, h8, hlb, hdb, ⟨lcnt, hlct, hlptr⟩, ⟨dcnt, hdct⟩, pm1, pm2, pm3, pm4⟩
+      refine ⟨lc, dc, lb, db, len_, off_, ex, ws,
+        ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hlb, hdb, ?_, ?_, pm1, pm2, pm3, pm4⟩
       · rw [readField?_congr_block tags hst]; exact h1
       · rw [readField?_congr_block tags hst]; exact h2
       · rw [readNatField?_congr_block tags hst]; exact h3
@@ -1799,16 +2224,17 @@ theorem InflateStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
       · rw [readNatField?_congr_block tags hst]; exact h5
       · rw [readNatField?_congr_block tags hst]; exact h6
       · rw [readNatField?_congr_block tags hst]; exact h7
+      · rw [readNatField?_congr_block tags hst]; exact h8
       · refine ⟨lcnt, ?_, hlptr⟩
-        rcases hcodes with ⟨lc', _, hlc', _, hlc_p, _⟩
+        rcases hcodes with ⟨lc', _, hlc', _, hcds⟩
         rw [hlc'] at h1; cases h1
-        rcases hlc_p with rfl | ⟨b_lf, blk_lf, _, hm_lf, hk_lf, hp_lf, rfl⟩
+        rcases hcds with ⟨rfl, _⟩ | ⟨b_lf, blk_lf, _, _, _, hm_lf, hk_lf, hp_lf, rfl, _⟩
         · exact hlct.congr_block rfl hst
         · exact hlct.congr_block rfl (hroG b_lf blk_lf hm_lf hk_lf hp_lf)
       · refine ⟨dcnt, ?_⟩
-        rcases hcodes with ⟨_, dc', _, hdc', _, hdc_p⟩
+        rcases hcodes with ⟨_, dc', _, hdc', hcds⟩
         rw [hdc'] at h2; cases h2
-        rcases hdc_p with ⟨doff, rfl, _⟩ | ⟨b_df, blk_df, _, hm_df, hk_df, hp_df, rfl⟩
+        rcases hcds with ⟨_, doff, rfl, _⟩ | ⟨_, _, b_df, blk_df, _, _, _, _, _, _, hm_df, hk_df, hp_df, rfl⟩
         · exact hdct.congr_block rfl hst
         · exact hdct.congr_block rfl (hroG b_df blk_df hm_df hk_df hp_df)
 
@@ -1835,7 +2261,7 @@ theorem InflateStateInv.roExt {tags : TypeEnv} {gEnv : Env}
         simp only [Option.toList_some, List.mem_singleton] at hmem
         subst hmem
         rcases h with ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, hwin, _⟩
-        rcases hwin with ⟨_, _, _, _, _, _, _, _, _, _, _, _, hmatch⟩
+        rcases hwin with ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, hmatch⟩
         rw [hw] at hmatch
         rcases hmatch with ⟨_, _, _, wblk, hmwb, _⟩
         exact hro.2.1 b (mem_lt_nextBlock hmwb)
@@ -1853,8 +2279,8 @@ theorem InflateBackInv.congr_blocks {tags : TypeEnv}
            readField? tags m2 strmPtr "z_stream_s" "opaque" = readField? tags m1 strmPtr "z_stream_s" "opaque")
     (h : InflateBackInv tags m1 strmPtr ibw) :
     InflateBackInv tags m2 strmPtr ibw := by
-  rcases h with ⟨hh, hwb1, hwb2, _, hs1, hs2, hs3, hs4, hw, hwb, hws, hwn, hwh, hsn, hdm⟩
-  refine ⟨hh.congr_blocks hst, hwb1, hwb2, hwin, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  rcases h with ⟨hh, hne1, hne2, hwb1, hwb2, _, hs1, hs2, hs3, hs4, hw, hwb, hws, hwn, ⟨wh, hwh, hwhle⟩, hsn, hdm⟩
+  refine ⟨hh.congr_blocks hst, hne1, hne2, hwb1, hwb2, hwin, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ⟨wh, ?_, hwhle⟩, ?_, ?_⟩
   · rw [hsa.1]; exact hs1
   · rw [hsa.2.1]; exact hs2
   · rw [hsa.2.2.1]; exact hs3
@@ -1877,7 +2303,7 @@ theorem InflateBackInv.roExt {tags : TypeEnv}
   have hsb_eq : m2.blocks sb = m1.blocks sb := hro.2.1 sb (mem_lt_nextBlock hsblk')
   rcases h.1 with ⟨stblk, hstb, _⟩
   exact InflateBackInv.congr_blocks (hro.2.1 ibw.stBid (mem_lt_nextBlock hstb))
-    (writable_roExt hro h.2.2.2.1)
+    (writable_roExt hro h.2.2.2.2.2.1)
     ⟨readField?_congr_block tags hsb_eq, readField?_congr_block tags hsb_eq,
       readField?_congr_block tags hsb_eq, readField?_congr_block tags hsb_eq⟩ h
 
@@ -1887,7 +2313,8 @@ theorem DeflateStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
     (hsa : readField? tags m2 strmPtr "z_stream_s" "state" = readField? tags m1 strmPtr "z_stream_s" "state" ∧
            readField? tags m2 strmPtr "z_stream_s" "zalloc" = readField? tags m1 strmPtr "z_stream_s" "zalloc" ∧
            readField? tags m2 strmPtr "z_stream_s" "zfree" = readField? tags m1 strmPtr "z_stream_s" "zfree" ∧
-           readField? tags m2 strmPtr "z_stream_s" "opaque" = readField? tags m1 strmPtr "z_stream_s" "opaque")
+           readField? tags m2 strmPtr "z_stream_s" "opaque" = readField? tags m1 strmPtr "z_stream_s" "opaque" ∧
+           readField? tags m2 strmPtr "z_stream_s" "adler" = readField? tags m1 strmPtr "z_stream_s" "adler")
     (h : DeflateStateInv tags gEnv m1 strmPtr dw) :
     DeflateStateInv tags gEnv m2 strmPtr dw := by
   have hst : m2.blocks dw.stBid = m1.blocks dw.stBid := hpres dw.stBid (by simp [DeflateWitness.ownedList])
@@ -1895,13 +2322,14 @@ theorem DeflateStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
   have hprv : m2.blocks dw.prevBid = m1.blocks dw.prevBid := hpres dw.prevBid (by simp [DeflateWitness.ownedList])
   have hhd : m2.blocks dw.headBid = m1.blocks dw.headBid := hpres dw.headBid (by simp [DeflateWitness.ownedList])
   have hpbf : m2.blocks dw.pbufBid = m1.blocks dw.pbufBid := hpres dw.pbufBid (by simp [DeflateWitness.ownedList])
-  rcases h with ⟨hnodup, hh, hs_st, hs_za, hs_zf, hs_op, hstrm, hstatus, hwrap, hgzhd, hsc,
-    hwinf, hpbuf, hdescs, htrees, hlt, hdt, hblt, hblc, hdep⟩
-  refine ⟨hnodup, hh.congr_blocks hst, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  rcases h with ⟨hnodup, hh, hs_st, hs_za, hs_zf, hs_op, ⟨ad, had⟩, hstrm, hstatus, hwrap, hgzhd, hsc,
+    hwinf, hpbuf, hdescs, htrees, hlt, hdt, hblt, hblc, hdep, hchain⟩
+  refine ⟨hnodup, hh.congr_blocks hst, ?_, ?_, ?_, ?_, ⟨ad, ?_⟩, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · rw [hsa.1]; exact hs_st
   · rw [hsa.2.1]; exact hs_za
   · rw [hsa.2.2.1]; exact hs_zf
-  · rw [hsa.2.2.2]; exact hs_op
+  · rw [hsa.2.2.2.1]; exact hs_op
+  · unfold readNatField? at had ⊢; rw [hsa.2.2.2.2]; exact had
   · rw [readField?_congr_block tags hst]; exact hstrm
   · simpa [readIntField?_congr_block tags hst] using hstatus
   · simpa [readIntField?_congr_block tags hst] using hwrap
@@ -1932,8 +2360,10 @@ theorem DeflateStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
         exact ⟨hv, by rw [readVal_eq_of_blocks_eq tags hhd]; exact hrv⟩
     · rcases hpos with ⟨p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15, wbl,
         q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15,
-        c1, c2, c3, c4, c5, c6, qblk, qbytes⟩
-      refine ⟨p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15, wbl, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, c1, c2, c3, c4, c5, c6, hwin ▸ qblk, qbytes⟩ <;>
+        c1, c2, c3, c4, c5, c6, d1, d2, d3, d4, d5, d6, qblk, qbytes⟩
+      refine ⟨p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15, wbl,
+        ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_,
+        c1, c2, c3, c4, c5, c6, d1, d2, d3, d4, d5, d6, hwin ▸ qblk, qbytes⟩ <;>
         simp only [readNatField?_congr_block tags hst, readIntField?_congr_block tags hst] <;>
         assumption
   · rcases hpbuf with ⟨a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13,
@@ -1962,6 +2392,12 @@ theorem DeflateStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
     exact ⟨bv, by rw [readVal_eq_of_blocks_eq tags hst]; exact h1⟩
   · intro i hi; rcases hdep i hi with ⟨bv, h1⟩
     exact ⟨bv, by rw [readVal_eq_of_blocks_eq tags hst]; exact h1⟩
+  · intro lvl mt bks ws hs str h1 h2 h3 h4 h5 h6
+    simp only [readIntField?_congr_block tags hst, readNatField?_congr_block tags hst] at h1 h2 h3 h4 h5 h6
+    obtain ⟨hc1, hc2, hc3, hc4⟩ := hchain lvl mt bks ws hs str h1 h2 h3 h4 h5 h6
+    refine ⟨hc1, hc2, fun ho => (hc3 ho).congr_blocks hhd hprv, fun ha => ?_⟩
+    obtain ⟨hbnd, hb1, hb2, hvc⟩ := hc4 ha
+    exact ⟨hbnd, hb1, hb2, hvc.congr_blocks hhd hprv⟩
 
 theorem DeflateStateInv.roExt {tags : TypeEnv} {gEnv : Env}
     {m1 m2 : Mem} {strmPtr : Val} {dw : DeflateWitness} {sb : BlockId} {soff : Int64}
@@ -1973,7 +2409,7 @@ theorem DeflateStateInv.roExt {tags : TypeEnv} {gEnv : Env}
   have hsb_eq : m2.blocks sb = m1.blocks sb := hro.2.1 sb (mem_lt_nextBlock hsblk')
   refine DeflateStateInv.congr_blocks ?_ ?_ h
   · intro b hb
-    rcases h with ⟨_, hst, _, _, _, _, _, _, _, _, _, hwinf, hpbuf, _⟩
+    rcases h with ⟨_, hst, _, _, _, _, _, _, _, _, _, _, hwinf, hpbuf, _⟩
     simp only [DeflateWitness.ownedList, List.mem_cons, List.not_mem_nil, or_false] at hb
     rcases hb with rfl | rfl | rfl | rfl | rfl
     · rcases hst with ⟨blk, hmb, _⟩; exact hro.2.1 dw.stBid (mem_lt_nextBlock hmb)
@@ -1986,7 +2422,8 @@ theorem DeflateStateInv.roExt {tags : TypeEnv} {gEnv : Env}
     · rcases hpbuf with ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, hpblk, _⟩
       exact hro.2.1 dw.pbufBid (mem_lt_nextBlock hpblk)
   · exact ⟨readField?_congr_block tags hsb_eq, readField?_congr_block tags hsb_eq,
-      readField?_congr_block tags hsb_eq, readField?_congr_block tags hsb_eq⟩
+      readField?_congr_block tags hsb_eq, readField?_congr_block tags hsb_eq,
+      readField?_congr_block tags hsb_eq⟩
 
 /-! ## 3. Gzip File Handle Witness & Invariant (`GzWitness`, `GzStateInv`) -/
 
@@ -2010,9 +2447,11 @@ def GzWitness.ownedList (gw : GzWitness) : List BlockId :=
     GzWitness.streamOwnedList gw.stream?
 
 /-- Full memory invariant for a live `gz_state` handle at `(.ptr gw.gzBid 0)`.
-Notice `x.next` is left unconstrained when `size = 0` or `x.have = 0` (`gz_reset`),
-and `strm.next_out`/`avail_out` are unconstrained in `GZ_READ` until `gz_decomp`. -/
-def GzStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem) (gw : GzWitness) : Prop :=
+Parameterizing by `checkReadX` and `checkWriteIn` lets internal stream helpers temporarily
+point `x.next` at caller output (`gz_decomp` called from `gz_read`) or `strm.next_in` at
+caller input (`gz_comp` called from `gz_write`) while keeping all other invariants live. -/
+def GzStateInvCore (checkReadX checkWriteIn : Bool)
+    (tags : TypeEnv) (gEnv : Env) (m : Mem) (gw : GzWitness) : Prop :=
   gw.ownedList.Nodup ∧
   HeapRwBlock m gw.gzBid 248 8 ∧
   (∃ plen, HeapRwBlock m gw.pathBid (plen + 1) 1 ∧ m.strlenAt gw.pathBid 0 = some plen ∧
@@ -2044,8 +2483,8 @@ def GzStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem) (gw : GzWitness) : Prop :
     readIntField? tags m g "gzFile_s" "pos" = some xPos ∧
     (mode = 7247 ∨ mode = 31153) ∧
     8 ≤ want ∧ want < 2 ^ 31 ∧ (size = 0 ∨ size = want) ∧
-    0 ≤ start ∧ 0 ≤ skip ∧ 0 ≤ xPos ∧
-    (-1 ≤ level ∧ level ≤ 9) ∧ (0 ≤ strategy ∧ strategy ≤ 4) ∧
+    0 ≤ start ∧ 0 ≤ skip ∧ 0 ≤ xPos + (xHave : Int) ∧
+    (mode = 31153 → 0 ≤ xPos) ∧
     (size = 0 →
       gw.in? = none ∧ gw.out? = none ∧ gw.stream? = none ∧ xHave = 0 ∧
       (mode = 7247 → how = 0 ∧ (-1 ≤ direct ∧ direct ≤ 1) ∧ (-1 ≤ junk ∧ junk ≤ 1)) ∧
@@ -2062,17 +2501,22 @@ def GzStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem) (gw : GzWitness) : Prop :
         readField? tags m g "gz_state" "out" = some (.ptr outBid 0) ∧
         InflateStateInv tags gEnv m strmPtr iw ∧
         StreamAccumulatorsInit tags m strmPtr ∧
+        readField? tags m (.ptr iw.stBid 0) "inflate_state" "head" = some .null ∧
+        (∃ smsg, readField? tags m strmPtr "z_stream_s" "msg" = some smsg ∧
+          (smsg = .null ∨ ∃ mb mblk, smsg = .ptr mb 0 ∧ m.blocks mb = some mblk ∧
+            mblk.kind = .global ∧ mblk.perm = .ro ∧ ∃ mlen, m.strlenAt mb 0 = some mlen)) ∧
         (∃ nextIn availIn,
           readField? tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
           readNatField? tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
           ((availIn = 0 ∧ (nextIn = .null ∨ ∃ o ≤ size, nextIn = .ptr inBid (Int64.ofNat o))) ∨
            (∃ o : Nat, nextIn = .ptr inBid (Int64.ofNat o) ∧ o + availIn ≤ size ∧
              ∀ j < availIn, ∃ u : UInt8, inBlk.bytes (o + j) = .byte u))) ∧
-        xHave ≤ 2 * size ∧
-        (xHave = 0 ∨ ∃ xOff : Nat,
-          readField? tags m g "gzFile_s" "next" = some (.ptr outBid (Int64.ofNat xOff)) ∧
-          xOff + xHave ≤ 2 * size ∧
-          ∀ j < xHave, ∃ u : UInt8, outBlk.bytes (xOff + j) = .byte u)) ∧
+        (checkReadX = true →
+          xHave ≤ 2 * size ∧
+          (xHave = 0 ∨ ∃ xOff : Nat,
+            readField? tags m g "gzFile_s" "next" = some (.ptr outBid (Int64.ofNat xOff)) ∧
+            xOff + xHave ≤ 2 * size ∧
+            ∀ j < xHave, ∃ u : UInt8, outBlk.bytes (xOff + j) = .byte u))) ∧
     (0 < size ∧ mode = 31153 →
       (direct = 0 ∨ direct = 1) ∧ xHave = 0 ∧
       ∃ inBid inBlk,
@@ -2080,12 +2524,13 @@ def GzStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem) (gw : GzWitness) : Prop :
         m.blocks inBid = some inBlk ∧ inBlk.kind = .heap ∧ inBlk.perm = .rw ∧
         2 * size ≤ inBlk.size ∧ 1 ≤ inBlk.align ∧
         readField? tags m g "gz_state" "in" = some (.ptr inBid 0) ∧
-        (∃ nextIn availIn,
-          readField? tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
-          readNatField? tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
-          ((availIn = 0 ∧ (nextIn = .null ∨ ∃ o ≤ 2 * size, nextIn = .ptr inBid (Int64.ofNat o))) ∨
-           (∃ o : Nat, nextIn = .ptr inBid (Int64.ofNat o) ∧ o + availIn ≤ 2 * size ∧
-             ∀ j < availIn, ∃ u : UInt8, inBlk.bytes (o + j) = .byte u))) ∧
+        (checkWriteIn = true →
+          ∃ nextIn availIn,
+            readField? tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
+            readNatField? tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
+            ((availIn = 0 ∧ (nextIn = .null ∨ ∃ o ≤ 2 * size, nextIn = .ptr inBid (Int64.ofNat o))) ∨
+             (∃ o : Nat, nextIn = .ptr inBid (Int64.ofNat o) ∧ o + availIn ≤ 2 * size ∧
+               ∀ j < availIn, ∃ u : UInt8, inBlk.bytes (o + j) = .byte u))) ∧
         (direct = 1 → gw.out? = none ∧ gw.stream? = none) ∧
         (direct = 0 →
           ∃ outBid dw outBlk xOff outOff avOut,
@@ -2101,6 +2546,33 @@ def GzStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem) (gw : GzWitness) : Prop :
             xOff ≤ outOff ∧ outOff + avOut = size ∧
             ∀ j < outOff - xOff, ∃ u : UInt8, outBlk.bytes (xOff + j) = .byte u)))
 
+abbrev GzStateInv (tags : TypeEnv) (gEnv : Env) (m : Mem) (gw : GzWitness) : Prop :=
+  GzStateInvCore true true tags gEnv m gw
+
+theorem GzStateInvCore.weaken {cX1 cI1 cX2 cI2 : Bool}
+    (hX : cX2 = true → cX1 = true) (hI : cI2 = true → cI1 = true)
+    {tags : TypeEnv} {gEnv : Env} {m : Mem} {gw : GzWitness}
+    (h : GzStateInvCore cX1 cI1 tags gEnv m gw) :
+    GzStateInvCore cX2 cI2 tags gEnv m gw := by
+  rcases h with ⟨hnd, hgz, hpath, hmsg, mode, fd, size, want, direct, junk, how, again, start,
+    eof, past, level, strategy, reset_, skip, err, xHave, xPos,
+    f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18,
+    b1, b2, b3, b4, b5, b6, b7, b8, hsz0, hread, hwrite⟩
+  refine ⟨hnd, hgz, hpath, hmsg, mode, fd, size, want, direct, junk, how, again, start,
+    eof, past, level, strategy, reset_, skip, err, xHave, xPos,
+    f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18,
+    b1, b2, b3, b4, b5, b6, b7, b8, hsz0, ?_, ?_⟩
+  · intro hr
+    rcases hread hr with ⟨d1, d2, d3, inBid, outBid, iw, inBlk, outBlk,
+      hinw, houtw, hstrw, hb1, hb2, hb3, hb4, hb5, hb6, ob1, ob2, ob3, ob4, ob5, ob6,
+      hinf, hacc, hhd, hmsg', hnin, hrx⟩
+    exact ⟨d1, d2, d3, inBid, outBid, iw, inBlk, outBlk,
+      hinw, houtw, hstrw, hb1, hb2, hb3, hb4, hb5, hb6, ob1, ob2, ob3, ob4, ob5, ob6,
+      hinf, hacc, hhd, hmsg', hnin, fun hx => hrx (hX hx)⟩
+  · intro hw
+    rcases hwrite hw with ⟨hd1, hxh, inBid, inBlk, hinw, hb1, hb2, hb3, hb4, hb5, hb6, hwin, hd_1, hd_0⟩
+    exact ⟨hd1, hxh, inBid, inBlk, hinw, hb1, hb2, hb3, hb4, hb5, hb6, fun hi => hwin (hI hi), hd_1, hd_0⟩
+
 private theorem InflateWitness.mem_ownedList_of_streamOwned {iw : InflateWitness}
     (b : BlockId) (hb : b ∈ iw.ownedList) :
     b ∈ GzWitness.streamOwnedList (some (.inl iw)) := hb
@@ -2109,12 +2581,12 @@ private theorem DeflateWitness.mem_ownedList_of_streamOwned {dw : DeflateWitness
     (b : BlockId) (hb : b ∈ dw.ownedList) :
     b ∈ GzWitness.streamOwnedList (some (.inr dw)) := hb
 
-theorem GzStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
+theorem GzStateInvCore.congr_blocks {cX cI : Bool} {tags : TypeEnv} {gEnv : Env}
     {m1 m2 : Mem} {gw : GzWitness}
     (hpres : ∀ b, b ∈ gw.ownedList → m2.blocks b = m1.blocks b)
     (hroG : ∀ b blk, m1.blocks b = some blk → blk.kind = .global → blk.perm = .ro → m2.blocks b = m1.blocks b)
-    (h : GzStateInv tags gEnv m1 gw) :
-    GzStateInv tags gEnv m2 gw := by
+    (h : GzStateInvCore cX cI tags gEnv m1 gw) :
+    GzStateInvCore cX cI tags gEnv m2 gw := by
   have hgz : m2.blocks gw.gzBid = m1.blocks gw.gzBid :=
     hpres gw.gzBid (by simp [GzWitness.ownedList])
   have hpa : m2.blocks gw.pathBid = m1.blocks gw.pathBid :=
@@ -2135,22 +2607,27 @@ theorem GzStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
   · rcases hrest with ⟨mode, fd, size, want, direct, junk, how, again, start, eof, past, level,
       strategy, reset_, skip, err, xHave, xPos,
       f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18,
-      b1, b2, b3, b4, b5, b6, b7, b8, b9, hsz0, hread, hwrite⟩
+      b1, b2, b3, b4, b5, b6, b7, b8, hsz0, hread, hwrite⟩
     refine ⟨mode, fd, size, want, direct, junk, how, again, start, eof, past, level,
       strategy, reset_, skip, err, xHave, xPos, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_,
-      b1, b2, b3, b4, b5, b6, b7, b8, b9, hsz0, ?_, ?_⟩ <;>
+      b1, b2, b3, b4, b5, b6, b7, b8, hsz0, ?_, ?_⟩ <;>
       try (simp only [readIntField?_congr_block tags hgz, readNatField?_congr_block tags hgz]; assumption)
     · intro hr
       rcases hread hr with ⟨d1, d2, d3, inBid, outBid, iw, inBlk, outBlk,
         hinw, houtw, hstrw, hin_b, hin_k, hin_p, hin_sz, hin_al, hin_f,
-        hout_b, hout_k, hout_p, hout_sz, hout_al, hout_f, hinf, hacc, hnin, hxh1, hxh2⟩
+        hout_b, hout_k, hout_p, hout_sz, hout_al, hout_f, hinf, hacc, hhd, hsm, hnin, hrx⟩
       have hin_eq : m2.blocks inBid = m1.blocks inBid :=
         hpres inBid (by simp [GzWitness.ownedList, hinw])
       have hout_eq : m2.blocks outBid = m1.blocks outBid :=
         hpres outBid (by simp [GzWitness.ownedList, houtw])
+      have hst_eq : m2.blocks iw.stBid = m1.blocks iw.stBid := by
+        apply hpres
+        simp only [GzWitness.ownedList, hstrw, List.mem_append]
+        exact Or.inr (InflateWitness.mem_ownedList_of_streamOwned iw.stBid
+          (by simp [InflateWitness.ownedList]))
       refine ⟨d1, d2, d3, inBid, outBid, iw, inBlk, outBlk, hinw, houtw, hstrw,
         hin_eq ▸ hin_b, hin_k, hin_p, hin_sz, hin_al, ?_,
-        hout_eq ▸ hout_b, hout_k, hout_p, hout_sz, hout_al, ?_, ?_, hacc.congr_block hgz, ?_, hxh1, ?_⟩
+        hout_eq ▸ hout_b, hout_k, hout_p, hout_sz, hout_al, ?_, ?_, hacc.congr_block hgz, ?_, ?_, ?_, ?_⟩
       · rw [readField?_congr_block tags hgz]; exact hin_f
       · rw [readField?_congr_block tags hgz]; exact hout_f
       · refine hinf.congr_blocks rfl ?_ ?_ hroG
@@ -2160,11 +2637,22 @@ theorem GzStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
           exact Or.inr hb
         · exact ⟨readField?_congr_block tags hgz, readField?_congr_block tags hgz,
             readField?_congr_block tags hgz, readField?_congr_block tags hgz⟩
+      · rw [readField?_congr_block tags hst_eq]; exact hhd
+      · rcases hsm with ⟨smsg, hsmsg, hsmsg_p⟩
+        refine ⟨smsg, by rw [readField?_congr_block tags hgz]; exact hsmsg, ?_⟩
+        rcases hsmsg_p with rfl | ⟨mb, mblk, rfl, hm_mb, hmk, hmp, mlen, hml⟩
+        · exact Or.inl rfl
+        · have heqm := hroG mb mblk hm_mb hmk hmp
+          exact Or.inr ⟨mb, mblk, rfl, heqm.symm ▸ hm_mb, hmk, hmp, mlen,
+            strlenAt_congr_block heqm hml⟩
       · rcases hnin with ⟨ni, avi, hni, havi, hc⟩
         refine ⟨ni, avi, ?_, ?_, hc⟩
         · rw [readField?_congr_block tags hgz]; exact hni
         · rw [readNatField?_congr_block tags hgz]; exact havi
-      · rcases hxh2 with rfl | ⟨xo, hxn, hxo1, hxo2⟩
+      · intro hx
+        rcases hrx hx with ⟨hxh1, hxh2⟩
+        refine ⟨hxh1, ?_⟩
+        rcases hxh2 with rfl | ⟨xo, hxn, hxo1, hxo2⟩
         · exact Or.inl rfl
         · refine Or.inr ⟨xo, ?_, hxo1, hxo2⟩
           rw [readField?_congr_block tags hgz]; exact hxn
@@ -2174,7 +2662,8 @@ theorem GzStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
         hpres inBid (by simp [GzWitness.ownedList, hinw])
       refine ⟨hd1, hxh, inBid, inBlk, hinw, hin_eq ▸ hin_b, hin_k, hin_p, hin_sz, hin_al, ?_, ?_, hd_1, ?_⟩
       · rw [readField?_congr_block tags hgz]; exact hin_f
-      · rcases hnin with ⟨ni, avi, hni, havi, hc⟩
+      · intro hi
+        rcases hnin hi with ⟨ni, avi, hni, havi, hc⟩
         refine ⟨ni, avi, ?_, ?_, hc⟩
         · rw [readField?_congr_block tags hgz]; exact hni
         · rw [readNatField?_congr_block tags hgz]; exact havi
@@ -2193,16 +2682,25 @@ theorem GzStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
             simp only [GzWitness.ownedList, hstrw, List.mem_append]
             exact Or.inr hb
           · exact ⟨readField?_congr_block tags hgz, readField?_congr_block tags hgz,
-              readField?_congr_block tags hgz, readField?_congr_block tags hgz⟩
+              readField?_congr_block tags hgz, readField?_congr_block tags hgz,
+              readField?_congr_block tags hgz⟩
         · rw [readField?_congr_block tags hgz]; exact hxn
         · rw [readField?_congr_block tags hgz]; exact hno
         · rw [readNatField?_congr_block tags hgz]; exact havo
 
-theorem GzStateInv.roExt {tags : TypeEnv} {gEnv : Env}
-    {m1 m2 : Mem} {gw : GzWitness} (hro : C99.Proof.ROExt m1 m2)
+theorem GzStateInv.congr_blocks {tags : TypeEnv} {gEnv : Env}
+    {m1 m2 : Mem} {gw : GzWitness}
+    (hpres : ∀ b, b ∈ gw.ownedList → m2.blocks b = m1.blocks b)
+    (hroG : ∀ b blk, m1.blocks b = some blk → blk.kind = .global → blk.perm = .ro → m2.blocks b = m1.blocks b)
     (h : GzStateInv tags gEnv m1 gw) :
-    GzStateInv tags gEnv m2 gw := by
-  refine GzStateInv.congr_blocks ?_ (fun b blk hmb _ _ => hro.2.1 b (mem_lt_nextBlock hmb)) h
+    GzStateInv tags gEnv m2 gw :=
+  GzStateInvCore.congr_blocks hpres hroG h
+
+theorem GzStateInvCore.roExt {cX cI : Bool} {tags : TypeEnv} {gEnv : Env}
+    {m1 m2 : Mem} {gw : GzWitness} (hro : C99.Proof.ROExt m1 m2)
+    (h : GzStateInvCore cX cI tags gEnv m1 gw) :
+    GzStateInvCore cX cI tags gEnv m2 gw := by
+  refine GzStateInvCore.congr_blocks ?_ (fun b blk hmb _ _ => hro.2.1 b (mem_lt_nextBlock hmb)) h
   intro b hb
   rcases h with ⟨_, ⟨gzb, hgzb, _⟩, ⟨_, ⟨pb, hpb, _⟩, _⟩, hmsg, hrest⟩
   simp only [GzWitness.ownedList, List.mem_cons, List.mem_append, or_assoc] at hb
@@ -2226,7 +2724,7 @@ theorem GzStateInv.roExt {tags : TypeEnv} {gEnv : Env}
       rcases hrest with ⟨mode, fd, size, want, direct, junk, how, again, start, eof, past, level,
         strategy, reset_, skip, err, xHave, xPos,
         _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-        hmd, _, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
+        hmd, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
       by_cases hsz : size = 0
       · obtain ⟨hin0, _⟩ := hsz0 hsz
         rw [hin0] at hin_eq; cases hin_eq
@@ -2247,7 +2745,7 @@ theorem GzStateInv.roExt {tags : TypeEnv} {gEnv : Env}
       rcases hrest with ⟨mode, fd, size, want, direct, junk, how, again, start, eof, past, level,
         strategy, reset_, skip, err, xHave, xPos,
         _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-        hmd, _, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
+        hmd, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
       by_cases hsz : size = 0
       · obtain ⟨_, hout0, _⟩ := hsz0 hsz
         rw [hout0] at hout_eq; cases hout_eq
@@ -2271,7 +2769,7 @@ theorem GzStateInv.roExt {tags : TypeEnv} {gEnv : Env}
         rcases hrest with ⟨mode, fd, size, want, direct, junk, how, again, start, eof, past, level,
           strategy, reset_, skip, err, xHave, xPos,
           _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-          hmd, _, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
+          hmd, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
         by_cases hsz : size = 0
         · obtain ⟨_, _, hs0, _⟩ := hsz0 hsz; rw [hs0] at hs_eq; cases hs_eq
         · have hpos : 0 < size := Nat.pos_of_ne_zero hsz
@@ -2289,7 +2787,7 @@ theorem GzStateInv.roExt {tags : TypeEnv} {gEnv : Env}
                 simp only [Option.toList_some, List.mem_singleton] at hwm
                 subst hwm
                 rcases hinf with ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, hwin, _⟩
-                rcases hwin with ⟨_, _, _, _, _, _, _, _, _, _, _, _, hmatch⟩
+                rcases hwin with ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, hmatch⟩
                 rw [hw'] at hmatch
                 rcases hmatch with ⟨_, _, _, wblk, hmb, _⟩
                 exact hro.2.1 b (mem_lt_nextBlock hmb)
@@ -2302,7 +2800,7 @@ theorem GzStateInv.roExt {tags : TypeEnv} {gEnv : Env}
         rcases hrest with ⟨mode, fd, size, want, direct, junk, how, again, start, eof, past, level,
           strategy, reset_, skip, err, xHave, xPos,
           _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-          hmd, _, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
+          hmd, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
         by_cases hsz : size = 0
         · obtain ⟨_, _, hs0, _⟩ := hsz0 hsz; rw [hs0] at hs_eq; cases hs_eq
         · have hpos : 0 < size := Nat.pos_of_ne_zero hsz
@@ -2315,7 +2813,7 @@ theorem GzStateInv.roExt {tags : TypeEnv} {gEnv : Env}
               rw [hstrw] at hs_eq; cases hs_eq
               simp only [GzWitness.streamOwnedList, DeflateWitness.ownedList, List.mem_cons,
                 List.not_mem_nil, or_false] at hstrm
-              rcases hdef with ⟨_, hst, _, _, _, _, _, _, _, _, _, hwinf, hpbuf, _⟩
+              rcases hdef with ⟨_, hst, _, _, _, _, _, _, _, _, _, _, hwinf, hpbuf, _⟩
               rcases hstrm with rfl | rfl | rfl | rfl | rfl
               · rcases hst with ⟨blk, hmb, _⟩; exact hro.2.1 dw.stBid (mem_lt_nextBlock hmb)
               · rcases hwinf with ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, hwblk, _⟩
@@ -2327,6 +2825,12 @@ theorem GzStateInv.roExt {tags : TypeEnv} {gEnv : Env}
               · rcases hpbuf with ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, hpblk, _⟩
                 exact hro.2.1 dw.pbufBid (mem_lt_nextBlock hpblk)
             · rw [(hd1 rfl).2] at hs_eq; cases hs_eq
+
+theorem GzStateInv.roExt {tags : TypeEnv} {gEnv : Env}
+    {m1 m2 : Mem} {gw : GzWitness} (hro : C99.Proof.ROExt m1 m2)
+    (h : GzStateInv tags gEnv m1 gw) :
+    GzStateInv tags gEnv m2 gw :=
+  GzStateInvCore.roExt hro h
 
 /-! ## 4. Unified Library Invariant (`ZlibInv`) & Ownership Partition -/
 
@@ -2444,12 +2948,14 @@ theorem StreamStateInv.state_eq {tags : TypeEnv} {gEnv : Env} {m : Mem} {b : Blo
   match k, sw with
   | .deflate, .deflate dw => exact h.2.2.1
   | .inflate, .inflate iw => exact h.2.2.1
-  | .inflateBack, .inflateBack ibw => exact h.2.2.2.2.1
+  | .inflateBack, .inflateBack ibw =>
+    rcases h with ⟨_, _, _, _, _, _, hst, _⟩
+    exact hst
 
 theorem DeflateStateInv.owned_heap {tags : TypeEnv} {gEnv : Env} {m : Mem}
     {strmPtr : Val} {dw : DeflateWitness} (h : DeflateStateInv tags gEnv m strmPtr dw) :
     ∀ x ∈ dw.ownedList, ∃ blk, m.blocks x = some blk ∧ blk.kind = .heap ∧ blk.perm = .rw := by
-  rcases h with ⟨_, ⟨stblk, hst, hstk, hstp, _⟩, _, _, _, _, _, _, _, _, _, hwinf, hpbuf, _⟩
+  rcases h with ⟨_, ⟨stblk, hst, hstk, hstp, _⟩, _, _, _, _, _, _, _, _, _, _, hwinf, hpbuf, _⟩
   intro x hx
   simp only [DeflateWitness.ownedList, List.mem_cons, List.not_mem_nil, or_false] at hx
   rcases hx with rfl | rfl | rfl | rfl | rfl
@@ -2478,7 +2984,7 @@ theorem InflateStateInv.owned_heap {tags : TypeEnv} {gEnv : Env} {m : Mem}
       rw [hw'] at hwm
       simp only [Option.toList_some, List.mem_singleton] at hwm
       subst hwm
-      rcases hwin with ⟨_, _, _, _, _, _, _, _, _, _, _, _, hmatch⟩
+      rcases hwin with ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, hmatch⟩
       rw [hw'] at hmatch
       rcases hmatch with ⟨_, _, _, wblk, hmwb, hwk, hwp, _⟩
       exact ⟨wblk, hmwb, hwk, hwp⟩
@@ -2500,8 +3006,8 @@ theorem StreamStateInv.owned_heap {tags : TypeEnv} {gEnv : Env} {m : Mem} {b : B
   | .inflate, .inflate iw => exact InflateStateInv.owned_heap h
   | .inflateBack, .inflateBack ibw => exact InflateBackInv.owned_heap h
 
-theorem GzStateInv.owned_heap {tags : TypeEnv} {gEnv : Env} {m : Mem} {gw : GzWitness}
-    (h : GzStateInv tags gEnv m gw) :
+theorem GzStateInvCore.owned_heap {cX cI : Bool} {tags : TypeEnv} {gEnv : Env} {m : Mem}
+    {gw : GzWitness} (h : GzStateInvCore cX cI tags gEnv m gw) :
     ∀ x ∈ gw.ownedList, ∃ blk, m.blocks x = some blk ∧ blk.kind = .heap ∧ blk.perm = .rw := by
   intro x hx
   rcases h with ⟨_, ⟨gzb, hgzb, hgzk, hgzp, _⟩, ⟨_, ⟨pb, hpb, hpk, hpp, _⟩, _⟩, hmsg, hrest⟩
@@ -2525,7 +3031,7 @@ theorem GzStateInv.owned_heap {tags : TypeEnv} {gEnv : Env} {m : Mem} {gw : GzWi
       subst hin
       rcases hrest with ⟨mode, _, size, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
         _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-        hmd, _, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
+        hmd, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
       by_cases hsz : size = 0
       · obtain ⟨hin0, _⟩ := hsz0 hsz; rw [hin0] at hin_eq; cases hin_eq
       · have hpos : 0 < size := Nat.pos_of_ne_zero hsz
@@ -2544,7 +3050,7 @@ theorem GzStateInv.owned_heap {tags : TypeEnv} {gEnv : Env} {m : Mem} {gw : GzWi
       subst hout
       rcases hrest with ⟨mode, _, size, _, direct, _, _, _, _, _, _, _, _, _, _, _, _, _,
         _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-        hmd, _, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
+        hmd, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
       by_cases hsz : size = 0
       · obtain ⟨_, hout0, _⟩ := hsz0 hsz; rw [hout0] at hout_eq; cases hout_eq
       · have hpos : 0 < size := Nat.pos_of_ne_zero hsz
@@ -2566,7 +3072,7 @@ theorem GzStateInv.owned_heap {tags : TypeEnv} {gEnv : Env} {m : Mem} {gw : GzWi
       | inl iw =>
         rcases hrest with ⟨mode, _, size, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
           _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-          hmd, _, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
+          hmd, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
         by_cases hsz : size = 0
         · obtain ⟨_, _, hs0, _⟩ := hsz0 hsz; rw [hs0] at hs_eq; cases hs_eq
         · have hpos : 0 < size := Nat.pos_of_ne_zero hsz
@@ -2582,7 +3088,7 @@ theorem GzStateInv.owned_heap {tags : TypeEnv} {gEnv : Env} {m : Mem} {gw : GzWi
       | inr dw =>
         rcases hrest with ⟨mode, _, size, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
           _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-          hmd, _, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
+          hmd, _, _, _, _, _, _, _, hsz0, hread, hwrite⟩
         by_cases hsz : size = 0
         · obtain ⟨_, _, hs0, _⟩ := hsz0 hsz; rw [hs0] at hs_eq; cases hs_eq
         · have hpos : 0 < size := Nat.pos_of_ne_zero hsz
@@ -2594,6 +3100,11 @@ theorem GzStateInv.owned_heap {tags : TypeEnv} {gEnv : Env} {m : Mem} {gw : GzWi
               rw [hstrw] at hs_eq; cases hs_eq
               exact DeflateStateInv.owned_heap hdef x hstrm
             · rw [(hd1 rfl).2] at hs_eq; cases hs_eq
+
+theorem GzStateInv.owned_heap {tags : TypeEnv} {gEnv : Env} {m : Mem} {gw : GzWitness}
+    (h : GzStateInv tags gEnv m gw) :
+    ∀ x ∈ gw.ownedList, ∃ blk, m.blocks x = some blk ∧ blk.kind = .heap ∧ blk.perm = .rw :=
+  GzStateInvCore.owned_heap h
 
 private theorem nodup_append_disjoint {α : Type _} {l₁ l₂ : List α}
     (h : (l₁ ++ l₂).Nodup) : l₁.Nodup ∧ l₂.Nodup ∧ ∀ x, x ∈ l₁ → x ∉ l₂ := by
@@ -2824,14 +3335,15 @@ theorem ZlibInv.clientFrame {prog : Prog} {gEnv : Env} {m0 : Mem} {os0 : OSState
     rcases p with ⟨sb, sw⟩
     cases sw with
     | deflate dw =>
-      exact DeflateStateInv.congr_blocks hpres hsa hss
+      exact DeflateStateInv.congr_blocks hpres
+        ⟨hsa.1, hsa.2.1, hsa.2.2.1, hsa.2.2.2, hcf_s.1 "adler" (by simp)⟩ hss
     | inflate iw =>
       exact InflateStateInv.congr_blocks rfl hpres hsa hroG hss
     | inflateBack ibw =>
       dsimp only [StreamStateInv] at hss ⊢
       have hwin' : Writable m' (.ptr ibw.winBid ibw.winOff) (2 ^ ibw.wbits) := by
         have hw := hcf_s.2 rfl
-        rcases hss with ⟨_, _, _, _, hst_f, _, _, _, hwin_f, _, hws_f, _⟩
+        rcases hss with ⟨_, _, _, _, _, _, hst_f, _, _, _, hwin_f, _, hws_f, _⟩
         dsimp only at hw
         rw [hst_f, Option.getD_some, hwin_f, Option.getD_some, hws_f, Option.getD_some] at hw
         exact hw
@@ -3453,6 +3965,7 @@ theorem ZlibInv_to_ContractSafe
       ZlibInv prog gEnv m0 os0 v owned m os →
       c.pre prog.tags owned v m args →
       Zlib.Spec.ArgsWellTyped prog c.paramTys false args →
+      (∀ a ∈ args, Zlib.Spec.DisjointFrom a (fun b => b = os.errnoBlk ∨ os.strerrorBlk = some b)) →
       Sem.pushCallParams prog.tags m base 0 (fn.params.zip args)
           (prog.fnStatics fn.name ++ prog.globalEnv) [] = some (callEnv, callBlks, m1) →
       WPSafe prog Zlib.Spec.zlibPointerConfig ext
@@ -3467,7 +3980,7 @@ theorem ZlibInv_to_ContractSafe
         (.running (.stmt fn.body) callEnv callBlks m1 os
           (.callFrame gEnv [] fn.retTy fn.body [] .returnVal (.stop protoRetTy)))) :
     Zlib.Spec.ContractSafe prog gEnv ext (ZlibInv prog gEnv m0 os0) userWrite c := by
-  intro v owned m os args s0 hInv hpre hawt hcs
+  intro v owned m os args s0 hInv hpre hawt hargDisj hcs
   have hawt' : Zlib.Spec.ArgsWellTyped prog c.paramTys false args := by simpa [hnonvar.1] using hawt
   have hmapTy : (fn.params.map (·.ty)).map CTy.unqual = c.paramTys.map CTy.unqual := by
     simpa [List.map_map, Function.comp_def] using hptys
@@ -3521,7 +4034,7 @@ theorem ZlibInv_to_ContractSafe
       (fun hb => (callState_readBudgetIsSome_iff hproto hcs).mp hb)
     intro base callEnv callBlks m1 hpush _
     rw [htake, ← hname] at hpush
-    exact hbody v owned m os args base callEnv callBlks m1 hInv hpre hawt' hpush
+    exact hbody v owned m os args base callEnv callBlks m1 hInv hpre hawt' hargDisj hpush
   exact ⟨hwpSafe.safe,
     fun hb => hwpSafe.terminatesSafely ((callState_readBudgetIsSome_iff hproto hcs).mpr hb),
     hwpSafe.2.2⟩
@@ -3542,6 +4055,7 @@ theorem ZlibInv_to_ContractSafe_variadic
       ZlibInv prog gEnv m0 os0 v owned m os →
       c.pre prog.tags owned v m args →
       Zlib.Spec.ArgsWellTyped prog c.paramTys true args →
+      (∀ a ∈ args, Zlib.Spec.DisjointFrom a (fun b => b = os.errnoBlk ∨ os.strerrorBlk = some b)) →
       Sem.pushCallParams prog.tags m base 0 (fn.params.zip (args.take fn.params.length))
           (prog.fnStatics fn.name ++ prog.globalEnv) [] = some (callEnv, callBlks, m1) →
       WPSafe prog Zlib.Spec.zlibPointerConfig ext
@@ -3556,7 +4070,7 @@ theorem ZlibInv_to_ContractSafe_variadic
         (.running (.stmt fn.body) callEnv callBlks m1 os
           (.callFrame gEnv [] fn.retTy fn.body [] .returnVal (.stop protoRetTy)))) :
     Zlib.Spec.ContractSafe prog gEnv ext (ZlibInv prog gEnv m0 os0) userWrite c := by
-  intro v owned m os args s0 hInv hpre hawt hcs
+  intro v owned m os args s0 hInv hpre hawt hargDisj hcs
   have hawt' : Zlib.Spec.ArgsWellTyped prog c.paramTys true args := by simpa [hvar.1] using hawt
   have hmapTy : (fn.params.map (·.ty)).map CTy.unqual = c.paramTys.map CTy.unqual := by
     simpa [List.map_map, Function.comp_def] using hptys
@@ -3605,7 +4119,7 @@ theorem ZlibInv_to_ContractSafe_variadic
       (fun hb => (callState_readBudgetIsSome_iff hproto hcs).mp hb)
     intro base callEnv callBlks m1 hpush _
     rw [htake, ← hname] at hpush
-    exact hbody v owned m os args base callEnv callBlks m1 hInv hpre hawt' hpush
+    exact hbody v owned m os args base callEnv callBlks m1 hInv hpre hawt' hargDisj hpush
   exact ⟨hwpSafe.safe,
     fun hb => hwpSafe.terminatesSafely ((callState_readBudgetIsSome_iff hproto hcs).mpr hb),
     hwpSafe.2.2⟩
@@ -4225,7 +4739,8 @@ private theorem castVal_undef_none {m : Mem} {ty : CTy} (hnot : ty.isVoid = fals
     Sem.castVal m ty .undef = none := by
   unfold Sem.castVal
   dsimp only
-  have hnot' : ty.unqual.isVoid = false := by simpa [CTy.isVoid] using hnot
+  have hnot' : ty.unqual.isVoid = false := by
+    simpa [CTy.isVoid, cty_unqual_idem] using hnot
   simp only [hnot', Bool.false_eq_true, ↓reduceIte]
   cases ty.unqual.intKind? with
   | some k => rfl
@@ -4826,11 +5341,13 @@ theorem CallSafeSpec.to_contractSafe
       ZlibInv prog gEnv m0 os0 v owned m os →
       c.pre prog.tags owned v m args →
       Zlib.Spec.ArgsWellTyped prog c.paramTys false args →
+      (∀ a ∈ args, Zlib.Spec.DisjointFrom a (fun b => b = os.errnoBlk ∨ os.strerrorBlk = some b)) →
       Pre m os args)
     (hpostImp : ∀ v owned m os args ret m' os',
       ZlibInv prog gEnv m0 os0 v owned m os →
       c.pre prog.tags owned v m args →
       Zlib.Spec.ArgsWellTyped prog c.paramTys false args →
+      (∀ a ∈ args, Zlib.Spec.DisjointFrom a (fun b => b = os.errnoBlk ∨ os.strerrorBlk = some b)) →
       Post m os args ret m' os' →
       ∃ cv,
         (if protoRetTy.isVoid = true then cv = .void
@@ -4845,16 +5362,16 @@ theorem CallSafeSpec.to_contractSafe
           (v'.isEmpty → ∀ b, ¬ owned' b))) :
     Zlib.Spec.ContractSafe prog gEnv ext (ZlibInv prog gEnv m0 os0) userWrite c := by
   refine ZlibInv_to_ContractSafe hfn hname hnonvar hproto hptys hsimple ?_
-  intro v owned m os args base callEnv callBlks m1 hInv hpre hawt hpush
+  intro v owned m os args base callEnv callBlks m1 hInv hpre hawt hargDisj hpush
   have hlen : args.length = fn.params.length := by
     have h1 := hawt.1; simp only [Bool.false_eq_true, ↓reduceIte] at h1
     have h2 : fn.params.length = c.paramTys.length := by
       simpa using congrArg List.length hptys
     omega
   refine hspec args gEnv [] m m1 os base callEnv callBlks [] .returnVal (.stop protoRetTy) _
-    (hpreImp v owned m os args hInv hpre hawt) hlen hpush ?_
+    (hpreImp v owned m os args hInv hpre hawt hargDisj) hlen hpush ?_
   intro ret m' os' hpo
-  obtain ⟨cv, hcv, hres⟩ := hpostImp v owned m os args ret m' os' hInv hpre hawt hpo
+  obtain ⟨cv, hcv, hres⟩ := hpostImp v owned m os args ret m' os' hInv hpre hawt hargDisj hpo
   by_cases hv : protoRetTy.isVoid = true
   · simp only [hv, ↓reduceIte] at hcv
     subst hcv
@@ -4883,11 +5400,13 @@ theorem CallSafeSpec.to_contractSafe_variadic
       ZlibInv prog gEnv m0 os0 v owned m os →
       c.pre prog.tags owned v m args →
       Zlib.Spec.ArgsWellTyped prog c.paramTys true args →
+      (∀ a ∈ args, Zlib.Spec.DisjointFrom a (fun b => b = os.errnoBlk ∨ os.strerrorBlk = some b)) →
       Pre m os (args.take fn.params.length))
     (hpostImp : ∀ v owned m os args ret m' os',
       ZlibInv prog gEnv m0 os0 v owned m os →
       c.pre prog.tags owned v m args →
       Zlib.Spec.ArgsWellTyped prog c.paramTys true args →
+      (∀ a ∈ args, Zlib.Spec.DisjointFrom a (fun b => b = os.errnoBlk ∨ os.strerrorBlk = some b)) →
       Post m os (args.take fn.params.length) ret m' os' →
       ∃ cv,
         (if protoRetTy.isVoid = true then cv = .void
@@ -4902,7 +5421,7 @@ theorem CallSafeSpec.to_contractSafe_variadic
           (v'.isEmpty → ∀ b, ¬ owned' b))) :
     Zlib.Spec.ContractSafe prog gEnv ext (ZlibInv prog gEnv m0 os0) userWrite c := by
   refine ZlibInv_to_ContractSafe_variadic hfn hname hvar hproto hptys hsimple ?_
-  intro v owned m os args base callEnv callBlks m1 hInv hpre hawt hpush
+  intro v owned m os args base callEnv callBlks m1 hInv hpre hawt hargDisj hpush
   have hlen : (args.take fn.params.length).length = fn.params.length := by
     have h1 := hawt.1; simp only [↓reduceIte] at h1
     have h2 : fn.params.length = c.paramTys.length := by
@@ -4910,9 +5429,9 @@ theorem CallSafeSpec.to_contractSafe_variadic
     simp only [List.length_take]; omega
   refine hspec (args.take fn.params.length) gEnv [] m m1 os base callEnv callBlks []
     .returnVal (.stop protoRetTy) _
-    (hpreImp v owned m os args hInv hpre hawt) hlen hpush ?_
+    (hpreImp v owned m os args hInv hpre hawt hargDisj) hlen hpush ?_
   intro ret m' os' hpo
-  obtain ⟨cv, hcv, hres⟩ := hpostImp v owned m os args ret m' os' hInv hpre hawt hpo
+  obtain ⟨cv, hcv, hres⟩ := hpostImp v owned m os args ret m' os' hInv hpre hawt hargDisj hpo
   by_cases hv : protoRetTy.isVoid = true
   · simp only [hv, ↓reduceIte] at hcv
     subst hcv
@@ -5430,10 +5949,36 @@ theorem safeUserCallbacks_framePreserved {tags : TypeEnv} {m0 : Mem} {v : Client
         Zlib.Spec.PtrBlock ((Zlib.Spec.readField? tags m ((Zlib.Spec.readField? tags m (.ptr sb 0) "z_stream_s" "state").getD .null)
           "inflate_state" "window").getD .null) ≠ some b) ∧
       (userWrite b ∨ (m.blocks b).isNone ∨
-        (∃ blk, m.blocks b = some blk ∧ blk.kind = .stack))) ∧
+        (∃ op noff, args = [op, .ptr b noff]))) ∧
     Zlib.Spec.NoHeapLeak m m' owned :=
   let h := (hsafe.2 sym args m os (.ok ret m' os') hext).2 ret m' os' rfl
   ⟨h.1, h.2.1, h.2.2.1, h.2.2.2.1⟩
+
+theorem safeUserCallbacks_inFunc {tags : TypeEnv} {m0 : Mem} {v : ClientView}
+    {owned userWrite : BlockSet} {userExt : ExtHandler}
+    {sym : String} {op : Val} {nb : BlockId} {noff : Int64}
+    {m m' : Mem} {os os' : OSState} {ret : Val}
+    (hsafe : Zlib.Spec.SafeUserCallbacks tags m0 v owned userWrite userExt)
+    (hext : userExt sym [op, .ptr nb noff] m os (.ok ret m' os')) :
+    ∃ avail : BitVec 32, ret = .int .u32 avail ∧
+      (avail.toNat = 0 ∨ ∃ bs pb po, m'.readBytes nb noff 8 = some bs ∧
+        Mem.decodePtr bs = some (.ptr pb po) ∧ Readable m' (.ptr pb po) avail.toNat ∧
+        ¬ Zlib.Spec.LibProtected m0 owned os m' pb ∧ (∀ k, (pb, k) ∉ v.streams) ∧
+        (∀ sb, (sb, .inflateBack) ∈ v.streams →
+          Zlib.Spec.PtrBlock ((Zlib.Spec.readField? tags m' ((Zlib.Spec.readField? tags m' (.ptr sb 0) "z_stream_s" "state").getD .null)
+            "inflate_state" "window").getD .null) ≠ some pb) ∧
+        (∀ blk, m'.blocks pb = some blk → blk.kind ≠ .stack)) ∧
+      (∀ k, os.readBudget = some k → ∃ k', os'.readBudget = some k' ∧ (avail.toNat > 0 → k' < k)) :=
+  (hsafe.2 sym [op, .ptr nb noff] m os (.ok ret m' os') hext).2 ret m' os' rfl |>.2.2.2.2.1 op nb noff rfl
+
+theorem safeUserCallbacks_outFunc {tags : TypeEnv} {m0 : Mem} {v : ClientView}
+    {owned userWrite : BlockSet} {userExt : ExtHandler}
+    {sym : String} {op buf len : Val}
+    {m m' : Mem} {os os' : OSState} {ret : Val}
+    (hsafe : Zlib.Spec.SafeUserCallbacks tags m0 v owned userWrite userExt)
+    (hext : userExt sym [op, buf, len] m os (.ok ret m' os')) :
+    (∃ r : BitVec 32, ret = .int .i32 r) ∧ os'.readBudget = os.readBudget :=
+  (hsafe.2 sym [op, buf, len] m os (.ok ret m' os') hext).2 ret m' os' rfl |>.2.2.2.2.2 op buf len rfl
 
 theorem user_callback_wpTerm
     {prog : Prog} {m0 : Mem} {v : ClientView} {owned userWrite : BlockSet} {userExt : ExtHandler}
@@ -5586,6 +6131,9 @@ def InflateTablePre (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     (typeCode.toNat = 0 → 1 ≤ codes ∧ codes ≤ 19) ∧
     (typeCode.toNat = 1 → 1 ≤ codes ∧ codes ≤ 286) ∧
     (typeCode.toNat = 2 → 1 ≤ codes ∧ codes ≤ 32) ∧
+    (typeCode.toNat = 0 → 4 ≤ root0) ∧
+    (typeCode.toNat = 1 → 8 ≤ root0) ∧
+    (typeCode.toNat = 2 → 5 ≤ root0) ∧
     lensPtr = .ptr lb loff ∧ Readable m lensPtr (2 * codes) ∧
     (∃ blk_l, m.blocks lb = some blk_l ∧ Mem.isAligned blk_l loff 2 = true) ∧
     (∀ i < codes, ∃ v : BitVec 16,
@@ -5619,10 +6167,12 @@ def InflateTablePost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
   (∃ r : BitVec 32, ret = .int .i32 r ∧ (r.toInt = 0 ∨ r.toInt = -1 ∨ r.toInt = 1) ∧
     (∃ (typeCode codesVal : BitVec 32)
       (lensPtr tablePtr bitsPtr workPtr : Val)
-      (tpb bpb tb wb : BlockId) (tpo bpo toff woff : Int64) (cap : Nat),
+      (lb tpb bpb tb wb : BlockId) (loff tpo bpo toff woff : Int64) (cap root0 : Nat),
       args = [.int .u32 typeCode, lensPtr, .int .u32 codesVal, tablePtr, bitsPtr, workPtr] ∧
+      lensPtr = .ptr lb loff ∧
       tablePtr = .ptr tpb tpo ∧ bitsPtr = .ptr bpb bpo ∧
       Sem.readVal prog.tags m tpb tpo huffCodeCTy.ptr = some (.ptr tb toff) ∧
+      Sem.readVal prog.tags m bpb bpo (.int .u32) = some (.int .u32 (BitVec.ofNat 32 root0)) ∧
       workPtr = .ptr wb woff ∧
       FramePreserved m m' (fun b => b = tpb ∨ b = bpb ∨ b = tb ∨ b = wb) ∧
       (∀ b ∈ [tpb, bpb, tb, wb], ∀ (off : Nat) (v : UInt8),
@@ -5632,12 +6182,24 @@ def InflateTablePost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
          (b = wb → (off : Int) < woff.toInt ∨ woff.toInt + 2 * 288 ≤ (off : Int))) →
         (∃ blk, m.blocks b = some blk ∧ blk.bytes off = .byte v) →
         ∃ blk', m'.blocks b = some blk' ∧ blk'.bytes off = .byte v) ∧
+      (r.toInt ≠ 0 →
+        Sem.readVal prog.tags m' tpb tpo huffCodeCTy.ptr =
+          Sem.readVal prog.tags m tpb tpo huffCodeCTy.ptr ∧
+        Sem.readVal prog.tags m' bpb bpo (.int .u32) =
+          Sem.readVal prog.tags m bpb bpo (.int .u32)) ∧
       (r.toInt = 0 →
         ∃ (newOff : Int64) (root' used : Nat),
           Sem.readVal prog.tags m' tpb tpo huffCodeCTy.ptr = some (.ptr tb newOff) ∧
           Sem.readVal prog.tags m' bpb bpo (.int .u32) = some (.int .u32 (BitVec.ofNat 32 root')) ∧
           newOff.toInt = toff.toInt + 4 * used ∧
-          1 ≤ root' ∧ root' ≤ 15 ∧ 2 ^ root' ≤ used ∧ used ≤ cap ∧
+          1 ≤ root' ∧ root' ≤ root0 ∧ root' ≤ 15 ∧ 2 ^ root' ≤ used ∧ used ≤ cap ∧
+          (typeCode.toNat = 0 →
+            (∀ i < codesVal.toNat, ∃ v : BitVec 16,
+              Sem.readVal prog.tags m lb (Int64.ofInt (loff.toInt + 2 * i)) (.int .u16) =
+                some (.int .u16 v) ∧ v.toNat ≤ 7) →
+            root0 ≤ 7 → used ≤ 128) ∧
+          (typeCode.toNat = 1 → used ≤ 852) ∧
+          (typeCode.toNat = 2 → used ≤ 592) ∧
           CodeTableValid prog.tags m' (.ptr tb toff) root' used (decide (typeCode.toNat = 2)))))
 
 /-- Precondition for `inflate_fast(strm, start)` supporting both heap-window `InflateStateInv`
@@ -5695,15 +6257,17 @@ def InflateFastPost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
   ret = .void ∧ os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
   ∃ (strmPtr : Val) (start : BitVec 32)
     (nextIn nextIn' nextOut nextOut' stPtr : Val)
-    (availIn availIn' availOut availOut' bits' mode' : Nat)
-    (stBid ob : BlockId) (inOff outOff : Int64),
+    (availIn availIn' availOut availOut' bits bits' mode' : Nat)
+    (stBid sb ob : BlockId) (inOff outOff soff : Int64),
     args = [strmPtr, .int .u32 start] ∧
+    strmPtr = .ptr sb soff ∧
     readField? prog.tags m strmPtr "z_stream_s" "state" = some stPtr ∧
     stPtr = .ptr stBid 0 ∧
     readField? prog.tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
     readNatField? prog.tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
     readField? prog.tags m strmPtr "z_stream_s" "next_out" = some nextOut ∧
     readNatField? prog.tags m strmPtr "z_stream_s" "avail_out" = some availOut ∧
+    readNatField? prog.tags m stPtr "inflate_state" "bits" = some bits ∧
     PtrBlock nextIn = PtrBlock nextIn' ∧
     (∃ ib, nextIn = .ptr ib inOff ∧
       nextIn' = .ptr ib (Int64.ofInt (inOff.toInt + (availIn - availIn')))) ∧
@@ -5722,10 +6286,30 @@ def InflateFastPost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     bits' < 8 ∧
     readNatField? prog.tags m' stPtr "inflate_state" "mode" = some mode' ∧
     (mode' = 16200 ∨ mode' = 16191 ∨ mode' = 16209) ∧
+    (mode' = 16200 ∨ mode' = 16191 → 8 * availIn' + bits' < 8 * availIn + bits) ∧
     (mode' = 16209 →
       ∃ msg, readField? prog.tags m' strmPtr "z_stream_s" "msg" = some msg ∧
         (msg = .null ∨ CString m' msg)) ∧
-    FramePreserved m m' (fun b => b = stBid ∨ b = ob ∨ PtrBlock strmPtr = some b) ∧
+    readField? prog.tags m' stPtr "inflate_state" "lencode" =
+      readField? prog.tags m stPtr "inflate_state" "lencode" ∧
+    readField? prog.tags m' stPtr "inflate_state" "distcode" =
+      readField? prog.tags m stPtr "inflate_state" "distcode" ∧
+    readField? prog.tags m' stPtr "inflate_state" "lenbits" =
+      readField? prog.tags m stPtr "inflate_state" "lenbits" ∧
+    readField? prog.tags m' stPtr "inflate_state" "distbits" =
+      readField? prog.tags m stPtr "inflate_state" "distbits" ∧
+    readField? prog.tags m' stPtr "inflate_state" "last" =
+      readField? prog.tags m stPtr "inflate_state" "last" ∧
+    (∀ j < 1732,
+      Sem.readVal prog.tags m' stBid (Int64.ofNat (1384 + 4 * j)) (.int .u8) =
+        Sem.readVal prog.tags m stBid (Int64.ofNat (1384 + 4 * j)) (.int .u8) ∧
+      Sem.readVal prog.tags m' stBid (Int64.ofNat (1384 + 4 * j + 1)) (.int .u8) =
+        Sem.readVal prog.tags m stBid (Int64.ofNat (1384 + 4 * j + 1)) (.int .u8) ∧
+      Sem.readVal prog.tags m' stBid (Int64.ofNat (1384 + 4 * j + 2)) (.int .u16) =
+        Sem.readVal prog.tags m stBid (Int64.ofNat (1384 + 4 * j + 2)) (.int .u16)) ∧
+    PreservesOutsideRange m m' sb soff 112 ∧
+    PreservesOutsideRange m m' ob outOff (availOut - availOut') ∧
+    FramePreserved m m' (fun b => b = stBid ∨ b = ob ∨ b = sb) ∧
     (∀ iw : InflateWitness, InflateStateInv prog.tags gEnv m strmPtr iw →
       InflateStateInv prog.tags gEnv m' strmPtr iw) ∧
     (∀ ibw : InflateBackWitness, InflateBackInv prog.tags m strmPtr ibw →
@@ -5750,12 +6334,17 @@ def deflateEmitTuple (tags : TypeEnv) (m : Mem) (dw : DeflateWitness)
   let st := Val.ptr dw.stBid 0
   let look := (readNatField? tags m st "internal_state" "lookahead").getD 0
   let mav := (readNatField? tags m st "internal_state" "match_available").getD 0
+  let lvl := (readIntField? tags m st "internal_state" "level").getD 0
+  let strs := (readNatField? tags m st "internal_state" "strstart").getD 0
+  let bks := (readIntField? tags m st "internal_state" "block_start").getD 0
+  let storedPend := if lvl == 0 && 0 ≤ bks then strs - bks.toNat else 0
   let symNext := (readNatField? tags m st "internal_state" "sym_next").getD 0
   let status := (readIntField? tags m st "internal_state" "status").getD 0
   let wrap := (readIntField? tags m st "internal_state" "wrap").getD 0
   let pend := (readNatField? tags m st "internal_state" "pending").getD 0
   let lastFl := (readIntField? tags m st "internal_state" "last_flush").getD (-2)
-  (availIn + look + mav, symNext, deflatePhaseRank status wrap, pend, if lastFl == flush then 0 else 1)
+  (availIn + look + mav + storedPend, symNext, deflatePhaseRank status wrap, pend,
+    if lastFl == flush then 0 else 1)
 
 /-- Strict lexicographic ordering on 5-tuples of `Nat`. -/
 def Tuple5Lt (a b : Nat × Nat × Nat × Nat × Nat) : Prop :=
@@ -5856,7 +6445,7 @@ structure InflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         ∃ strmPtr, args = [strmPtr] ∧
           (strmPtr = .null ∨ ∃ iw, InflateStateInv prog.tags gEnv m strmPtr iw))
       (fun m os args ret m' os' =>
-        m' = m ∧ os' = os ∧
+        MemBlocksUnchanged m m' ∧ os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
         ∃ strmPtr, args = [strmPtr] ∧
           ((strmPtr = .null ∧ ret = .int .i32 1) ∨
            ((∃ iw, InflateStateInv prog.tags gEnv m strmPtr iw) ∧ ret = .int .i32 0)))
@@ -5866,6 +6455,7 @@ structure InflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
       (fun m os args =>
         LibGlobalsOk prog gEnv m0 os0 m os ∧
         ∃ strmPtr sb soff iw, args = [strmPtr] ∧ strmPtr = .ptr sb soff ∧
+          TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
           InflateStateInv prog.tags gEnv m strmPtr iw ∧
           sb ∉ iw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 iw.ownedList)
       (fun m os args ret m' os' =>
@@ -5873,16 +6463,24 @@ structure InflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         ∃ strmPtr sb soff iw, args = [strmPtr] ∧ strmPtr = .ptr sb soff ∧
           InflateStateInv prog.tags gEnv m strmPtr iw ∧
           InflateStateInv prog.tags gEnv m' strmPtr iw ∧
-          StreamAccumulatorsInit prog.tags m' strmPtr ∧
+          (∀ wrap, readIntField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "wrap" = some wrap →
+            InflateAccumulatorsInit prog.tags m' strmPtr wrap) ∧
+          (∀ fld, fld ∈ (["next_in", "avail_in", "next_out", "avail_out"] : List String) →
+            readField? prog.tags m' strmPtr "z_stream_s" fld =
+              readField? prog.tags m strmPtr "z_stream_s" fld) ∧
           readNatField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "mode" = some 16180 ∧
+          readField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "head" = some .null ∧
           readField? prog.tags m' strmPtr "z_stream_s" "msg" = some .null ∧
-          FramePreserved m m' (fun b => b = sb ∨ b = iw.stBid))
+          PreservesOutsideRange m m' sb soff 112 ∧
+          FramePreserved m m' (fun b => b = sb ∨ b = iw.stBid) ∧
+          NoHeapLeak m m' (fun _ => False))
   inflateReset_spec :
     CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
       Zlib.Inflate.inflateTU_fn_inflateReset
       (fun m os args =>
         LibGlobalsOk prog gEnv m0 os0 m os ∧
         ∃ strmPtr sb soff iw, args = [strmPtr] ∧ strmPtr = .ptr sb soff ∧
+          TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
           InflateStateInv prog.tags gEnv m strmPtr iw ∧
           sb ∉ iw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 iw.ownedList)
       (fun m os args ret m' os' =>
@@ -5890,13 +6488,20 @@ structure InflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         ∃ strmPtr sb soff iw, args = [strmPtr] ∧ strmPtr = .ptr sb soff ∧
           InflateStateInv prog.tags gEnv m strmPtr iw ∧
           InflateStateInv prog.tags gEnv m' strmPtr iw ∧
-          StreamAccumulatorsInit prog.tags m' strmPtr ∧
+          (∀ wrap, readIntField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "wrap" = some wrap →
+            InflateAccumulatorsInit prog.tags m' strmPtr wrap) ∧
+          (∀ fld, fld ∈ (["next_in", "avail_in", "next_out", "avail_out"] : List String) →
+            readField? prog.tags m' strmPtr "z_stream_s" fld =
+              readField? prog.tags m strmPtr "z_stream_s" fld) ∧
           readNatField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "mode" = some 16180 ∧
           readNatField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "wsize" = some 0 ∧
           readNatField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "whave" = some 0 ∧
           readNatField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "wnext" = some 0 ∧
+          readField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "head" = some .null ∧
           readField? prog.tags m' strmPtr "z_stream_s" "msg" = some .null ∧
-          FramePreserved m m' (fun b => b = sb ∨ b = iw.stBid))
+          PreservesOutsideRange m m' sb soff 112 ∧
+          FramePreserved m m' (fun b => b = sb ∨ b = iw.stBid) ∧
+          NoHeapLeak m m' (fun _ => False))
   inflateReset2_spec :
     CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
       Zlib.Inflate.inflateTU_fn_inflateReset2
@@ -5904,10 +6509,9 @@ structure InflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         LibGlobalsOk prog gEnv m0 os0 m os ∧
         ∃ strmPtr sb soff wb iw,
           args = [strmPtr, .int .i32 wb] ∧ strmPtr = .ptr sb soff ∧
+          TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
           InflateStateInv prog.tags gEnv m strmPtr iw ∧
-          sb ∉ iw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 iw.ownedList ∧
-          (∃ zf, readField? prog.tags m strmPtr "z_stream_s" "zfree" = some zf ∧
-            (zf = .null ∨ zf = .fnPtr "zcfree")))
+          sb ∉ iw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 iw.ownedList)
       (fun m os args ret m' os' =>
         os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
         ∃ strmPtr sb soff wb iw r,
@@ -5918,10 +6522,17 @@ structure InflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
               iw'.stBid = iw.stBid ∧
               (iw'.win? = iw.win? ∨ (iw'.win? = none ∧ ∀ w, iw.win? = some w → m'.blocks w = none)) ∧
               InflateStateInv prog.tags gEnv m' strmPtr iw' ∧
-              StreamAccumulatorsInit prog.tags m' strmPtr ∧
+              (∀ wrap, readIntField? prog.tags m' (.ptr iw'.stBid 0) "inflate_state" "wrap" = some wrap →
+                InflateAccumulatorsInit prog.tags m' strmPtr wrap) ∧
+              (∀ fld, fld ∈ (["next_in", "avail_in", "next_out", "avail_out"] : List String) →
+                readField? prog.tags m' strmPtr "z_stream_s" fld =
+                  readField? prog.tags m strmPtr "z_stream_s" fld) ∧
+              readField? prog.tags m' (.ptr iw'.stBid 0) "inflate_state" "head" = some .null ∧
+              readField? prog.tags m' strmPtr "z_stream_s" "msg" = some .null ∧
+              PreservesOutsideRange m m' sb soff 112 ∧
               FramePreserved m m' (fun b => b = sb ∨ b ∈ iw.ownedList) ∧
               NoHeapLeak m m' (fun b => b ∈ iw'.ownedList)) ∨
-           (r.toInt = -2 ∧ m' = m)))
+           (r.toInt = -2 ∧ MemBlocksUnchanged m m')))
   inflateInit2__spec :
     CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
       Zlib.Inflate.inflateTU_fn_inflateInit2_
@@ -5948,10 +6559,18 @@ structure InflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
               (m.blocks iw.stBid).isNone = true ∧ iw.stBid ≠ sb ∧
               (m0.blocks iw.stBid).isNone = true ∧ iw.stBid ≠ os0.errnoBlk ∧
               InflateStateInv prog.tags gEnv m' strmPtr iw ∧
-              StreamAccumulatorsInit prog.tags m' strmPtr ∧
+              (∀ wrap, readIntField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "wrap" = some wrap →
+                InflateAccumulatorsInit prog.tags m' strmPtr wrap) ∧
+              (∀ fld, fld ∈ (["next_in", "avail_in", "next_out", "avail_out"] : List String) →
+                readField? prog.tags m' strmPtr "z_stream_s" fld =
+                  readField? prog.tags m strmPtr "z_stream_s" fld) ∧
+              readField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "head" = some .null ∧
+              readField? prog.tags m' strmPtr "z_stream_s" "msg" = some .null ∧
+              PreservesOutsideRange m m' sb soff 112 ∧
               FramePreserved m m' (fun b => b = sb ∨ b = iw.stBid) ∧
               NoHeapLeak m m' (fun b => b = iw.stBid)) ∨
            (r.toInt ≠ 0 ∧
+              (∀ sb soff, strmPtr = .ptr sb soff → PreservesOutsideRange m m' sb soff 112) ∧
               FramePreserved m m' (fun b => PtrBlock strmPtr = some b) ∧
               NoHeapLeak m m' (fun _ => False))))
   inflateInit__spec :
@@ -5980,10 +6599,18 @@ structure InflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
               (m.blocks iw.stBid).isNone = true ∧ iw.stBid ≠ sb ∧
               (m0.blocks iw.stBid).isNone = true ∧ iw.stBid ≠ os0.errnoBlk ∧
               InflateStateInv prog.tags gEnv m' strmPtr iw ∧
-              StreamAccumulatorsInit prog.tags m' strmPtr ∧
+              (∀ wrap, readIntField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "wrap" = some wrap →
+                InflateAccumulatorsInit prog.tags m' strmPtr wrap) ∧
+              (∀ fld, fld ∈ (["next_in", "avail_in", "next_out", "avail_out"] : List String) →
+                readField? prog.tags m' strmPtr "z_stream_s" fld =
+                  readField? prog.tags m strmPtr "z_stream_s" fld) ∧
+              readField? prog.tags m' (.ptr iw.stBid 0) "inflate_state" "head" = some .null ∧
+              readField? prog.tags m' strmPtr "z_stream_s" "msg" = some .null ∧
+              PreservesOutsideRange m m' sb soff 112 ∧
               FramePreserved m m' (fun b => b = sb ∨ b = iw.stBid) ∧
               NoHeapLeak m m' (fun b => b = iw.stBid)) ∨
            (r.toInt ≠ 0 ∧
+              (∀ sb soff, strmPtr = .ptr sb soff → PreservesOutsideRange m m' sb soff 112) ∧
               FramePreserved m m' (fun b => PtrBlock strmPtr = some b) ∧
               NoHeapLeak m m' (fun _ => False))))
   inflateEnd_spec :
@@ -5992,6 +6619,7 @@ structure InflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
       (fun m os args =>
         LibGlobalsOk prog gEnv m0 os0 m os ∧
         ∃ strmPtr sb soff iw, args = [strmPtr] ∧ strmPtr = .ptr sb soff ∧
+          TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
           InflateStateInv prog.tags gEnv m strmPtr iw ∧
           sb ∉ iw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 iw.ownedList)
       (fun m os args ret m' os' =>
@@ -6000,6 +6628,7 @@ structure InflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           InflateStateInv prog.tags gEnv m strmPtr iw ∧
           (∀ b ∈ iw.ownedList, m'.blocks b = none) ∧
           readField? prog.tags m' strmPtr "z_stream_s" "state" = some .null ∧
+          PreservesOutsideRange m m' sb soff 112 ∧
           FramePreserved m m' (fun b => b = sb ∨ b ∈ iw.ownedList) ∧
           NoHeapLeak m m' (fun _ => False))
   updatewindow_spec :
@@ -6011,10 +6640,10 @@ structure InflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           args = [strmPtr, endPtr, .int .u32 copy] ∧ strmPtr = .ptr sb soff ∧
           InflateStateInv prog.tags gEnv m strmPtr iw ∧
           sb ∉ iw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 iw.ownedList ∧
-          (copy.toNat = 0 ∨
-            ∃ eb eoff, endPtr = .ptr eb eoff ∧
-              Readable m (.ptr eb (Int64.ofInt (eoff.toInt - copy.toNat))) copy.toNat ∧
-              eb ∉ iw.ownedList ∧ eb ≠ sb))
+          ∃ eb eoff, endPtr = .ptr eb eoff ∧
+            copy.toNat ≤ eoff.toInt ∧
+            Readable m (.ptr eb (Int64.ofInt (eoff.toInt - copy.toNat))) copy.toNat ∧
+            eb ∉ iw.ownedList ∧ (copy.toNat = 0 ∨ eb ≠ sb))
       (fun m os args ret m' os' =>
         os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
         ∃ strmPtr sb soff endPtr copy iw r,
@@ -6071,28 +6700,40 @@ structure InflateMainSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           (strmPtr = .null ∨
             ∃ sb soff iw nextIn nextOut availIn availOut,
               strmPtr = .ptr sb soff ∧
+              TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
               InflateStateInv prog.tags gEnv m strmPtr iw ∧
-              StreamAccumulatorsInit prog.tags m strmPtr ∧
+              (∃ ti, readNatField? prog.tags m strmPtr "z_stream_s" "total_in" = some ti) ∧
+              (∃ to_, readNatField? prog.tags m strmPtr "z_stream_s" "total_out" = some to_) ∧
               sb ∉ iw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 iw.ownedList ∧
               (m0.blocks sb).isNone = true ∧ sb ≠ os0.errnoBlk ∧
               readField? prog.tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
               readNatField? prog.tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
               readField? prog.tags m strmPtr "z_stream_s" "next_out" = some nextOut ∧
               readNatField? prog.tags m strmPtr "z_stream_s" "avail_out" = some availOut ∧
-              (availIn = 0 ∨ Readable m nextIn availIn) ∧
-              (availOut = 0 ∨ Writable m nextOut availOut) ∧
-              DisjointFrom nextIn (fun b => b ∈ iw.ownedList ∨ b = sb) ∧
-              DisjointFrom nextOut (fun b => b ∈ iw.ownedList ∨ b = sb)))
+              (availIn = 0 ∨ (Readable m nextIn availIn ∧
+                DisjointFrom nextIn (fun b => b ∈ iw.ownedList ∨ b = sb))) ∧
+              (availOut = 0 ∨ (Writable m nextOut availOut ∧
+                DisjointFrom nextOut (fun b => b ∈ iw.ownedList ∨ b = sb))) ∧
+              (availIn = 0 ∨ availOut = 0 ∨ PtrBlock nextIn ≠ PtrBlock nextOut) ∧
+              (availOut = 0 → ∀ ws,
+                readNatField? prog.tags m (.ptr iw.stBid 0) "inflate_state" "wsize" = some ws →
+                ws = 0 ∨ Readable m nextOut 0) ∧
+              (∀ hd, readField? prog.tags m (.ptr iw.stBid 0) "inflate_state" "head" = some hd →
+                hd = .null)))
       (fun m os args ret m' os' =>
         os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
         ∃ strmPtr flush r,
           args = [strmPtr, .int .i32 flush] ∧ ret = .int .i32 r ∧
-          ((strmPtr = .null ∧ r.toInt = -2 ∧ m' = m) ∨
+          ((strmPtr = .null ∧ r.toInt = -2 ∧ MemBlocksUnchanged m m') ∨
            (∃ sb soff iw iw' nextIn nextIn' nextOut nextOut' availIn availIn' availOut availOut',
               strmPtr = .ptr sb soff ∧
               InflateStateInv prog.tags gEnv m strmPtr iw ∧
               InflateStateInv prog.tags gEnv m' strmPtr iw' ∧
-              StreamAccumulatorsInit prog.tags m' strmPtr ∧
+              (∀ wrap, readIntField? prog.tags m' (.ptr iw'.stBid 0) "inflate_state" "wrap" = some wrap →
+                InflateAccumulatorsInit prog.tags m' strmPtr wrap) ∧
+              (StreamAccumulatorsInit prog.tags m strmPtr →
+                StreamAccumulatorsInit prog.tags m' strmPtr) ∧
+              readField? prog.tags m' (.ptr iw'.stBid 0) "inflate_state" "head" = some .null ∧
               iw'.stBid = iw.stBid ∧
               (iw'.win? = iw.win? ∨
                 (iw.win? = none ∧ ∃ wb, iw'.win? = some wb ∧
@@ -6114,13 +6755,34 @@ structure InflateMainSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
               (availOut' = availOut → nextOut' = nextOut) ∧
               (availOut' < availOut → ∃ ob ooff, nextOut = .ptr ob ooff ∧
                 nextOut' = .ptr ob (Int64.ofInt (ooff.toInt + (availOut - availOut'))) ∧
+                Readable m' nextOut (availOut - availOut') ∧
+                PreservesOutsideRange m m' ob ooff availOut ∧
                 (availOut' = 0 ∨ Writable m' nextOut' availOut')) ∧
               (r.toInt = 0 → availIn' < availIn ∨ availOut' < availOut) ∧
-              (∃ msg', readField? prog.tags m' strmPtr "z_stream_s" "msg" = some msg' ∧
-                (msg' = .null ∨ CString m' msg')) ∧
+              (∀ msg0, readField? prog.tags m strmPtr "z_stream_s" "msg" = some msg0 →
+                (msg0 = .null ∨ ∃ mb0 mblk0, msg0 = .ptr mb0 0 ∧ m.blocks mb0 = some mblk0 ∧
+                  mblk0.kind = .global ∧ mblk0.perm = .ro ∧ CString m msg0) →
+                ∃ msg', readField? prog.tags m' strmPtr "z_stream_s" "msg" = some msg' ∧
+                  (msg' = .null ∨ ∃ mb' mblk', msg' = .ptr mb' 0 ∧ m'.blocks mb' = some mblk' ∧
+                    mblk'.kind = .global ∧ mblk'.perm = .ro ∧ CString m' msg')) ∧
+              PreservesOutsideRange m m' sb soff 112 ∧
               FramePreserved m m' (fun b =>
-                b = sb ∨ b ∈ iw'.ownedList ∨ (availOut > 0 ∧ PtrBlock nextOut = some b)) ∧
+                b = sb ∨ b ∈ iw'.ownedList ∨ (availOut' < availOut ∧ PtrBlock nextOut = some b)) ∧
               NoHeapLeak m m' (fun b => b ∈ iw'.ownedList))))
+
+/-- Decoupled verification interface for `Zlib.Infback` (`inflateBackInit_`, `inflateBack`,
+`inflateBackEnd`). -/
+structure InfbackSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
+    (userWrite : BlockSet) (userExt : ExtHandler) : Prop where
+  inflateBackInit__safe :
+    Zlib.Spec.ContractSafe prog gEnv (Zlib.Spec.zlibExt userExt) (ZlibInv prog gEnv m0 os0) userWrite
+      Zlib.Infback.inflateBackInit__contract
+  inflateBack_safe :
+    Zlib.Spec.ContractSafe prog gEnv (Zlib.Spec.zlibExt userExt) (ZlibInv prog gEnv m0 os0) userWrite
+      Zlib.Infback.inflateBack_contract
+  inflateBackEnd_safe :
+    Zlib.Spec.ContractSafe prog gEnv (Zlib.Spec.zlibExt userExt) (ZlibInv prog gEnv m0 os0) userWrite
+      Zlib.Infback.inflateBackEnd_contract
 
 /-- Decoupled verification interface for `Zlib.Trees` (`_tr_init`, `_tr_stored_block`,
 `_tr_flush_bits`, `_tr_align`, `_tr_flush_block`, `_tr_tally`). -/
@@ -6132,7 +6794,7 @@ structure TreesSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
       (fun m os args =>
         LibGlobalsOk prog gEnv m0 os0 m os ∧
         ∃ sPtr stBid, args = [sPtr] ∧ sPtr = .ptr stBid 0 ∧
-          HeapRwBlock m stBid 5824 8)
+          HeapRwBlock m stBid 5968 8)
       (fun m os args ret m' os' =>
         ret = .void ∧ os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
         ∃ sPtr stBid, args = [sPtr] ∧ sPtr = .ptr stBid 0 ∧
@@ -6161,6 +6823,7 @@ structure TreesSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           sPtr = .ptr dw.stBid 0 ∧ strmPtr = .ptr sb soff ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           sb ∉ dw.ownedList ∧
+          readField? prog.tags m sPtr "internal_state" "pending_out" = some (.ptr dw.pbufBid 0) ∧
           readNatField? prog.tags m sPtr "internal_state" "pending" = some pend ∧
           readNatField? prog.tags m sPtr "internal_state" "bi_valid" = some bv ∧
           readNatField? prog.tags m sPtr "internal_state" "pending_buf_size" = some pbsz ∧
@@ -6170,11 +6833,16 @@ structure TreesSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
               DisjointFrom bufPtr (fun b => b = dw.stBid ∨ b = dw.pbufBid ∨ b = sb))))
       (fun m os args ret m' os' =>
         ret = .void ∧ os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
-        ∃ sPtr bufPtr storedLen last strmPtr dw,
+        ∃ sPtr bufPtr storedLen last strmPtr dw pend',
           args = [sPtr, bufPtr, .int .u64 storedLen, .int .i32 last] ∧
           sPtr = .ptr dw.stBid 0 ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
+          readNatField? prog.tags m' sPtr "internal_state" "pending" = some pend' ∧
+          4 + storedLen.toNat ≤ pend' ∧
+          (∀ fld, fld ∉ (["bi_buf", "bi_valid", "pending"] : List String) →
+            readField? prog.tags m' sPtr "internal_state" fld =
+              readField? prog.tags m sPtr "internal_state" fld) ∧
           FramePreserved m m' (fun b => b = dw.stBid ∨ b = dw.pbufBid) ∧
           NoHeapLeak m m' (fun _ => False))
   _tr_flush_bits_spec :
@@ -6185,6 +6853,7 @@ structure TreesSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         ∃ sPtr strmPtr sb soff dw pend pbsz,
           args = [sPtr] ∧ sPtr = .ptr dw.stBid 0 ∧ strmPtr = .ptr sb soff ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧ sb ∉ dw.ownedList ∧
+          readField? prog.tags m sPtr "internal_state" "pending_out" = some (.ptr dw.pbufBid 0) ∧
           readNatField? prog.tags m sPtr "internal_state" "pending" = some pend ∧
           readNatField? prog.tags m sPtr "internal_state" "pending_buf_size" = some pbsz ∧
           pend + 2 ≤ pbsz)
@@ -6193,6 +6862,9 @@ structure TreesSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         ∃ sPtr strmPtr dw, args = [sPtr] ∧ sPtr = .ptr dw.stBid 0 ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
+          (∀ fld, fld ∉ (["bi_buf", "bi_valid", "pending"] : List String) →
+            readField? prog.tags m' sPtr "internal_state" fld =
+              readField? prog.tags m sPtr "internal_state" fld) ∧
           FramePreserved m m' (fun b => b = dw.stBid ∨ b = dw.pbufBid) ∧
           NoHeapLeak m m' (fun _ => False))
   _tr_align_spec :
@@ -6203,6 +6875,7 @@ structure TreesSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         ∃ sPtr strmPtr sb soff dw pend pbsz,
           args = [sPtr] ∧ sPtr = .ptr dw.stBid 0 ∧ strmPtr = .ptr sb soff ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧ sb ∉ dw.ownedList ∧
+          readField? prog.tags m sPtr "internal_state" "pending_out" = some (.ptr dw.pbufBid 0) ∧
           readNatField? prog.tags m sPtr "internal_state" "pending" = some pend ∧
           readNatField? prog.tags m sPtr "internal_state" "pending_buf_size" = some pbsz ∧
           pend + 10 ≤ pbsz)
@@ -6211,6 +6884,9 @@ structure TreesSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         ∃ sPtr strmPtr dw, args = [sPtr] ∧ sPtr = .ptr dw.stBid 0 ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
+          (∀ fld, fld ∉ (["bi_buf", "bi_valid", "pending"] : List String) →
+            readField? prog.tags m' sPtr "internal_state" fld =
+              readField? prog.tags m sPtr "internal_state" fld) ∧
           FramePreserved m m' (fun b => b = dw.stBid ∨ b = dw.pbufBid) ∧
           NoHeapLeak m m' (fun _ => False))
   _tr_flush_block_spec :
@@ -6222,8 +6898,10 @@ structure TreesSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           args = [sPtr, bufPtr, .int .u64 storedLen, .int .i32 last] ∧
           sPtr = .ptr dw.stBid 0 ∧ strmPtr = .ptr sb soff ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
-          StreamAccumulatorsInit prog.tags m strmPtr ∧
+          ((∃ level, readIntField? prog.tags m sPtr "internal_state" "level" = some level ∧ level ≤ 0) ∨
+            ∃ dt, readIntField? prog.tags m strmPtr "z_stream_s" "data_type" = some dt) ∧
           sb ∉ dw.ownedList ∧
+          readField? prog.tags m sPtr "internal_state" "pending_out" = some (.ptr dw.pbufBid 0) ∧
           readNatField? prog.tags m sPtr "internal_state" "pending" = some pend ∧
           readNatField? prog.tags m sPtr "internal_state" "bi_valid" = some bv ∧
           readNatField? prog.tags m sPtr "internal_state" "pending_buf_size" = some pbsz ∧
@@ -6238,8 +6916,21 @@ structure TreesSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           sPtr = .ptr dw.stBid 0 ∧ strmPtr = .ptr sb soff ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
-          StreamAccumulatorsInit prog.tags m' strmPtr ∧
+          (StreamAccumulatorsInit prog.tags m strmPtr → StreamAccumulatorsInit prog.tags m' strmPtr) ∧
           readNatField? prog.tags m' sPtr "internal_state" "sym_next" = some 0 ∧
+          (∀ fld, fld ∈ (["level", "strategy", "wrap", "status", "gzhead", "gzindex", "method",
+              "last_flush", "w_size", "w_bits", "w_mask", "window", "window_size", "strstart",
+              "block_start", "lookahead", "match_available", "match_length", "prev_length",
+              "match_start", "prev_match", "insert", "slid", "high_water", "pending_out",
+              "pending_buf", "pending_buf_size", "sym_buf", "lit_bufsize", "sym_end",
+              "strm", "bi_used"] : List String) →
+            readField? prog.tags m' sPtr "internal_state" fld =
+              readField? prog.tags m sPtr "internal_state" fld) ∧
+          (∀ fld, fld ∈ (["next_in", "avail_in", "total_in", "next_out", "avail_out",
+              "total_out", "adler"] : List String) →
+            readField? prog.tags m' strmPtr "z_stream_s" fld =
+              readField? prog.tags m strmPtr "z_stream_s" fld) ∧
+          PreservesOutsideRange m m' sb soff 112 ∧
           FramePreserved m m' (fun b => b = sb ∨ b = dw.stBid ∨ b = dw.pbufBid) ∧
           NoHeapLeak m m' (fun _ => False))
   _tr_tally_spec :
@@ -6256,16 +6947,23 @@ structure TreesSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           symNext + 3 ≤ symEnd ∧ lc.toNat < 256 ∧ dist.toNat ≤ 32768)
       (fun m os args ret m' os' =>
         os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
-        ∃ sPtr dist lc strmPtr dw r,
+        ∃ sPtr dist lc strmPtr dw symNext r,
           args = [sPtr, .int .u32 dist, .int .u32 lc] ∧
           sPtr = .ptr dw.stBid 0 ∧
           ret = .int .i32 r ∧ (r.toInt = 0 ∨ r.toInt = 1) ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
+          readNatField? prog.tags m sPtr "internal_state" "sym_next" = some symNext ∧
+          readNatField? prog.tags m' sPtr "internal_state" "sym_next" = some (symNext + 3) ∧
+          (∀ fld, fld ∉ (["sym_buf", "sym_next", "opt_len", "static_len", "matches",
+              "dyn_ltree", "dyn_dtree"] : List String) →
+            readField? prog.tags m' sPtr "internal_state" fld =
+              readField? prog.tags m sPtr "internal_state" fld) ∧
           FramePreserved m m' (fun b => b = dw.stBid ∨ b = dw.pbufBid) ∧
           NoHeapLeak m m' (fun _ => False))
 
-/-- Decoupled verification interface for `Zlib.Deflate` helpers and non-`deflate` public APIs. -/
+/-- Decoupled verification interface for `Zlib.Deflate` core helpers and non-`deflate`
+non-`deflateParams` public APIs. -/
 structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     (userWrite : BlockSet) (userExt : ExtHandler) : Prop where
   deflateInit__safe :
@@ -6295,9 +6993,6 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
   deflatePrime_safe :
     Zlib.Spec.ContractSafe prog gEnv (Zlib.Spec.zlibExt userExt) (ZlibInv prog gEnv m0 os0) userWrite
       Zlib.Deflate.deflatePrime_contract
-  deflateParams_safe :
-    Zlib.Spec.ContractSafe prog gEnv (Zlib.Spec.zlibExt userExt) (ZlibInv prog gEnv m0 os0) userWrite
-      Zlib.Deflate.deflateParams_contract
   deflateTune_safe :
     Zlib.Spec.ContractSafe prog gEnv (Zlib.Spec.zlibExt userExt) (ZlibInv prog gEnv m0 os0) userWrite
       Zlib.Deflate.deflateTune_contract
@@ -6321,7 +7016,7 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         ∃ strmPtr, args = [strmPtr] ∧
           (strmPtr = .null ∨ ∃ dw, DeflateStateInv prog.tags gEnv m strmPtr dw))
       (fun m os args ret m' os' =>
-        m' = m ∧ os' = os ∧
+        MemBlocksUnchanged m m' ∧ os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
         ∃ strmPtr, args = [strmPtr] ∧
           ((strmPtr = .null ∧ ret = .int .i32 1) ∨
            ((∃ dw, DeflateStateInv prog.tags gEnv m strmPtr dw) ∧ ret = .int .i32 0)))
@@ -6331,6 +7026,7 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
       (fun m os args =>
         LibGlobalsOk prog gEnv m0 os0 m os ∧
         ∃ strmPtr sb soff dw, args = [strmPtr] ∧ strmPtr = .ptr sb soff ∧
+          TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           sb ∉ dw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 dw.ownedList)
       (fun m os args ret m' os' =>
@@ -6339,8 +7035,13 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
           StreamAccumulatorsInit prog.tags m' strmPtr ∧
+          (∀ fld, fld ∈ (["next_in", "avail_in", "next_out", "avail_out"] : List String) →
+            readField? prog.tags m' strmPtr "z_stream_s" fld =
+              readField? prog.tags m strmPtr "z_stream_s" fld) ∧
           readField? prog.tags m' strmPtr "z_stream_s" "msg" = some .null ∧
-          FramePreserved m m' (fun b => b = sb ∨ b ∈ dw.ownedList))
+          PreservesOutsideRange m m' sb soff 112 ∧
+          FramePreserved m m' (fun b => b = sb ∨ b ∈ dw.ownedList) ∧
+          NoHeapLeak m m' (fun _ => False))
   lm_init_spec :
     CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
       Zlib.Deflate.deflateTU_fn_lm_init
@@ -6354,13 +7055,22 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         ∃ sPtr strmPtr dw, args = [sPtr] ∧ sPtr = .ptr dw.stBid 0 ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
-          FramePreserved m m' (fun b => b = dw.stBid ∨ b = dw.headBid))
+          (∀ fld, fld ∈ (["level", "strategy", "wrap", "status", "gzhead", "gzindex",
+              "method", "last_flush", "w_size", "w_bits", "w_mask", "window", "window_size",
+              "pending_buf", "pending_buf_size", "pending_out", "pending", "sym_buf",
+              "lit_bufsize", "sym_next", "sym_end", "bi_buf", "bi_valid", "bi_used",
+              "strm"] : List String) →
+            readField? prog.tags m' sPtr "internal_state" fld =
+              readField? prog.tags m sPtr "internal_state" fld) ∧
+          FramePreserved m m' (fun b => b = dw.stBid ∨ b = dw.headBid) ∧
+          NoHeapLeak m m' (fun _ => False))
   deflateReset_spec :
     CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
       Zlib.Deflate.deflateTU_fn_deflateReset
       (fun m os args =>
         LibGlobalsOk prog gEnv m0 os0 m os ∧
         ∃ strmPtr sb soff dw, args = [strmPtr] ∧ strmPtr = .ptr sb soff ∧
+          TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           sb ∉ dw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 dw.ownedList)
       (fun m os args ret m' os' =>
@@ -6369,8 +7079,13 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
           StreamAccumulatorsInit prog.tags m' strmPtr ∧
+          (∀ fld, fld ∈ (["next_in", "avail_in", "next_out", "avail_out"] : List String) →
+            readField? prog.tags m' strmPtr "z_stream_s" fld =
+              readField? prog.tags m strmPtr "z_stream_s" fld) ∧
           readField? prog.tags m' strmPtr "z_stream_s" "msg" = some .null ∧
-          FramePreserved m m' (fun b => b = sb ∨ b ∈ dw.ownedList))
+          PreservesOutsideRange m m' sb soff 112 ∧
+          FramePreserved m m' (fun b => b = sb ∨ b ∈ dw.ownedList) ∧
+          NoHeapLeak m m' (fun _ => False))
   deflateInit2__spec :
     CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
       Zlib.Deflate.deflateTU_fn_deflateInit2_
@@ -6401,9 +7116,15 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
               HeapBlocksFreshFromLib m0 os0 dw.ownedList ∧
               DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
               StreamAccumulatorsInit prog.tags m' strmPtr ∧
+              (∀ fld, fld ∈ (["next_in", "avail_in", "next_out", "avail_out"] : List String) →
+                readField? prog.tags m' strmPtr "z_stream_s" fld =
+                  readField? prog.tags m strmPtr "z_stream_s" fld) ∧
+              readField? prog.tags m' strmPtr "z_stream_s" "msg" = some .null ∧
+              PreservesOutsideRange m m' sb soff 112 ∧
               FramePreserved m m' (fun b => b = sb ∨ b ∈ dw.ownedList) ∧
               NoHeapLeak m m' (fun b => b ∈ dw.ownedList)) ∨
            (r.toInt ≠ 0 ∧
+              (∀ sb soff, strmPtr = .ptr sb soff → PreservesOutsideRange m m' sb soff 112) ∧
               FramePreserved m m' (fun b => PtrBlock strmPtr = some b) ∧
               NoHeapLeak m m' (fun _ => False))))
   deflateInit__spec :
@@ -6434,48 +7155,24 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
               HeapBlocksFreshFromLib m0 os0 dw.ownedList ∧
               DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
               StreamAccumulatorsInit prog.tags m' strmPtr ∧
+              (∀ fld, fld ∈ (["next_in", "avail_in", "next_out", "avail_out"] : List String) →
+                readField? prog.tags m' strmPtr "z_stream_s" fld =
+                  readField? prog.tags m strmPtr "z_stream_s" fld) ∧
+              readField? prog.tags m' strmPtr "z_stream_s" "msg" = some .null ∧
+              PreservesOutsideRange m m' sb soff 112 ∧
               FramePreserved m m' (fun b => b = sb ∨ b ∈ dw.ownedList) ∧
               NoHeapLeak m m' (fun b => b ∈ dw.ownedList)) ∨
            (r.toInt ≠ 0 ∧
+              (∀ sb soff, strmPtr = .ptr sb soff → PreservesOutsideRange m m' sb soff 112) ∧
               FramePreserved m m' (fun b => PtrBlock strmPtr = some b) ∧
               NoHeapLeak m m' (fun _ => False))))
-  deflateParams_spec :
-    CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
-      Zlib.Deflate.deflateTU_fn_deflateParams
-      (fun m os args =>
-        LibGlobalsOk prog gEnv m0 os0 m os ∧
-        ∃ strmPtr sb soff dw level strat nextIn nextOut availIn availOut,
-          args = [strmPtr, .int .i32 level, .int .i32 strat] ∧ strmPtr = .ptr sb soff ∧
-          DeflateStateInv prog.tags gEnv m strmPtr dw ∧
-          StreamAccumulatorsInit prog.tags m strmPtr ∧
-          sb ∉ dw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 dw.ownedList ∧
-          readField? prog.tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
-          readNatField? prog.tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
-          readField? prog.tags m strmPtr "z_stream_s" "next_out" = some nextOut ∧
-          readNatField? prog.tags m strmPtr "z_stream_s" "avail_out" = some availOut ∧
-          (availIn = 0 ∨ Readable m nextIn availIn) ∧
-          (availOut = 0 ∨ Writable m nextOut availOut) ∧
-          DisjointFrom nextIn (fun b => b ∈ dw.ownedList ∨ b = sb) ∧
-          DisjointFrom nextOut (fun b => b ∈ dw.ownedList ∨ b = sb))
-      (fun m os args ret m' os' =>
-        os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
-        ∃ strmPtr sb soff dw level strat nextOut availOut r,
-          args = [strmPtr, .int .i32 level, .int .i32 strat] ∧ strmPtr = .ptr sb soff ∧
-          ret = .int .i32 r ∧
-          DeflateStateInv prog.tags gEnv m strmPtr dw ∧
-          DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
-          StreamAccumulatorsInit prog.tags m' strmPtr ∧
-          readField? prog.tags m strmPtr "z_stream_s" "next_out" = some nextOut ∧
-          readNatField? prog.tags m strmPtr "z_stream_s" "avail_out" = some availOut ∧
-          FramePreserved m m' (fun b =>
-            b = sb ∨ b ∈ dw.ownedList ∨ (availOut > 0 ∧ PtrBlock nextOut = some b)) ∧
-          NoHeapLeak m m' (fun b => b ∈ dw.ownedList))
   deflateEnd_spec :
     CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
       Zlib.Deflate.deflateTU_fn_deflateEnd
       (fun m os args =>
         LibGlobalsOk prog gEnv m0 os0 m os ∧
         ∃ strmPtr sb soff dw, args = [strmPtr] ∧ strmPtr = .ptr sb soff ∧
+          TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           sb ∉ dw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 dw.ownedList)
       (fun m os args ret m' os' =>
@@ -6485,6 +7182,7 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           ret = .int .i32 r ∧ (r.toInt = 0 ∨ r.toInt = 1) ∧
           (∀ b ∈ dw.ownedList, m'.blocks b = none) ∧
           readField? prog.tags m' strmPtr "z_stream_s" "state" = some .null ∧
+          PreservesOutsideRange m m' sb soff 112 ∧
           FramePreserved m m' (fun b => b = sb ∨ b ∈ dw.ownedList) ∧
           NoHeapLeak m m' (fun _ => False))
   putShortMSB_spec :
@@ -6496,6 +7194,7 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           args = [sPtr, .int .u32 bval] ∧ sPtr = .ptr dw.stBid 0 ∧
           strmPtr = .ptr sb soff ∧ DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           sb ∉ dw.ownedList ∧
+          readField? prog.tags m sPtr "internal_state" "pending_out" = some (.ptr dw.pbufBid 0) ∧
           readNatField? prog.tags m sPtr "internal_state" "pending" = some pend ∧
           readNatField? prog.tags m sPtr "internal_state" "pending_buf_size" = some pbsz ∧
           pend + 2 ≤ pbsz)
@@ -6507,6 +7206,9 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
           readNatField? prog.tags m sPtr "internal_state" "pending" = some pend ∧
           readNatField? prog.tags m' sPtr "internal_state" "pending" = some (pend + 2) ∧
+          (∀ fld, fld ≠ "pending" →
+            readField? prog.tags m' sPtr "internal_state" fld =
+              readField? prog.tags m sPtr "internal_state" fld) ∧
           FramePreserved m m' (fun b => b = dw.stBid ∨ b = dw.pbufBid) ∧
           NoHeapLeak m m' (fun _ => False))
   flush_pending_spec :
@@ -6516,20 +7218,27 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         LibGlobalsOk prog gEnv m0 os0 m os ∧
         ∃ strmPtr sb soff dw nextOut availOut,
           args = [strmPtr] ∧ strmPtr = .ptr sb soff ∧
+          TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
-          StreamAccumulatorsInit prog.tags m strmPtr ∧
+          (∃ to_, readNatField? prog.tags m strmPtr "z_stream_s" "total_out" = some to_) ∧
           sb ∉ dw.ownedList ∧
           readField? prog.tags m strmPtr "z_stream_s" "next_out" = some nextOut ∧
           readNatField? prog.tags m strmPtr "z_stream_s" "avail_out" = some availOut ∧
-          (availOut = 0 ∨ Writable m nextOut availOut) ∧
-          DisjointFrom nextOut (fun b => b ∈ dw.ownedList ∨ b = sb))
+          (availOut = 0 ∨ (Writable m nextOut availOut ∧
+            DisjointFrom nextOut (fun b => b ∈ dw.ownedList ∨ b = sb))))
       (fun m os args ret m' os' =>
         ret = .void ∧ os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
         ∃ strmPtr sb soff dw nextOut nextOut' availOut availOut' pend pend',
           args = [strmPtr] ∧ strmPtr = .ptr sb soff ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
-          StreamAccumulatorsInit prog.tags m' strmPtr ∧
+          (StreamAccumulatorsInit prog.tags m strmPtr → StreamAccumulatorsInit prog.tags m' strmPtr) ∧
+          (∀ fld, fld ∈ (["next_in", "avail_in", "total_in", "data_type", "msg"] : List String) →
+            readField? prog.tags m' strmPtr "z_stream_s" fld =
+              readField? prog.tags m strmPtr "z_stream_s" fld) ∧
+          (∀ fld, fld ∉ (["pending", "pending_out"] : List String) →
+            readField? prog.tags m' (.ptr dw.stBid 0) "internal_state" fld =
+              readField? prog.tags m (.ptr dw.stBid 0) "internal_state" fld) ∧
           readField? prog.tags m strmPtr "z_stream_s" "next_out" = some nextOut ∧
           readNatField? prog.tags m strmPtr "z_stream_s" "avail_out" = some availOut ∧
           readField? prog.tags m' strmPtr "z_stream_s" "next_out" = some nextOut' ∧
@@ -6541,7 +7250,10 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           (len = 0 → nextOut' = nextOut) ∧
           (len > 0 → ∃ ob ooff, nextOut = .ptr ob ooff ∧
             nextOut' = .ptr ob (Int64.ofInt (ooff.toInt + len)) ∧
+            Readable m' nextOut len ∧
+            PreservesOutsideRange m m' ob ooff availOut ∧
             (availOut' = 0 ∨ Writable m' nextOut' availOut')) ∧
+          PreservesOutsideRange m m' sb soff 112 ∧
           FramePreserved m m' (fun b =>
             b = sb ∨ b = dw.stBid ∨ (len > 0 ∧ PtrBlock nextOut = some b)) ∧
           NoHeapLeak m m' (fun _ => False))
@@ -6552,24 +7264,30 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         LibGlobalsOk prog gEnv m0 os0 m os ∧
         ∃ strmPtr bufPtr size sb soff dw nextIn availIn,
           args = [strmPtr, bufPtr, .int .u32 size] ∧ strmPtr = .ptr sb soff ∧
+          TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
-          StreamAccumulatorsInit prog.tags m strmPtr ∧
+          (∃ ti, readNatField? prog.tags m strmPtr "z_stream_s" "total_in" = some ti) ∧
           sb ∉ dw.ownedList ∧
           readField? prog.tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
           readNatField? prog.tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
-          (availIn = 0 ∨ Readable m nextIn availIn) ∧
+          (availIn = 0 ∨ (Readable m nextIn availIn ∧
+            DisjointFrom nextIn (fun b => b = sb ∨ b ∈ dw.ownedList))) ∧
           (size.toNat = 0 ∨ availIn = 0 ∨
             (Writable m bufPtr (min availIn size.toNat) ∧
-              DisjointFrom bufPtr (fun b => b = sb) ∧
-              DisjointFrom bufPtr (fun b => b = dw.stBid))) ∧
-          DisjointFrom nextIn (fun b => b = sb ∨ b ∈ dw.ownedList))
+              DisjointFrom bufPtr (fun b => b = sb ∨ b = dw.stBid) ∧
+              PtrBlock nextIn ≠ PtrBlock bufPtr)))
       (fun m os args ret m' os' =>
         os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
         ∃ strmPtr bufPtr size sb soff dw nextIn nextIn' availIn availIn' r,
           args = [strmPtr, bufPtr, .int .u32 size] ∧ strmPtr = .ptr sb soff ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
-          StreamAccumulatorsInit prog.tags m' strmPtr ∧
+          (StreamAccumulatorsInit prog.tags m strmPtr → StreamAccumulatorsInit prog.tags m' strmPtr) ∧
+          (∀ fld, fld ∈ (["next_out", "avail_out", "total_out", "data_type", "msg"] : List String) →
+            readField? prog.tags m' strmPtr "z_stream_s" fld =
+              readField? prog.tags m strmPtr "z_stream_s" fld) ∧
+          (∀ fld, readField? prog.tags m' (.ptr dw.stBid 0) "internal_state" fld =
+            readField? prog.tags m (.ptr dw.stBid 0) "internal_state" fld) ∧
           readField? prog.tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
           readNatField? prog.tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
           readField? prog.tags m' strmPtr "z_stream_s" "next_in" = some nextIn' ∧
@@ -6577,10 +7295,12 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           ret = .int .u32 r ∧ r.toNat = min availIn size.toNat ∧
           availIn' = availIn - r.toNat ∧
           (r.toNat = 0 → nextIn' = nextIn) ∧
-          (r.toNat > 0 → ∃ ib ioff, nextIn = .ptr ib ioff ∧
+          (r.toNat > 0 → ∃ ib ioff bb boff, nextIn = .ptr ib ioff ∧ bufPtr = .ptr bb boff ∧
             nextIn' = .ptr ib (Int64.ofInt (ioff.toInt + r.toNat)) ∧
-            (availIn' = 0 ∨ Readable m' nextIn' availIn')) ∧
-          (r.toNat > 0 → Readable m' bufPtr r.toNat) ∧
+            (availIn' = 0 ∨ Readable m' nextIn' availIn') ∧
+            Readable m' bufPtr r.toNat ∧
+            PreservesOutsideRange m m' bb boff r.toNat) ∧
+          PreservesOutsideRange m m' sb soff 112 ∧
           FramePreserved m m' (fun b =>
             b = sb ∨ (r.toNat > 0 ∧ PtrBlock bufPtr = some b)) ∧
           NoHeapLeak m m' (fun _ => False))
@@ -6591,22 +7311,23 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         LibGlobalsOk prog gEnv m0 os0 m os ∧
         ∃ sPtr strmPtr sb soff dw nextIn availIn look,
           args = [sPtr] ∧ sPtr = .ptr dw.stBid 0 ∧ strmPtr = .ptr sb soff ∧
+          TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
-          StreamAccumulatorsInit prog.tags m strmPtr ∧
+          (∃ ti, readNatField? prog.tags m strmPtr "z_stream_s" "total_in" = some ti) ∧
           sb ∉ dw.ownedList ∧
           readNatField? prog.tags m sPtr "internal_state" "lookahead" = some look ∧
           look < 262 ∧
           readField? prog.tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
           readNatField? prog.tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
-          (availIn = 0 ∨ Readable m nextIn availIn) ∧
-          DisjointFrom nextIn (fun b => b = sb ∨ b ∈ dw.ownedList))
+          (availIn = 0 ∨ (Readable m nextIn availIn ∧
+            DisjointFrom nextIn (fun b => b = sb ∨ b ∈ dw.ownedList))))
       (fun m os args ret m' os' =>
         ret = .void ∧ os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
         ∃ sPtr strmPtr sb soff dw nextIn nextIn' availIn availIn' look look',
           args = [sPtr] ∧ sPtr = .ptr dw.stBid 0 ∧ strmPtr = .ptr sb soff ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
-          StreamAccumulatorsInit prog.tags m' strmPtr ∧
+          (StreamAccumulatorsInit prog.tags m strmPtr → StreamAccumulatorsInit prog.tags m' strmPtr) ∧
           readField? prog.tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
           readNatField? prog.tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
           readField? prog.tags m' strmPtr "z_stream_s" "next_in" = some nextIn' ∧
@@ -6619,10 +7340,23 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           (availIn' < availIn → ∃ ib ioff, nextIn = .ptr ib ioff ∧
             nextIn' = .ptr ib (Int64.ofInt (ioff.toInt + (availIn - availIn'))) ∧
             (availIn' = 0 ∨ Readable m' nextIn' availIn')) ∧
-          (∀ fld, fld ∈ (["sym_next", "status", "wrap", "pending", "last_flush",
-              "match_available"] : List String) →
+          (∀ fld, fld ∈ (["next_out", "avail_out", "total_out", "data_type", "msg"] : List String) →
+            readField? prog.tags m' strmPtr "z_stream_s" fld =
+              readField? prog.tags m strmPtr "z_stream_s" fld) ∧
+          (∀ fld, fld ∈ (["sym_next", "status", "wrap", "pending", "pending_out", "pending_buf",
+              "pending_buf_size", "last_flush", "match_available", "level", "strategy",
+              "gzhead", "gzindex", "method", "w_size", "w_bits", "w_mask", "bi_buf",
+              "bi_valid", "bi_used"] : List String) →
             readField? prog.tags m' sPtr "internal_state" fld =
               readField? prog.tags m sPtr "internal_state" fld) ∧
+          (∀ str0 bks0,
+            readNatField? prog.tags m sPtr "internal_state" "strstart" = some str0 →
+            readIntField? prog.tags m sPtr "internal_state" "block_start" = some bks0 →
+            ∃ str1 bks1,
+              readNatField? prog.tags m' sPtr "internal_state" "strstart" = some str1 ∧
+              readIntField? prog.tags m' sPtr "internal_state" "block_start" = some bks1 ∧
+              (str1 : Int) - bks1 = (str0 : Int) - bks0) ∧
+          PreservesOutsideRange m m' sb soff 112 ∧
           FramePreserved m m' (fun b =>
             b = sb ∨ b = dw.stBid ∨ b = dw.winBid ∨ b = dw.prevBid ∨ b = dw.headBid) ∧
           NoHeapLeak m m' (fun _ => False))
@@ -6638,27 +7372,205 @@ structure DeflateCoreSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         ∃ sPtr strmPtr dw, args = [sPtr] ∧ sPtr = .ptr dw.stBid 0 ∧
           DeflateStateInv prog.tags gEnv m strmPtr dw ∧
           DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
-          FramePreserved m m' (fun b => b = dw.prevBid ∨ b = dw.headBid) ∧
+          (∀ fld, fld ≠ "slid" →
+            readField? prog.tags m' sPtr "internal_state" fld =
+              readField? prog.tags m sPtr "internal_state" fld) ∧
+          FramePreserved m m' (fun b => b = dw.stBid ∨ b = dw.prevBid ∨ b = dw.headBid) ∧
           NoHeapLeak m m' (fun _ => False))
 
-/-- Decoupled verification interface for `Zlib.Deflate.deflate` (public contract +
-internal progress-tracked spec for `compress2_z` and `gz_comp`). -/
+/-- Shared precondition for the 5 block compressors (`deflate_stored`, `deflate_fast`,
+`deflate_slow`, `deflate_rle`, `deflate_huff`). -/
+def DeflateBlockPre (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
+    (m : Mem) (os : OSState) (args : List Val) : Prop :=
+  LibGlobalsOk prog gEnv m0 os0 m os ∧
+  ∃ sPtr flush strmPtr sb soff dw nextIn nextOut availIn availOut,
+    args = [sPtr, .int .i32 flush] ∧ sPtr = .ptr dw.stBid 0 ∧ strmPtr = .ptr sb soff ∧
+    0 ≤ flush.toInt ∧ flush.toInt ≤ 5 ∧
+    TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
+    DeflateStateInv prog.tags gEnv m strmPtr dw ∧
+    (∃ ti, readNatField? prog.tags m strmPtr "z_stream_s" "total_in" = some ti) ∧
+    (∃ to_, readNatField? prog.tags m strmPtr "z_stream_s" "total_out" = some to_) ∧
+    ((∃ lvl, readIntField? prog.tags m sPtr "internal_state" "level" = some lvl ∧ lvl ≤ 0) ∨
+      ∃ dt, readIntField? prog.tags m strmPtr "z_stream_s" "data_type" = some dt) ∧
+    readField? prog.tags m sPtr "internal_state" "pending_out" = some (.ptr dw.pbufBid 0) ∧
+    readNatField? prog.tags m sPtr "internal_state" "pending" = some 0 ∧
+    sb ∉ dw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 dw.ownedList ∧
+    (m0.blocks sb).isNone = true ∧ sb ≠ os0.errnoBlk ∧
+    readField? prog.tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
+    readNatField? prog.tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
+    readField? prog.tags m strmPtr "z_stream_s" "next_out" = some nextOut ∧
+    readNatField? prog.tags m strmPtr "z_stream_s" "avail_out" = some availOut ∧
+    availOut > 0 ∧ Writable m nextOut availOut ∧
+    DisjointFrom nextOut (fun b => b ∈ dw.ownedList ∨ b = sb) ∧
+    (availIn = 0 ∨ (Readable m nextIn availIn ∧
+      DisjointFrom nextIn (fun b => b ∈ dw.ownedList ∨ b = sb) ∧
+      PtrBlock nextIn ≠ PtrBlock nextOut))
+
+/-- Shared postcondition for the 5 block compressors. -/
+def DeflateBlockPost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
+    (m : Mem) (os : OSState) (args : List Val) (ret : Val) (m' : Mem) (os' : OSState) : Prop :=
+  os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
+  ∃ sPtr flush strmPtr sb soff dw nextIn nextIn' nextOut nextOut'
+    availIn availIn' availOut availOut' look' mav' pend' r,
+    args = [sPtr, .int .i32 flush] ∧ sPtr = .ptr dw.stBid 0 ∧ strmPtr = .ptr sb soff ∧
+    ret = .int .u32 r ∧ (r.toInt = 0 ∨ r.toInt = 1 ∨ r.toInt = 2 ∨ r.toInt = 3) ∧
+    DeflateStateInv prog.tags gEnv m strmPtr dw ∧
+    DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
+    (StreamAccumulatorsInit prog.tags m strmPtr → StreamAccumulatorsInit prog.tags m' strmPtr) ∧
+    readField? prog.tags m' strmPtr "z_stream_s" "msg" =
+      readField? prog.tags m strmPtr "z_stream_s" "msg" ∧
+    readField? prog.tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
+    readNatField? prog.tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
+    readField? prog.tags m strmPtr "z_stream_s" "next_out" = some nextOut ∧
+    readNatField? prog.tags m strmPtr "z_stream_s" "avail_out" = some availOut ∧
+    readField? prog.tags m' strmPtr "z_stream_s" "next_in" = some nextIn' ∧
+    readNatField? prog.tags m' strmPtr "z_stream_s" "avail_in" = some availIn' ∧
+    readField? prog.tags m' strmPtr "z_stream_s" "next_out" = some nextOut' ∧
+    readNatField? prog.tags m' strmPtr "z_stream_s" "avail_out" = some availOut' ∧
+    readNatField? prog.tags m' sPtr "internal_state" "lookahead" = some look' ∧
+    readNatField? prog.tags m' sPtr "internal_state" "match_available" = some mav' ∧
+    readNatField? prog.tags m' sPtr "internal_state" "pending" = some pend' ∧
+    availIn' ≤ availIn ∧ availOut' ≤ availOut ∧
+    (availIn' = availIn → nextIn' = nextIn) ∧
+    (availIn' < availIn → ∃ ib ioff, nextIn = .ptr ib ioff ∧
+      nextIn' = .ptr ib (Int64.ofInt (ioff.toInt + (availIn - availIn'))) ∧
+      (availIn' = 0 ∨ Readable m' nextIn' availIn')) ∧
+    (availOut' = availOut → nextOut' = nextOut) ∧
+    (availOut' < availOut → ∃ ob ooff, nextOut = .ptr ob ooff ∧
+      nextOut' = .ptr ob (Int64.ofInt (ooff.toInt + (availOut - availOut'))) ∧
+      Readable m' nextOut (availOut - availOut') ∧
+      PreservesOutsideRange m m' ob ooff availOut ∧
+      (availOut' = 0 ∨ Writable m' nextOut' availOut')) ∧
+    (r.toInt = 1 ∨ r.toInt = 3 →
+      pend' = 0 ∧
+      readField? prog.tags m' sPtr "internal_state" "pending_out" = some (.ptr dw.pbufBid 0) ∧
+      availIn' = 0 ∧ look' = 0 ∧ mav' = 0) ∧
+    (r.toInt = 1 → flush.toInt ≠ 0) ∧
+    (r.toInt = 2 → availOut' = 0) ∧
+    (r.toInt = 3 → flush.toInt = 4) ∧
+    (r.toInt = 0 → availOut' = 0 ∨ (availIn' = 0 ∧ flush.toInt = 0)) ∧
+    (0 ≤ flush.toInt → flush.toInt ≤ 4 →
+      Tuple5Le (deflateEmitTuple prog.tags m' dw availIn' flush.toInt)
+        (deflateEmitTuple prog.tags m dw availIn flush.toInt) ∧
+      (availOut' < availOut → availOut' = 0 → availOut ≥ 8 →
+        Tuple5Lt (deflateEmitTuple prog.tags m' dw availIn' flush.toInt)
+          (deflateEmitTuple prog.tags m dw availIn flush.toInt))) ∧
+    (∀ fld, fld ∈ (["level", "strategy", "wrap", "status", "gzhead", "gzindex", "method",
+        "last_flush"] : List String) →
+      readField? prog.tags m' sPtr "internal_state" fld =
+        readField? prog.tags m sPtr "internal_state" fld) ∧
+    PreservesOutsideRange m m' sb soff 112 ∧
+    FramePreserved m m' (fun b =>
+      b = sb ∨ b ∈ dw.ownedList ∨ (availOut' < availOut ∧ PtrBlock nextOut = some b)) ∧
+    NoHeapLeak m m' (fun _ => False)
+
+/-- Decoupled verification interface for `Zlib.Deflate` block-compression subroutines
+(`longest_match`, `deflate_stored`, `deflate_fast`, `deflate_slow`, `deflate_rle`, `deflate_huff`). -/
+structure DeflateBlocksSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
+    (userExt : ExtHandler) : Prop where
+  longest_match_spec :
+    CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
+      Zlib.Deflate.deflateTU_fn_longest_match
+      (fun m os args =>
+        LibGlobalsOk prog gEnv m0 os0 m os ∧
+        ∃ sPtr curMatch strmPtr dw lvl wsize strstart lookahead prevLen highWater,
+          args = [sPtr, .int .u32 curMatch] ∧ sPtr = .ptr dw.stBid 0 ∧
+          DeflateStateInv prog.tags gEnv m strmPtr dw ∧
+          readIntField? prog.tags m sPtr "internal_state" "level" = some lvl ∧ lvl ≠ 0 ∧
+          readNatField? prog.tags m sPtr "internal_state" "w_size" = some wsize ∧
+          readNatField? prog.tags m sPtr "internal_state" "strstart" = some strstart ∧
+          readNatField? prog.tags m sPtr "internal_state" "lookahead" = some lookahead ∧
+          readNatField? prog.tags m sPtr "internal_state" "prev_length" = some prevLen ∧
+          readNatField? prog.tags m sPtr "internal_state" "high_water" = some highWater ∧
+          0 < curMatch.toNat ∧ curMatch.toNat < strstart ∧
+          strstart - curMatch.toNat ≤ wsize - 262 ∧
+          3 ≤ lookahead ∧ 2 ≤ prevLen ∧ prevLen ≤ 257 ∧
+          strstart + 258 ≤ highWater)
+      (fun m os args ret m' os' =>
+        os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
+        ∃ sPtr curMatch strmPtr dw wsize strstart lookahead prevLen matchStart' r,
+          args = [sPtr, .int .u32 curMatch] ∧ sPtr = .ptr dw.stBid 0 ∧
+          ret = .int .u32 r ∧
+          DeflateStateInv prog.tags gEnv m strmPtr dw ∧
+          DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
+          readNatField? prog.tags m sPtr "internal_state" "w_size" = some wsize ∧
+          readNatField? prog.tags m sPtr "internal_state" "strstart" = some strstart ∧
+          readNatField? prog.tags m sPtr "internal_state" "lookahead" = some lookahead ∧
+          readNatField? prog.tags m sPtr "internal_state" "prev_length" = some prevLen ∧
+          readNatField? prog.tags m' sPtr "internal_state" "match_start" = some matchStart' ∧
+          r.toNat ≤ lookahead ∧ r.toNat ≤ 258 ∧
+          (prevLen < r.toNat →
+            1 ≤ strstart - matchStart' ∧ strstart - matchStart' ≤ wsize - 262) ∧
+          (∀ fld, fld ≠ "match_start" →
+            readField? prog.tags m' sPtr "internal_state" fld =
+              readField? prog.tags m sPtr "internal_state" fld) ∧
+          FramePreserved m m' (fun b => b = dw.stBid) ∧
+          NoHeapLeak m m' (fun _ => False))
+  deflate_stored_spec :
+    CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
+      Zlib.Deflate.deflateTU_fn_deflate_stored
+      (fun m os args =>
+        DeflateBlockPre prog gEnv m0 os0 m os args ∧
+        ∃ sPtr flush, args = [sPtr, .int .i32 flush] ∧
+          readIntField? prog.tags m sPtr "internal_state" "level" = some 0)
+      (DeflateBlockPost prog gEnv m0 os0)
+  deflate_fast_spec :
+    CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
+      Zlib.Deflate.deflateTU_fn_deflate_fast
+      (fun m os args =>
+        DeflateBlockPre prog gEnv m0 os0 m os args ∧
+        ∃ sPtr flush lvl, args = [sPtr, .int .i32 flush] ∧
+          readIntField? prog.tags m sPtr "internal_state" "level" = some lvl ∧ 0 < lvl ∧
+          readIntField? prog.tags m sPtr "internal_state" "match_available" = some 0)
+      (DeflateBlockPost prog gEnv m0 os0)
+  deflate_slow_spec :
+    CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
+      Zlib.Deflate.deflateTU_fn_deflate_slow
+      (fun m os args =>
+        DeflateBlockPre prog gEnv m0 os0 m os args ∧
+        ∃ sPtr flush lvl, args = [sPtr, .int .i32 flush] ∧
+          readIntField? prog.tags m sPtr "internal_state" "level" = some lvl ∧ 0 < lvl)
+      (DeflateBlockPost prog gEnv m0 os0)
+  deflate_rle_spec :
+    CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
+      Zlib.Deflate.deflateTU_fn_deflate_rle
+      (fun m os args =>
+        DeflateBlockPre prog gEnv m0 os0 m os args ∧
+        ∃ sPtr flush lvl, args = [sPtr, .int .i32 flush] ∧
+          readIntField? prog.tags m sPtr "internal_state" "level" = some lvl ∧ 0 < lvl)
+      (DeflateBlockPost prog gEnv m0 os0)
+  deflate_huff_spec :
+    CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
+      Zlib.Deflate.deflateTU_fn_deflate_huff
+      (fun m os args =>
+        DeflateBlockPre prog gEnv m0 os0 m os args ∧
+        ∃ sPtr flush lvl, args = [sPtr, .int .i32 flush] ∧
+          readIntField? prog.tags m sPtr "internal_state" "level" = some lvl ∧ 0 < lvl)
+      (DeflateBlockPost prog gEnv m0 os0)
+
+/-- Decoupled verification interface for `Zlib.Deflate.{deflate, deflateParams}` (public contracts +
+internal progress-tracked specs for `compress2_z`, `gz_comp`, and `gzsetparams`). -/
 structure DeflateMainSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     (userWrite : BlockSet) (userExt : ExtHandler) : Prop where
   deflate_safe :
     Zlib.Spec.ContractSafe prog gEnv (Zlib.Spec.zlibExt userExt) (ZlibInv prog gEnv m0 os0) userWrite
       Zlib.Deflate.deflate_contract
-  deflate_spec :
+  deflateParams_safe :
+    Zlib.Spec.ContractSafe prog gEnv (Zlib.Spec.zlibExt userExt) (ZlibInv prog gEnv m0 os0) userWrite
+      Zlib.Deflate.deflateParams_contract
+  deflateParams_spec :
     CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
-      Zlib.Deflate.deflateTU_fn_deflate
+      Zlib.Deflate.deflateTU_fn_deflateParams
       (fun m os args =>
         LibGlobalsOk prog gEnv m0 os0 m os ∧
-        ∃ strmPtr flush, args = [strmPtr, .int .i32 flush] ∧
+        ∃ strmPtr level strat, args = [strmPtr, .int .i32 level, .int .i32 strat] ∧
           (strmPtr = .null ∨
             ∃ sb soff dw nextIn nextOut availIn availOut owned hd,
               strmPtr = .ptr sb soff ∧
+              TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
               DeflateStateInv prog.tags gEnv m strmPtr dw ∧
-              StreamAccumulatorsInit prog.tags m strmPtr ∧
+              (∃ ti, readNatField? prog.tags m strmPtr "z_stream_s" "total_in" = some ti) ∧
+              (∃ to_, readNatField? prog.tags m strmPtr "z_stream_s" "total_out" = some to_) ∧
               (∀ b ∈ dw.ownedList, owned b) ∧
               readField? prog.tags m (.ptr dw.stBid 0) "internal_state" "gzhead" = some hd ∧
               Zlib.Spec.DeflateHeaderReady prog.tags owned m hd ∧
@@ -6668,21 +7580,83 @@ structure DeflateMainSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
               readNatField? prog.tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
               readField? prog.tags m strmPtr "z_stream_s" "next_out" = some nextOut ∧
               readNatField? prog.tags m strmPtr "z_stream_s" "avail_out" = some availOut ∧
-              (availIn = 0 ∨ Readable m nextIn availIn) ∧
-              (availOut = 0 ∨ Writable m nextOut availOut) ∧
-              DisjointFrom nextIn (fun b => b ∈ dw.ownedList ∨ b = sb) ∧
-              DisjointFrom nextOut (fun b => b ∈ dw.ownedList ∨ b = sb)))
+              (availIn = 0 ∨ (Readable m nextIn availIn ∧
+                DisjointFrom nextIn (fun b => b ∈ dw.ownedList ∨ b = sb))) ∧
+              (availOut = 0 ∨ (Writable m nextOut availOut ∧
+                DisjointFrom nextOut (fun b => b ∈ dw.ownedList ∨ b = sb))) ∧
+              (availIn = 0 ∨ availOut = 0 ∨ PtrBlock nextIn ≠ PtrBlock nextOut)))
+      (fun m os args ret m' os' =>
+        os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
+        ∃ strmPtr level strat r,
+          args = [strmPtr, .int .i32 level, .int .i32 strat] ∧
+          ret = .int .i32 r ∧
+          ((strmPtr = .null ∧ r.toInt = -2 ∧ MemBlocksUnchanged m m') ∨
+           (∃ sb soff dw nextIn nextIn' nextOut nextOut' availIn availIn' availOut availOut',
+              strmPtr = .ptr sb soff ∧
+              DeflateStateInv prog.tags gEnv m strmPtr dw ∧
+              DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
+              (StreamAccumulatorsInit prog.tags m strmPtr → StreamAccumulatorsInit prog.tags m' strmPtr) ∧
+              readField? prog.tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
+              readNatField? prog.tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
+              readField? prog.tags m strmPtr "z_stream_s" "next_out" = some nextOut ∧
+              readNatField? prog.tags m strmPtr "z_stream_s" "avail_out" = some availOut ∧
+              readField? prog.tags m' strmPtr "z_stream_s" "next_in" = some nextIn' ∧
+              readNatField? prog.tags m' strmPtr "z_stream_s" "avail_in" = some availIn' ∧
+              readField? prog.tags m' strmPtr "z_stream_s" "next_out" = some nextOut' ∧
+              readNatField? prog.tags m' strmPtr "z_stream_s" "avail_out" = some availOut' ∧
+              availIn' ≤ availIn ∧ availOut' ≤ availOut ∧
+              (availIn' = availIn → nextIn' = nextIn) ∧
+              (availIn' < availIn → ∃ ib ioff, nextIn = .ptr ib ioff ∧
+                nextIn' = .ptr ib (Int64.ofInt (ioff.toInt + (availIn - availIn'))) ∧
+                (availIn' = 0 ∨ Readable m' nextIn' availIn')) ∧
+              (availOut' = availOut → nextOut' = nextOut) ∧
+              (availOut' < availOut → ∃ ob ooff, nextOut = .ptr ob ooff ∧
+                nextOut' = .ptr ob (Int64.ofInt (ooff.toInt + (availOut - availOut'))) ∧
+                Readable m' nextOut (availOut - availOut') ∧
+                PreservesOutsideRange m m' ob ooff availOut ∧
+                (availOut' = 0 ∨ Writable m' nextOut' availOut')) ∧
+              PreservesOutsideRange m m' sb soff 112 ∧
+              FramePreserved m m' (fun b =>
+                b = sb ∨ b ∈ dw.ownedList ∨ (availOut' < availOut ∧ PtrBlock nextOut = some b)) ∧
+              NoHeapLeak m m' (fun b => b ∈ dw.ownedList))))
+  deflate_spec :
+    CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
+      Zlib.Deflate.deflateTU_fn_deflate
+      (fun m os args =>
+        LibGlobalsOk prog gEnv m0 os0 m os ∧
+        ∃ strmPtr flush, args = [strmPtr, .int .i32 flush] ∧
+          (strmPtr = .null ∨
+            ∃ sb soff dw nextIn nextOut availIn availOut owned hd,
+              strmPtr = .ptr sb soff ∧
+              TypedCell prog.tags m strmPtr (.structTy "z_stream_s") ∧
+              DeflateStateInv prog.tags gEnv m strmPtr dw ∧
+              (∃ ti, readNatField? prog.tags m strmPtr "z_stream_s" "total_in" = some ti) ∧
+              (∃ to_, readNatField? prog.tags m strmPtr "z_stream_s" "total_out" = some to_) ∧
+              (∀ b ∈ dw.ownedList, owned b) ∧
+              readField? prog.tags m (.ptr dw.stBid 0) "internal_state" "gzhead" = some hd ∧
+              Zlib.Spec.DeflateHeaderReady prog.tags owned m hd ∧
+              sb ∉ dw.ownedList ∧ HeapBlocksFreshFromLib m0 os0 dw.ownedList ∧
+              (m0.blocks sb).isNone = true ∧ sb ≠ os0.errnoBlk ∧
+              readField? prog.tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
+              readNatField? prog.tags m strmPtr "z_stream_s" "avail_in" = some availIn ∧
+              readField? prog.tags m strmPtr "z_stream_s" "next_out" = some nextOut ∧
+              readNatField? prog.tags m strmPtr "z_stream_s" "avail_out" = some availOut ∧
+              (availIn = 0 ∨ (Readable m nextIn availIn ∧
+                DisjointFrom nextIn (fun b => b ∈ dw.ownedList ∨ b = sb))) ∧
+              (availOut = 0 ∨ (Writable m nextOut availOut ∧
+                DisjointFrom nextOut (fun b => b ∈ dw.ownedList ∨ b = sb))) ∧
+              (availIn = 0 ∨ availOut = 0 ∨ PtrBlock nextIn ≠ PtrBlock nextOut)))
       (fun m os args ret m' os' =>
         os' = os ∧ LibGlobalsOk prog gEnv m0 os0 m' os' ∧
         ∃ strmPtr flush r,
           args = [strmPtr, .int .i32 flush] ∧ ret = .int .i32 r ∧
-          ((strmPtr = .null ∧ r.toInt = -2 ∧ m' = m) ∨
+          ((strmPtr = .null ∧ r.toInt = -2 ∧ MemBlocksUnchanged m m') ∨
            (∃ sb soff dw nextIn nextIn' nextOut nextOut' availIn availIn' availOut availOut'
               wrap0 hd0,
               strmPtr = .ptr sb soff ∧
               DeflateStateInv prog.tags gEnv m strmPtr dw ∧
               DeflateStateInv prog.tags gEnv m' strmPtr dw ∧
-              StreamAccumulatorsInit prog.tags m' strmPtr ∧
+              (StreamAccumulatorsInit prog.tags m strmPtr → StreamAccumulatorsInit prog.tags m' strmPtr) ∧
               readIntField? prog.tags m (.ptr dw.stBid 0) "internal_state" "wrap" = some wrap0 ∧
               readField? prog.tags m (.ptr dw.stBid 0) "internal_state" "gzhead" = some hd0 ∧
               readField? prog.tags m strmPtr "z_stream_s" "next_in" = some nextIn ∧
@@ -6701,9 +7675,12 @@ structure DeflateMainSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
               (availOut' = availOut → nextOut' = nextOut) ∧
               (availOut' < availOut → ∃ ob ooff, nextOut = .ptr ob ooff ∧
                 nextOut' = .ptr ob (Int64.ofInt (ooff.toInt + (availOut - availOut'))) ∧
+                Readable m' nextOut (availOut - availOut') ∧
+                PreservesOutsideRange m m' ob ooff availOut ∧
                 (availOut' = 0 ∨ Writable m' nextOut' availOut')) ∧
               (availOut = 0 → r.toInt ≠ 0 ∧ r.toInt ≠ 1) ∧
-              (wrap0 ≠ 0 → hd0 = .null → r.toInt = 0 → availIn' < availIn ∨ availOut' < availOut) ∧
+              (wrap0 ≠ 0 → hd0 = .null → 0 ≤ flush.toInt → flush.toInt ≤ 4 →
+                r.toInt = 0 → availIn' < availIn ∨ availOut' < availOut) ∧
               (hd0 = .null → 0 ≤ flush.toInt → flush.toInt ≤ 4 →
                 availOut' < availOut →
                 (availOut' > 0 →
@@ -6712,10 +7689,15 @@ structure DeflateMainSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
                 (availOut' = 0 → availOut ≥ 8 →
                   Tuple5Lt (deflateEmitTuple prog.tags m' dw availIn' flush.toInt)
                     (deflateEmitTuple prog.tags m dw availIn flush.toInt))) ∧
-              (∃ msg', readField? prog.tags m' strmPtr "z_stream_s" "msg" = some msg' ∧
-                (msg' = .null ∨ CString m' msg')) ∧
+              (∀ msg0, readField? prog.tags m strmPtr "z_stream_s" "msg" = some msg0 →
+                (msg0 = .null ∨ ∃ mb0 mblk0, msg0 = .ptr mb0 0 ∧ m.blocks mb0 = some mblk0 ∧
+                  mblk0.kind = .global ∧ mblk0.perm = .ro ∧ CString m msg0) →
+                ∃ msg', readField? prog.tags m' strmPtr "z_stream_s" "msg" = some msg' ∧
+                  (msg' = .null ∨ ∃ mb' mblk', msg' = .ptr mb' 0 ∧ m'.blocks mb' = some mblk' ∧
+                    mblk'.kind = .global ∧ mblk'.perm = .ro ∧ CString m' msg')) ∧
+              PreservesOutsideRange m m' sb soff 112 ∧
               FramePreserved m m' (fun b =>
-                b = sb ∨ b ∈ dw.ownedList ∨ (availOut > 0 ∧ PtrBlock nextOut = some b)) ∧
+                b = sb ∨ b ∈ dw.ownedList ∨ (availOut' < availOut ∧ PtrBlock nextOut = some b)) ∧
               NoHeapLeak m m' (fun b => b ∈ dw.ownedList))))
 
 /-- Precondition for `gz_error(state, err, msg)` requiring only `gz_state` + `path` + `msg?`. -/
@@ -6741,7 +7723,8 @@ def GzErrorPre (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     pathBid ≠ gzBid ∧
     (∀ mb, msgBid? = some mb → mb ≠ gzBid ∧ mb ≠ pathBid) ∧
     OptCString m msgArg ∧
-    DisjointFrom msgArg (fun b => b = gzBid ∨ b = pathBid ∨ msgBid? = some b)
+    DisjointFrom msgArg (fun b => b = gzBid ∨ b = pathBid ∨ msgBid? = some b ∨
+      b = os.errnoBlk ∨ os.strerrorBlk = some b)
 
 /-- Postcondition for `gz_error` preserving all non-`(err, msg)` fields of `gz_state`. -/
 def GzErrorPost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
@@ -6776,7 +7759,7 @@ def GzErrorPost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     (∀ (off : Int) ty, off ≥ 136 →
       Sem.readVal prog.tags m' gzBid (Int64.ofInt off) ty =
         Sem.readVal prog.tags m gzBid (Int64.ofInt off) ty) ∧
-    FramePreserved m m' (fun b => b = gzBid ∨ msgBid? = some b ∨ msgBid'? = some b) ∧
+    FramePreserved m m' (fun b => b = gzBid ∨ msgBid? = some b ∨ msgBid'? = some b ∨ b = os.errnoBlk) ∧
     NoHeapLeak m m' (fun b => msgBid'? = some b)
 
 /-- Precondition for `gz_reset(state)` (satisfied both by `GzStateInv` and `gz_open` post-init). -/
@@ -6825,7 +7808,11 @@ def GzResetPre (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
             readField? prog.tags m statePtr "gz_state" "out" = some (.ptr outBid 0) ∧
             m.blocks inBid = some inBlk ∧ inBlk.kind = .heap ∧ inBlk.perm = .rw ∧ inBlk.size ≥ sz ∧
             m.blocks outBid = some outBlk ∧ outBlk.kind = .heap ∧ outBlk.perm = .rw ∧ outBlk.size ≥ 2 * sz ∧
-            InflateStateInv prog.tags gEnv m (.ptr gw.gzBid 136) iw) ∧
+            InflateStateInv prog.tags gEnv m (.ptr gw.gzBid 136) iw ∧
+            readField? prog.tags m (.ptr iw.stBid 0) "inflate_state" "head" = some .null ∧
+            (∃ smsg, readField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "msg" = some smsg ∧
+              (smsg = .null ∨ ∃ mb mblk, smsg = .ptr mb 0 ∧ m.blocks mb = some mblk ∧
+                mblk.kind = .global ∧ mblk.perm = .ro ∧ ∃ mlen, m.strlenAt mb 0 = some mlen))) ∧
         (md = 31153 →
           ∃ inBid inBlk,
             gw.in? = some inBid ∧
@@ -6905,17 +7892,19 @@ structure GzlibSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         LibGlobalsOk prog gEnv m0 os0 m os ∧
         ∃ pathPtr fd modePtr,
           args = [pathPtr, .int .i32 fd, modePtr] ∧
-          OptCString m pathPtr ∧ OptCString m modePtr)
+          OptCString m pathPtr ∧ OptCString m modePtr ∧
+          DisjointFrom pathPtr (fun b => b = os.errnoBlk ∨ os.strerrorBlk = some b) ∧
+          DisjointFrom modePtr (fun b => b = os.errnoBlk ∨ os.strerrorBlk = some b))
       (fun m os _ ret m' os' =>
         LibGlobalsOk prog gEnv m0 os0 m' os' ∧
         os'.errnoBlk = os.errnoBlk ∧ os'.strerrorBlk = os.strerrorBlk ∧
-        ((ret = .null ∧ FramePreserved m m' (fun _ => False) ∧ NoHeapLeak m m' (fun _ => False)) ∨
+        ((ret = .null ∧ FramePreserved m m' (fun b => b = os.errnoBlk) ∧ NoHeapLeak m m' (fun _ => False)) ∨
          (∃ gw : GzWitness, ret = .ptr gw.gzBid 0 ∧
             gw.in? = none ∧ gw.out? = none ∧ gw.msg? = none ∧ gw.stream? = none ∧
             (∀ b ∈ gw.ownedList, (m.blocks b).isNone = true) ∧
             HeapBlocksFreshFromLib m0 os0 gw.ownedList ∧
             GzStateInv prog.tags gEnv m' gw ∧
-            FramePreserved m m' (fun b => b ∈ gw.ownedList) ∧
+            FramePreserved m m' (fun b => b ∈ gw.ownedList ∨ b = os.errnoBlk) ∧
             NoHeapLeak m m' (fun b => b ∈ gw.ownedList))))
   gz_reset_spec :
     CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
@@ -6932,7 +7921,7 @@ structure GzlibSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
       Zlib.Gzlib.gzlibTU_fn_gz_intmax
       (fun _ _ args => args = [])
       (fun m os _ ret m' os' =>
-        m' = m ∧ os' = os ∧ ∃ u : BitVec 32, ret = .int .u32 u ∧ u.toNat > 0)
+        MemBlocksUnchanged m m' ∧ os' = os ∧ ∃ u : BitVec 32, ret = .int .u32 u ∧ u.toNat > 0)
 
 /-- Common `GZ_READ` step invariant for internal `Gzread` helpers operating on a live `gw`. -/
 def GzReadStepPre (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
@@ -6942,14 +7931,15 @@ def GzReadStepPre (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
   readIntField? prog.tags m (.ptr gw.gzBid 0) "gz_state" "mode" = some 7247 ∧
   HeapBlocksFreshFromLib m0 os0 gw.ownedList
 
-/-- Common `GZ_READ` step postcondition preserving `GzStateInv` with exact heap/frame accounting. -/
-def GzReadStepPost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
+/-- Parameterized `GZ_READ` step postcondition preserving `GzStateInvCore checkReadX true`
+with exact heap/frame accounting. -/
+def GzReadStepPostCore (checkReadX : Bool) (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     (m : Mem) (os : OSState) (gw : GzWitness) (extraMod : BlockSet)
     (m' : Mem) (os' : OSState) (gw' : GzWitness) : Prop :=
   LibGlobalsOk prog gEnv m0 os0 m' os' ∧
   os'.errnoBlk = os.errnoBlk ∧
   gw'.gzBid = gw.gzBid ∧ gw'.pathBid = gw.pathBid ∧
-  GzStateInv prog.tags gEnv m' gw' ∧
+  GzStateInvCore checkReadX true prog.tags gEnv m' gw' ∧
   readIntField? prog.tags m' (.ptr gw'.gzBid 0) "gz_state" "mode" = some 7247 ∧
   HeapBlocksFreshFromLib m0 os0 gw'.ownedList ∧
   (∀ b ∈ gw'.ownedList, b ∉ gw.ownedList → (m.blocks b).isNone = true) ∧
@@ -6957,6 +7947,12 @@ def GzReadStepPost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     b ∈ gw.ownedList ∨ b ∈ gw'.ownedList ∨ extraMod b ∨
     b = os.errnoBlk ∨ os.strerrorBlk = some b ∨ os'.strerrorBlk = some b) ∧
   NoHeapLeak m m' (fun b => b ∈ gw'.ownedList)
+
+/-- Standard `GZ_READ` step postcondition (`checkReadX = true`). -/
+abbrev GzReadStepPost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
+    (m : Mem) (os : OSState) (gw : GzWitness) (extraMod : BlockSet)
+    (m' : Mem) (os' : OSState) (gw' : GzWitness) : Prop :=
+  GzReadStepPostCore true prog gEnv m0 os0 m os gw extraMod m' os' gw'
 
 /-- Decoupled verification interface for `Zlib.Gzread` (8 public contracts + internal helpers
 including `gzclose_r_spec` for `Zlib.Gzclose`). -/
@@ -7009,10 +8005,27 @@ structure GzreadSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           args = [.ptr gw.gzBid 0, bufPtr, .int .u32 len, havePtr] ∧
           GzReadStepPre prog gEnv m0 os0 m os gw ∧
           havePtr = .ptr hb hoff ∧ TypedCell prog.tags m havePtr (.int .u32) ∧
+          hb ≠ gw.pathBid ∧ (∀ mb, gw.msg? = some mb → hb ≠ mb) ∧
+          hb ≠ os.errnoBlk ∧ (∀ b ∈ GzWitness.streamOwnedList gw.stream?, hb ≠ b) ∧
+          (∀ b, gw.in? = some b → hb ≠ b) ∧ (∀ b, gw.out? = some b → hb ≠ b) ∧
+          (hb = gw.gzBid → hoff = 0) ∧
           (len.toNat = 0 ∨ Writable m bufPtr len.toNat) ∧
-          DisjointFrom havePtr (fun b => b ∈ gw.ownedList) ∧
-          DisjointFrom bufPtr (fun b => b ∈ gw.ownedList ∨ b = os.errnoBlk) ∧
-          (∀ boff, bufPtr = .ptr hb boff → DisjointByteRanges hb hoff 4 hb boff len.toNat))
+          DisjointFrom bufPtr (fun b =>
+            b = gw.gzBid ∨ b = gw.pathBid ∨ gw.msg? = some b ∨
+            b ∈ GzWitness.streamOwnedList gw.stream? ∨ b = os.errnoBlk) ∧
+          (∀ b, PtrBlock bufPtr = some b → gw.in? = some b →
+            ∀ nIn avIn o,
+              readField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "next_in" = some nIn →
+              readNatField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "avail_in" = some avIn →
+              avIn = 0 ∨ (nIn = .ptr b (Int64.ofNat o) → ∃ boff, bufPtr = .ptr b boff ∧
+                DisjointByteRanges b (Int64.ofNat o) avIn b boff len.toNat)) ∧
+          (hb = gw.gzBid →
+            ∃ sz ob,
+              readNatField? prog.tags m (.ptr gw.gzBid 0) "gz_state" "size" = some sz ∧
+              gw.out? = some ob ∧ bufPtr = .ptr ob 0 ∧ len.toNat ≤ 2 * sz ∧
+              readField? prog.tags m (.ptr gw.gzBid 0) "gzFile_s" "next" = some (.ptr ob 0)) ∧
+          (∀ bb boff, bufPtr = .ptr bb boff → hb = bb →
+            DisjointByteRanges hb hoff 4 bb boff len.toNat))
       (fun m os args ret m' os' =>
         ∃ gw bufPtr len havePtr hb hoff r have' gw',
           args = [.ptr gw.gzBid 0, bufPtr, .int .u32 len, havePtr] ∧
@@ -7021,9 +8034,17 @@ structure GzreadSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           Sem.readVal prog.tags m' hb hoff (.int .u32) = some (.int .u32 have') ∧
           have'.toNat ≤ len.toNat ∧
           (have'.toNat = 0 ∨ Readable m' bufPtr have'.toNat) ∧
+          (∀ bb boff, bufPtr = .ptr bb boff → PreservesOutsideRange m m' bb boff len.toNat) ∧
+          (∀ fld, fld ∈ (["mode", "size", "want", "fd", "direct", "junk", "how", "start",
+              "past", "level", "strategy", "reset", "skip", "in", "out", "path"] : List String) →
+            readField? prog.tags m' (.ptr gw'.gzBid 0) "gz_state" fld =
+              readField? prog.tags m (.ptr gw.gzBid 0) "gz_state" fld) ∧
+          (∀ fld, fld ∈ (["next_in", "avail_in", "next_out", "avail_out"] : List String) →
+            readField? prog.tags m' (.ptr gw'.gzBid 136) "z_stream_s" fld =
+              readField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" fld) ∧
           (os.readBudget.isSome = true → os'.readBudget.isSome = true) ∧
           GzReadStepPost prog gEnv m0 os0 m os gw
-            (fun b => b = hb ∨ (len.toNat > 0 ∧ PtrBlock bufPtr = some b))
+            (fun b => (hb ≠ gw.gzBid ∧ b = hb) ∨ (len.toNat > 0 ∧ PtrBlock bufPtr = some b))
             m' os' gw')
   gz_avail_spec :
     CallSafeSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
@@ -7044,7 +8065,7 @@ structure GzreadSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
         ∃ gw max, args = [.ptr gw.gzBid 0, .int .u32 max] ∧
           GzReadStepPre prog gEnv m0 os0 m os gw ∧ max.toNat ≥ 1)
       (fun m os args ret m' os' =>
-        m' = m ∧ os' = os ∧
+        MemBlocksUnchanged m m' ∧ os' = os ∧
         ∃ max r,
           args.tail = [.int .u32 max] ∧ ret = .int .u32 r ∧
           r.toNat ≤ max.toNat)
@@ -7071,15 +8092,28 @@ structure GzreadSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
           readField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "next_out" = some nextOut ∧
           readNatField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "avail_out" = some availOut ∧
           availOut > 0 ∧ Writable m nextOut availOut ∧
-          DisjointFrom nextOut (fun b => b ∈ gw.ownedList ∧ PtrBlock nextOut ≠ gw.out?))
+          DisjointFrom nextOut (fun b =>
+            b = gw.gzBid ∨ b = gw.pathBid ∨ gw.msg? = some b ∨ b = os.errnoBlk ∨
+            gw.in? = some b ∨ b ∈ GzWitness.streamOwnedList gw.stream?))
       (fun m os args ret m' os' =>
-        ∃ gw r gw', args = [.ptr gw.gzBid 0] ∧
+        ∃ gw r gw' nextOut availOut xHave' availOut', args = [.ptr gw.gzBid 0] ∧
           ret = .int .i32 r ∧ (r.toInt = 0 ∨ r.toInt = -1) ∧
+          readField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "next_out" = some nextOut ∧
+          readNatField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "avail_out" = some availOut ∧
+          readNatField? prog.tags m' (.ptr gw'.gzBid 0) "gzFile_s" "have" = some xHave' ∧
+          readNatField? prog.tags m' (.ptr gw'.gzBid 136) "z_stream_s" "avail_out" = some availOut' ∧
+          availOut' ≤ availOut ∧ xHave' = availOut - availOut' ∧
+          readField? prog.tags m' (.ptr gw'.gzBid 0) "gzFile_s" "next" = some nextOut ∧
+          (xHave' = 0 ∨ Readable m' nextOut xHave') ∧
+          (∀ ob ooff, nextOut = .ptr ob ooff → PreservesOutsideRange m m' ob ooff availOut) ∧
+          readIntField? prog.tags m' (.ptr gw'.gzBid 0) "gzFile_s" "pos" =
+            readIntField? prog.tags m (.ptr gw.gzBid 0) "gzFile_s" "pos" ∧
+          gw'.out? = gw.out? ∧ gw'.in? = gw.in? ∧
+          readNatField? prog.tags m' (.ptr gw'.gzBid 0) "gz_state" "size" =
+            readNatField? prog.tags m (.ptr gw.gzBid 0) "gz_state" "size" ∧
           (os.readBudget.isSome = true → os'.readBudget.isSome = true) ∧
-          GzReadStepPost prog gEnv m0 os0 m os gw
-            (fun b => ∃ no, readField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "next_out" = some no ∧
-              PtrBlock no = some b)
-            m' os' gw')
+          GzReadStepPostCore false prog gEnv m0 os0 m os gw
+            (fun b => PtrBlock nextOut = some b) m' os' gw')
   gz_fetch_spec :
     CallSafeSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
       Zlib.Gzread.gzreadTU_fn_gz_fetch
@@ -7103,10 +8137,9 @@ structure GzreadSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     CallSafeSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
       Zlib.Gzread.gzreadTU_fn_gz_skip
       (fun m os args =>
-        ∃ gw len, args = [.ptr gw.gzBid 0, .int .i64 len] ∧
-          GzReadStepPre prog gEnv m0 os0 m os gw ∧ len.toInt ≥ 0)
+        ∃ gw, args = [.ptr gw.gzBid 0] ∧ GzReadStepPre prog gEnv m0 os0 m os gw)
       (fun m os args ret m' os' =>
-        ∃ gw len r gw', args = [.ptr gw.gzBid 0, .int .i64 len] ∧
+        ∃ gw r gw', args = [.ptr gw.gzBid 0] ∧
           ret = .int .i32 r ∧ (r.toInt = 0 ∨ r.toInt = -1) ∧
           (os.readBudget.isSome = true → os'.readBudget.isSome = true) ∧
           GzReadStepPost prog gEnv m0 os0 m os gw (fun _ => False) m' os' gw')
@@ -7127,21 +8160,27 @@ structure GzreadSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
             (fun b => len.toNat > 0 ∧ PtrBlock bufPtr = some b)
             m' os' gw')
 
-/-- Common `GZ_WRITE` step invariant for internal `Gzwrite` helpers operating on a live `gw`. -/
-def GzWriteStepPre (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
+/-- Parameterized `GZ_WRITE` step invariant operating on a live `gw`. -/
+def GzWriteStepPreCore (checkWriteIn : Bool) (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     (m : Mem) (os : OSState) (gw : GzWitness) : Prop :=
   LibGlobalsOk prog gEnv m0 os0 m os ∧
-  GzStateInv prog.tags gEnv m gw ∧
+  GzStateInvCore true checkWriteIn prog.tags gEnv m gw ∧
   readIntField? prog.tags m (.ptr gw.gzBid 0) "gz_state" "mode" = some 31153 ∧
   HeapBlocksFreshFromLib m0 os0 gw.ownedList
 
-/-- Common `GZ_WRITE` step postcondition preserving `GzStateInv` with exact heap/frame accounting. -/
-def GzWriteStepPost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
+/-- Standard `GZ_WRITE` step invariant (`checkWriteIn = true`). -/
+abbrev GzWriteStepPre (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
+    (m : Mem) (os : OSState) (gw : GzWitness) : Prop :=
+  GzWriteStepPreCore true prog gEnv m0 os0 m os gw
+
+/-- Parameterized `GZ_WRITE` step postcondition preserving `GzStateInvCore true checkWriteIn`
+with exact heap/frame accounting. -/
+def GzWriteStepPostCore (checkWriteIn : Bool) (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     (m : Mem) (os : OSState) (gw : GzWitness) (m' : Mem) (os' : OSState) (gw' : GzWitness) : Prop :=
   LibGlobalsOk prog gEnv m0 os0 m' os' ∧
   os'.errnoBlk = os.errnoBlk ∧
   gw'.gzBid = gw.gzBid ∧ gw'.pathBid = gw.pathBid ∧
-  GzStateInv prog.tags gEnv m' gw' ∧
+  GzStateInvCore true checkWriteIn prog.tags gEnv m' gw' ∧
   readIntField? prog.tags m' (.ptr gw'.gzBid 0) "gz_state" "mode" = some 31153 ∧
   HeapBlocksFreshFromLib m0 os0 gw'.ownedList ∧
   (∀ b ∈ gw'.ownedList, b ∉ gw.ownedList → (m.blocks b).isNone = true) ∧
@@ -7149,6 +8188,11 @@ def GzWriteStepPost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     b ∈ gw.ownedList ∨ b ∈ gw'.ownedList ∨
     b = os.errnoBlk ∨ os.strerrorBlk = some b ∨ os'.strerrorBlk = some b) ∧
   NoHeapLeak m m' (fun b => b ∈ gw'.ownedList)
+
+/-- Standard `GZ_WRITE` step postcondition (`checkWriteIn = true`). -/
+abbrev GzWriteStepPost (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
+    (m : Mem) (os : OSState) (gw : GzWitness) (m' : Mem) (os' : OSState) (gw' : GzWitness) : Prop :=
+  GzWriteStepPostCore true prog gEnv m0 os0 m os gw m' os' gw'
 
 /-- Decoupled verification interface for `Zlib.Gzwrite` (8 public contracts + internal helpers
 including `gzclose_w_spec` for `Zlib.Gzclose`). -/
@@ -7210,20 +8254,33 @@ structure GzwriteSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
       (fun m os args =>
         ∃ gw flush nextIn availIn,
           args = [.ptr gw.gzBid 0, .int .i32 flush] ∧
-          GzWriteStepPre prog gEnv m0 os0 m os gw ∧
+          GzWriteStepPreCore false prog gEnv m0 os0 m os gw ∧
           0 ≤ flush.toInt ∧ flush.toInt ≤ 4 ∧
           readField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "next_in" = some nextIn ∧
           readNatField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "avail_in" = some availIn ∧
           (availIn = 0 ∨ Readable m nextIn availIn) ∧
-          DisjointFrom nextIn (fun b => b ∈ gw.ownedList ∧ PtrBlock nextIn ≠ gw.in?) ∧
-          DisjointFrom nextIn (fun b => b = os.errnoBlk))
+          DisjointFrom nextIn (fun b =>
+            b = gw.gzBid ∨ b = gw.pathBid ∨ gw.msg? = some b ∨ b = os.errnoBlk ∨
+            gw.out? = some b ∨ b ∈ GzWitness.streamOwnedList gw.stream?))
       (fun m os args ret m' os' =>
-        ∃ gw flush r gw',
+        ∃ gw flush nextIn nextIn' availIn availIn' r gw',
           args = [.ptr gw.gzBid 0, .int .i32 flush] ∧
           ret = .int .i32 r ∧ (r.toInt = 0 ∨ r.toInt = -1) ∧
-          GzWriteStepPost prog gEnv m0 os0 m os gw m' os' gw' ∧
-          (r.toInt = 0 →
-            readNatField? prog.tags m' (.ptr gw'.gzBid 136) "z_stream_s" "avail_in" = some 0))
+          readField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "next_in" = some nextIn ∧
+          readNatField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "avail_in" = some availIn ∧
+          readField? prog.tags m' (.ptr gw'.gzBid 136) "z_stream_s" "next_in" = some nextIn' ∧
+          readNatField? prog.tags m' (.ptr gw'.gzBid 136) "z_stream_s" "avail_in" = some availIn' ∧
+          availIn' ≤ availIn ∧
+          (availIn' = availIn → nextIn' = nextIn) ∧
+          (availIn' < availIn → ∃ ib ioff, nextIn = .ptr ib ioff ∧
+            nextIn' = .ptr ib (Int64.ofInt (ioff.toInt + (availIn - availIn'))) ∧
+            (availIn' = 0 ∨ Readable m' nextIn' availIn')) ∧
+          readIntField? prog.tags m' (.ptr gw'.gzBid 0) "gzFile_s" "pos" =
+            readIntField? prog.tags m (.ptr gw.gzBid 0) "gzFile_s" "pos" ∧
+          (∀ sz, readNatField? prog.tags m (.ptr gw.gzBid 0) "gz_state" "size" = some sz → sz > 0 →
+            gw'.in? = gw.in?) ∧
+          GzWriteStepPostCore false prog gEnv m0 os0 m os gw m' os' gw' ∧
+          (r.toInt = 0 → availIn' = 0))
   gz_zero_spec :
     CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
       Zlib.Gzwrite.gzwriteTU_fn_gz_zero
@@ -7252,12 +8309,21 @@ structure GzwriteSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
     CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
       Zlib.Gzwrite.gzwriteTU_fn_gz_vacate
       (fun m os args =>
-        ∃ gw, args = [.ptr gw.gzBid 0] ∧ GzWriteStepPre prog gEnv m0 os0 m os gw ∧
-          readNatField? prog.tags m (.ptr gw.gzBid 136) "z_stream_s" "avail_in" = some 0)
+        ∃ gw, args = [.ptr gw.gzBid 0] ∧ GzWriteStepPre prog gEnv m0 os0 m os gw)
       (fun m os args ret m' os' =>
         ∃ gw r gw', args = [.ptr gw.gzBid 0] ∧
-          ret = .int .i32 r ∧ (r.toInt = 0 ∨ r.toInt = -1) ∧
-          GzWriteStepPost prog gEnv m0 os0 m os gw m' os' gw')
+          ret = .int .i32 r ∧ (r.toInt = 0 ∨ r.toInt = 1) ∧
+          GzWriteStepPost prog gEnv m0 os0 m os gw m' os' gw' ∧
+          (∀ sz, readNatField? prog.tags m (.ptr gw.gzBid 0) "gz_state" "size" = some sz → sz > 0 →
+            gw'.in? = gw.in?) ∧
+          (r.toInt = 0 →
+            ∀ sz', readNatField? prog.tags m' (.ptr gw'.gzBid 0) "gz_state" "size" = some sz' → sz' > 0 →
+            ∃ nextIn' availIn',
+              readField? prog.tags m' (.ptr gw'.gzBid 136) "z_stream_s" "next_in" = some nextIn' ∧
+              readNatField? prog.tags m' (.ptr gw'.gzBid 136) "z_stream_s" "avail_in" = some availIn' ∧
+              ((nextIn' = .null ∧ availIn' = 0) ∨
+               (∃ o' ib', gw'.in? = some ib' ∧
+                  nextIn' = .ptr ib' (Int64.ofNat o') ∧ o' + availIn' ≤ sz'))))
   gzvprintf_spec :
     CallWPTermSpec prog Zlib.Spec.zlibPointerConfig (Zlib.Spec.zlibExt userExt)
       Zlib.Gzwrite.gzwriteTU_fn_gzvprintf
@@ -7267,11 +8333,13 @@ structure GzwriteSpecs (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState)
             (∃ gw : GzWitness, file = .ptr gw.gzBid 0 ∧
               LibGlobalsOk prog gEnv m0 os0 m os ∧ GzStateInv prog.tags gEnv m gw ∧
               HeapBlocksFreshFromLib m0 os0 gw.ownedList ∧
-              SafeFmtString m fmtPtr)))
+              SafeFmtString m fmtPtr ∧
+              DisjointFrom fmtPtr (fun b =>
+                b ∈ gw.ownedList ∨ b = os.errnoBlk ∨ os.strerrorBlk = some b))))
       (fun m os args ret m' os' =>
         ∃ file fmtPtr r, args = [file, fmtPtr, .vaList true] ∧
           ret = .int .i32 r ∧
-          ((file = .null ∧ r.toInt = -2 ∧ m' = m ∧ os' = os) ∨
+          ((file = .null ∧ r.toInt = -2 ∧ MemBlocksUnchanged m m' ∧ os' = os) ∨
            (∃ gw gw' : GzWitness, file = .ptr gw.gzBid 0 ∧
               LibGlobalsOk prog gEnv m0 os0 m' os' ∧
               os'.errnoBlk = os.errnoBlk ∧

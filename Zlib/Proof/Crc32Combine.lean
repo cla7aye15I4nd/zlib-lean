@@ -1965,7 +1965,7 @@ theorem crc32_combine_op_safe {prog gEnv m0 os0 userExt userWrite Inv}
     simp only [Zlib.Crc32.crc32_combine_op_contract] at hpre
     refine ⟨crc1, crc2, op, rfl, ?_⟩
     rcases hpre with h0 | hnz
-    · exact Or.inl (congrArg UInt64.toBitVec h0)
+    · exact Or.inl (BitVec.eq_of_toNat_eq h0)
     · refine Or.inr (fun h => hnz ?_)
       exact congrArg UInt64.ofBitVec h
   · intro v owned m args ret m' _ hawt _ ⟨bv, hret⟩

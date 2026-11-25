@@ -59,7 +59,7 @@ def ClientFrame (tags : TypeEnv) (m0 : Mem) (v : ClientView) (owned : BlockSet)
   os'.strerrorBlk = os.strerrorBlk ∧
   (∀ b, LibProtected m0 owned os m b → m'.blocks b = m.blocks b) ∧
   ∀ b k, (b, k) ∈ v.streams →
-    (∀ f ∈ ["state", "zalloc", "zfree", "opaque"],
+    (∀ f ∈ ["state", "zalloc", "zfree", "opaque", "adler"],
       readField? tags m' (.ptr b 0) "z_stream_s" f = readField? tags m (.ptr b 0) "z_stream_s" f) ∧
     (k = .inflateBack →
       let st := (readField? tags m (.ptr b 0) "z_stream_s" "state").getD .null
@@ -82,13 +82,17 @@ def SafeUserCallbacks (tags : TypeEnv) (m0 : Mem) (v : ClientView)
         (∀ sb, (sb, .inflateBack) ∈ v.streams →
           PtrBlock ((readField? tags m ((readField? tags m (.ptr sb 0) "z_stream_s" "state").getD .null)
             "inflate_state" "window").getD .null) ≠ some b) ∧
-        (userWrite b ∨ (m.blocks b).isNone ∨
-          (∃ blk, m.blocks b = some blk ∧ blk.kind = .stack))) ∧
+        (userWrite b ∨ (m.blocks b).isNone ∨ (∃ op noff, args = [op, .ptr b noff]))) ∧
       NoHeapLeak m m' owned ∧
       (∀ op nb noff, args = [op, .ptr nb noff] →
         ∃ avail : BitVec 32, ret = .int .u32 avail ∧
           (avail.toNat = 0 ∨ ∃ bs pb po, m'.readBytes nb noff 8 = some bs ∧
-            Mem.decodePtr bs = some (.ptr pb po) ∧ Readable m' (.ptr pb po) avail.toNat) ∧
+            Mem.decodePtr bs = some (.ptr pb po) ∧ Readable m' (.ptr pb po) avail.toNat ∧
+            ¬ LibProtected m0 owned os m' pb ∧ (∀ k, (pb, k) ∉ v.streams) ∧
+            (∀ sb, (sb, .inflateBack) ∈ v.streams →
+              PtrBlock ((readField? tags m' ((readField? tags m' (.ptr sb 0) "z_stream_s" "state").getD .null)
+                "inflate_state" "window").getD .null) ≠ some pb) ∧
+            (∀ blk, m'.blocks pb = some blk → blk.kind ≠ .stack)) ∧
           (∀ k, os.readBudget = some k → ∃ k', os'.readBudget = some k' ∧ (avail.toNat > 0 → k' < k))) ∧
       (∀ op buf len, args = [op, buf, len] →
         (∃ r : BitVec 32, ret = .int .i32 r) ∧ os'.readBudget = os.readBudget)
@@ -123,6 +127,7 @@ def ContractSafe (prog : Prog) (gEnv : Env) (ext : ExtHandler)
     Inv v owned m os →
     c.pre prog.tags owned v m args →
     ArgsWellTyped prog c.paramTys c.variadic args →
+    (∀ a ∈ args, DisjointFrom a (fun b => b = os.errnoBlk ∨ os.strerrorBlk = some b)) →
     callState prog gEnv m os c.fnName args = some s0 →
     Safe prog zlibPointerConfig ext s0 ∧
     (os.readBudget.isSome → TerminatesSafely prog zlibPointerConfig ext s0) ∧

@@ -14,12 +14,13 @@ c_tu_begin compressTU "compress.c"
 c_include_local "abi_common.h"
 
 c_fn int ZEXPORT compress2_z(Bytef *dest, z_size_t *destLen, const Bytef *source, z_size_t sourceLen, int level)
-  requires OptTypedCell tags m destLen (.int .u64) ∧ DisjointFrom destLen owned;
-  requires sourceLen.toNat = 0 ∨ source = .null ∨ Readable m source sourceLen.toNat;
-  requires destLen = .null ∨ ∃ cap, readU64? m destLen = some cap ∧
-    (cap = 0 ∨ dest = .null ∨ (Writable m dest cap ∧ DisjointFrom dest owned));
-  modifies writes [dest, destLen];
-  ensures  view' = view;
+  requires valid_or_null(destLen) && disjoint_owned(destLen);
+  requires separated(dest, destLen, source);
+  requires sourceLen == 0 || source == NULL || (readable(source, sourceLen) && disjoint_owned(source));
+  requires destLen == NULL || dest == NULL ||
+    (disjoint_owned(dest) && (*destLen == 0 ? readable(dest, 0) : writable(dest, *destLen)));
+  modifies dest, destLen;
+  ensures  view' == view;
 {
   z_stream stream;
   int err;
@@ -63,12 +64,13 @@ c_fn int ZEXPORT compress2_z(Bytef *dest, z_size_t *destLen, const Bytef *source
 }
 
 c_fn int ZEXPORT compress2(Bytef *dest, uLongf *destLen, const Bytef *source, uLong sourceLen, int level)
-  requires TypedCell tags m destLen (.int .u64) ∧ DisjointFrom destLen owned;
-  requires sourceLen.toNat = 0 ∨ source = .null ∨ Readable m source sourceLen.toNat;
-  requires ∃ cap, readU64? m destLen = some cap ∧
-    (cap = 0 ∨ dest = .null ∨ (Writable m dest cap ∧ DisjointFrom dest owned));
-  modifies writes [dest, destLen];
-  ensures  view' = view;
+  requires valid(destLen) && disjoint_owned(destLen);
+  requires separated(dest, destLen, source);
+  requires sourceLen == 0 || source == NULL || (readable(source, sourceLen) && disjoint_owned(source));
+  requires dest == NULL ||
+    (disjoint_owned(dest) && (*destLen == 0 ? readable(dest, 0) : writable(dest, *destLen)));
+  modifies dest, destLen;
+  ensures  view' == view;
 {
   int ret;
   z_size_t got = *destLen;
@@ -78,30 +80,32 @@ c_fn int ZEXPORT compress2(Bytef *dest, uLongf *destLen, const Bytef *source, uL
 }
 
 c_fn int ZEXPORT compress_z(Bytef *dest, z_size_t *destLen, const Bytef *source, z_size_t sourceLen)
-  requires OptTypedCell tags m destLen (.int .u64) ∧ DisjointFrom destLen owned;
-  requires sourceLen.toNat = 0 ∨ source = .null ∨ Readable m source sourceLen.toNat;
-  requires destLen = .null ∨ ∃ cap, readU64? m destLen = some cap ∧
-    (cap = 0 ∨ dest = .null ∨ (Writable m dest cap ∧ DisjointFrom dest owned));
-  modifies writes [dest, destLen];
-  ensures  view' = view;
+  requires valid_or_null(destLen) && disjoint_owned(destLen);
+  requires separated(dest, destLen, source);
+  requires sourceLen == 0 || source == NULL || (readable(source, sourceLen) && disjoint_owned(source));
+  requires destLen == NULL || dest == NULL ||
+    (disjoint_owned(dest) && (*destLen == 0 ? readable(dest, 0) : writable(dest, *destLen)));
+  modifies dest, destLen;
+  ensures  view' == view;
 {
   return compress2_z(dest, destLen, source, sourceLen, Z_DEFAULT_COMPRESSION);
 }
 
 c_fn int ZEXPORT compress(Bytef *dest, uLongf *destLen, const Bytef *source, uLong sourceLen)
-  requires TypedCell tags m destLen (.int .u64) ∧ DisjointFrom destLen owned;
-  requires sourceLen.toNat = 0 ∨ source = .null ∨ Readable m source sourceLen.toNat;
-  requires ∃ cap, readU64? m destLen = some cap ∧
-    (cap = 0 ∨ dest = .null ∨ (Writable m dest cap ∧ DisjointFrom dest owned));
-  modifies writes [dest, destLen];
-  ensures  view' = view;
+  requires valid(destLen) && disjoint_owned(destLen);
+  requires separated(dest, destLen, source);
+  requires sourceLen == 0 || source == NULL || (readable(source, sourceLen) && disjoint_owned(source));
+  requires dest == NULL ||
+    (disjoint_owned(dest) && (*destLen == 0 ? readable(dest, 0) : writable(dest, *destLen)));
+  modifies dest, destLen;
+  ensures  view' == view;
 {
   return compress2(dest, destLen, source, sourceLen, Z_DEFAULT_COMPRESSION);
 }
 
 c_fn z_size_t ZEXPORT compressBound_z(z_size_t sourceLen)
-  requires True;
-  ensures  view' = view;
+  requires true;
+  ensures  view' == view;
 {
   z_size_t bound = sourceLen + (sourceLen >> 12) + (sourceLen >> 14) +
                    (sourceLen >> 25) + 13;
@@ -109,8 +113,8 @@ c_fn z_size_t ZEXPORT compressBound_z(z_size_t sourceLen)
 }
 
 c_fn uLong ZEXPORT compressBound(uLong sourceLen)
-  requires True;
-  ensures  view' = view;
+  requires true;
+  ensures  view' == view;
 {
   z_size_t bound = compressBound_z(sourceLen);
   return (uLong)bound != bound ? (uLong)-1 : (uLong)bound;

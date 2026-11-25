@@ -336,10 +336,10 @@ c_fn local z_size_t gz_read(gz_statep state, voidp buf, z_size_t len) {
 }
 
 c_fn int ZEXPORT gzread(gzFile file, voidp buf, unsigned len)
-  requires GzReady view file ∧ DisjointFrom buf owned;
-  requires file = .null ∨ len.toNat = 0 ∨ len.toNat ≥ 2^31 ∨ Writable m buf len.toNat;
-  modifies writes [buf];
-  ensures  view' = view;
+  requires gz_ready(file) && disjoint_owned(buf);
+  requires file == NULL || len == 0 || len >= (1 << 31) || writable(buf, len);
+  modifies buf;
+  ensures  view' == view;
 {
   gz_statep state;
 
@@ -376,11 +376,10 @@ c_fn int ZEXPORT gzread(gzFile file, voidp buf, unsigned len)
 }
 
 c_fn z_size_t ZEXPORT gzfread(voidp buf, z_size_t size, z_size_t nitems, gzFile file)
-  requires GzReady view file ∧ DisjointFrom buf owned;
-  requires file = .null ∨ size.toNat * nitems.toNat = 0 ∨ size.toNat * nitems.toNat ≥ 2^64 ∨
-    Writable m buf (size.toNat * nitems.toNat);
-  modifies writes [buf];
-  ensures  view' = view;
+  requires gz_ready(file) && disjoint_owned(buf);
+  requires file == NULL || size * nitems == 0 || size * nitems >= (1 << 64) || writable(buf, size * nitems);
+  modifies buf;
+  ensures  view' == view;
 {
   z_size_t len;
   gz_statep state;
@@ -408,8 +407,8 @@ c_fn z_size_t ZEXPORT gzfread(voidp buf, z_size_t size, z_size_t nitems, gzFile 
 }
 
 c_fn int ZEXPORT gzgetc(gzFile file)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   unsigned char buf[1];
   gz_statep state;
@@ -436,15 +435,15 @@ c_fn int ZEXPORT gzgetc(gzFile file)
 }
 
 c_fn int ZEXPORT gzgetc_(gzFile file)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   return gzgetc(file);
 }
 
 c_fn int ZEXPORT gzungetc(int c, gzFile file)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   gz_statep state;
 
@@ -501,10 +500,10 @@ c_fn int ZEXPORT gzungetc(int c, gzFile file)
 }
 
 c_fn char * ZEXPORT gzgets(gzFile file, char *buf, int len)
-  requires GzReady view file ∧ DisjointFrom buf owned;
-  requires file = .null ∨ buf = .null ∨ len < 1 ∨ Writable m buf len.toNatClampNeg;
-  modifies writes [buf];
-  ensures  view' = view;
+  requires gz_ready(file) && disjoint_owned(buf);
+  requires file == NULL || buf == NULL || len < 1 || writable(buf, len);
+  modifies buf;
+  ensures  view' == view;
 {
   unsigned left, n;
   char *str;
@@ -563,8 +562,8 @@ c_fn char * ZEXPORT gzgets(gzFile file, char *buf, int len)
 }
 
 c_fn int ZEXPORT gzdirect(gzFile file)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   gz_statep state;
 
@@ -581,8 +580,8 @@ c_fn int ZEXPORT gzdirect(gzFile file)
 }
 
 c_fn int ZEXPORT gzclose_r(gzFile file)
-  requires GzReady view file;
-  ensures  view' = view.closeGz file m';
+  requires gz_ready(file);
+  ensures  view' == view.closeGz(file, m');
 {
   int ret, err;
   gz_statep state;

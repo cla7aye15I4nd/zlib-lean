@@ -700,7 +700,7 @@ theorem FuncBodySpec.to_contractSafe
         ∃ cv, Sem.castVal m' protoRetTy ret = some cv ∧
           c.post prog.tags owned v m args cv m' v)) :
     Zlib.Spec.ContractSafe prog gEnv ext Inv userWrite c := by
-  intro v owned m os args s0 hInv hpre hawt hcs
+  intro v owned m os args s0 hInv hpre hawt _ hcs
   have hawt' : Zlib.Spec.ArgsWellTyped prog c.paramTys false args := by
     simpa [hnonvar.1] using hawt
   have hb : BaseInv m0 os0 v owned m os := hInvBase v owned m os hInv

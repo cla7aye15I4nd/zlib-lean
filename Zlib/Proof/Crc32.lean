@@ -1001,19 +1001,19 @@ private theorem ptrSlot_preserve_blocks {env m m' name b ty el p}
 
 /-! ## 3. Table Predicates and Shared CRC-32 Evaluation / Loop Combinators -/
 
-private def CrcTableValid (prog : Prog) (gEnv : Env) (m : Mem) : Prop :=
+def CrcTableValid (prog : Prog) (gEnv : Env) (m : Mem) : Prop :=
   ∃ b, gEnv.lookup "crc_table" = some (b, .array crcConstTy (some 256)) ∧
     b < m.nextBlock ∧
     ∀ idx < 256, ∃ bv : BitVec 32,
       Sem.readVal prog.tags m b (Int64.ofNat (4 * idx)) crcConstTy = some (.int .u32 bv)
 
-private def CrcBraidTableValid (prog : Prog) (gEnv : Env) (m : Mem) (name : String) : Prop :=
+def CrcBraidTableValid (prog : Prog) (gEnv : Env) (m : Mem) (name : String) : Prop :=
   ∃ b, gEnv.lookup name = some (b, .array (.array crcConstTy (some 256)) (some 4)) ∧
     b < m.nextBlock ∧
     ∀ row < 4, ∀ idx < 256, ∃ bv : BitVec 32,
       Sem.readVal prog.tags m b (Int64.ofNat (1024 * row + 4 * idx)) crcConstTy = some (.int .u32 bv)
 
-private theorem CrcTableValid.of_baseInv {prog : Prog} {gEnv : Env} {m0 m0' m : Mem} {os0 os : OSState}
+theorem CrcTableValid.of_baseInv {prog : Prog} {gEnv : Env} {m0 m0' m : Mem} {os0 os : OSState}
     {v : ClientView} {owned : BlockSet} {blks : List BlockId}
     (hlib : InitLibzProps prog gEnv m0 os0)
     (hb : BaseInv m0 os0 v owned m0' os)
@@ -1022,7 +1022,7 @@ private theorem CrcTableValid.of_baseInv {prog : Prog} {gEnv : Env} {m0 m0' m : 
   obtain ⟨b, hlu, hlt, hread⟩ := readVal_crc_table hlib hb hf
   exact ⟨b, hlu, Nat.lt_of_lt_of_le hlt hf.1, hread⟩
 
-private theorem CrcTableValid.of_localFrameMem {prog : Prog} {gEnv : Env} {m0 m : Mem} {blks : List BlockId}
+theorem CrcTableValid.of_localFrameMem {prog : Prog} {gEnv : Env} {m0 m : Mem} {blks : List BlockId}
     (ht : CrcTableValid prog gEnv m0) (hf : LocalFrameMem m0 m blks) :
     CrcTableValid prog gEnv m := by
   rcases ht with ⟨b, hlu, hlt, hread⟩
@@ -1030,7 +1030,7 @@ private theorem CrcTableValid.of_localFrameMem {prog : Prog} {gEnv : Env} {m0 m 
   obtain ⟨bv, hrv⟩ := hread idx hidx
   exact ⟨bv, by rw [readVal_eq_of_blocks_eq prog.tags (LocalFrameMem.blocks_eq_of_lt hf hlt)]; exact hrv⟩
 
-private theorem CrcBraidTableValid.of_baseInv_2 {prog : Prog} {gEnv : Env} {m0 m0' m : Mem} {os0 os : OSState}
+theorem CrcBraidTableValid.of_baseInv_2 {prog : Prog} {gEnv : Env} {m0 m0' m : Mem} {os0 os : OSState}
     {v : ClientView} {owned : BlockSet} {blks : List BlockId}
     (hlib : InitLibzProps prog gEnv m0 os0)
     (hb : BaseInv m0 os0 v owned m0' os)
@@ -1040,7 +1040,7 @@ private theorem CrcBraidTableValid.of_baseInv_2 {prog : Prog} {gEnv : Env} {m0 m
   obtain ⟨_, hlt, hread⟩ := readVal_crc_braid_table (prog := prog) (gEnv := gEnv) hblk hsz hal hbytes hf hlu
   exact ⟨b, hlu, Nat.lt_of_lt_of_le hlt hf.1, hread⟩
 
-private theorem CrcBraidTableValid.of_baseInv_5 {prog : Prog} {gEnv : Env} {m0 m0' m : Mem} {os0 os : OSState}
+theorem CrcBraidTableValid.of_baseInv_5 {prog : Prog} {gEnv : Env} {m0 m0' m : Mem} {os0 os : OSState}
     {v : ClientView} {owned : BlockSet} {blks : List BlockId}
     (hlib : InitLibzProps prog gEnv m0 os0)
     (hb : BaseInv m0 os0 v owned m0' os)
@@ -1050,7 +1050,7 @@ private theorem CrcBraidTableValid.of_baseInv_5 {prog : Prog} {gEnv : Env} {m0 m
   obtain ⟨_, hlt, hread⟩ := readVal_crc_braid_table (prog := prog) (gEnv := gEnv) hblk hsz hal hbytes hf hlu
   exact ⟨b, hlu, Nat.lt_of_lt_of_le hlt hf.1, hread⟩
 
-private theorem CrcBraidTableValid.of_localFrameMem {prog : Prog} {gEnv : Env} {m0 m : Mem} {blks : List BlockId}
+theorem CrcBraidTableValid.of_localFrameMem {prog : Prog} {gEnv : Env} {m0 m : Mem} {blks : List BlockId}
     {name : String} (ht : CrcBraidTableValid prog gEnv m0 name) (hf : LocalFrameMem m0 m blks) :
     CrcBraidTableValid prog gEnv m name := by
   rcases ht with ⟨b, hlu, hlt, hread⟩
@@ -4814,7 +4814,7 @@ private theorem wp_crc32_z_braid5_inner {prog gEnv m0_g os0_g ext m0 env_if
           hs_blks_f, hs_words_f, hs_c0_f, hs_c1_f, hs_c2_f, hs_c3_f, hs_c4_f, hs_crc_f, hs_len_f,
           hs_buf_f, hu_w0_f, hu_w1_f, hu_w2_f, hu_w3_f, hu_w4_f, halW', hrW'⟩
 
-private def Crc32ZPre (prog : Prog) (gEnv : Env) (m : Mem) (args : List Val) : Prop :=
+def Crc32ZPre (prog : Prog) (gEnv : Env) (m : Mem) (args : List Val) : Prop :=
   ∃ (crc : BitVec 64) (buf : Val) (len : BitVec 64),
     args = [.int .u64 crc, buf, .int .u64 len] ∧
     (buf = .null ∨ ∃ pb poff, buf = .ptr pb poff) ∧
@@ -5365,7 +5365,7 @@ theorem crc32_z_safe
     refine ⟨.int .u64 bv, hcast, ?_⟩
     simp [Zlib.Crc32.crc32_z_contract]
 
-private def Crc32Pre (prog : Prog) (gEnv : Env) (m : Mem) (args : List Val) : Prop :=
+def Crc32Pre (prog : Prog) (gEnv : Env) (m : Mem) (args : List Val) : Prop :=
   ∃ (crc : BitVec 64) (buf : Val) (len : BitVec 32),
     args = [.int .u64 crc, buf, .int .u32 len] ∧
     (buf = .null ∨ ∃ pb poff, buf = .ptr pb poff) ∧

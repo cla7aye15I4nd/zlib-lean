@@ -50,9 +50,9 @@ c_fn int ZEXPORT inflateResetKeep(z_streamp strm) {
 }
 
 c_fn int ZEXPORT inflateReset(z_streamp strm)
-  requires StreamAlive tags owned view m strm .inflate;
-  modifies writes [strm];
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_INFLATE);
+  modifies strm;
+  ensures  view' == view;
 {
   struct inflate_state FAR *state;
 
@@ -73,9 +73,9 @@ c_fn int ZEXPORT inflateReset(z_streamp strm)
 }
 
 c_fn int ZEXPORT inflateReset2(z_streamp strm, int windowBits)
-  requires StreamAlive tags owned view m strm .inflate;
-  modifies writes [strm];
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_INFLATE);
+  modifies strm;
+  ensures  view' == view;
 {
   int wrap;
   struct inflate_state FAR *state;
@@ -109,9 +109,9 @@ c_fn int ZEXPORT inflateReset2(z_streamp strm, int windowBits)
 
 c_fn int ZEXPORT inflateInit2_(z_streamp strm, int windowBits,
                                const char *version, int stream_size)
-  requires InitStreamReady tags owned view m strm ∧ OptCString m version;
-  modifies writes [strm];
-  ensures  view' = if ret == 0 then view.addStream strm .inflate else view;
+  requires init_stream_ready(strm) && opt_cstring(version);
+  modifies strm;
+  ensures  view' == (ret == 0 ? view.addStream(strm, STREAM_INFLATE) : view);
 {
   int ret;
   struct inflate_state FAR *state;
@@ -144,16 +144,16 @@ c_fn int ZEXPORT inflateInit2_(z_streamp strm, int windowBits,
 }
 
 c_fn int ZEXPORT inflateInit_(z_streamp strm, const char *version, int stream_size)
-  requires InitStreamReady tags owned view m strm ∧ OptCString m version;
-  modifies writes [strm];
-  ensures  view' = if ret == 0 then view.addStream strm .inflate else view;
+  requires init_stream_ready(strm) && opt_cstring(version);
+  modifies strm;
+  ensures  view' == (ret == 0 ? view.addStream(strm, STREAM_INFLATE) : view);
 {
   return inflateInit2_(strm, DEF_WBITS, version, stream_size);
 }
 
 c_fn int ZEXPORT inflatePrime(z_streamp strm, int bits, int value)
-  requires StreamAlive tags owned view m strm .inflate;
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_INFLATE);
+  ensures  view' == view;
 {
   struct inflate_state FAR *state;
 
@@ -279,11 +279,17 @@ c_stmt_macro BYTEBITS() := do {
 } while (0);
 
 c_fn int ZEXPORT inflate(z_streamp strm, int flush)
-  requires StreamReady tags owned view m strm .inflate;
-  requires strm = .null ∨ ∀ st h, readField? tags m strm "z_stream_s" "state" = some st →
-    readField? tags m st "inflate_state" "head" = some h → h = .null ∨ InflateHeaderReady tags owned m h;
-  modifies writesStream tags m strm;
-  ensures  view' = view;
+  requires stream_ready(strm, STREAM_INFLATE);
+  requires strm == NULL || (
+    let st = (struct inflate_state *)strm->state,
+    let h = st->head,
+    h == NULL || (
+      inflate_header_ready(h) &&
+      header_disjoint(h, strm) &&
+      (strm->avail_in == 0 || header_disjoint(h, strm->next_in)) &&
+      (strm->avail_out == 0 || header_disjoint(h, strm->next_out))));
+  modifies writes_stream(strm);
+  ensures  view' == view;
 {
   struct inflate_state FAR *state;
   z_const unsigned char FAR *next;
@@ -870,9 +876,9 @@ inf_leave:
 }
 
 c_fn int ZEXPORT inflateEnd(z_streamp strm)
-  requires StreamAlive tags owned view m strm .inflate;
-  modifies writes [strm];
-  ensures  view' = if ret == 0 then view.removeStream strm else view;
+  requires stream_alive(strm, STREAM_INFLATE);
+  modifies strm;
+  ensures  view' == (ret == 0 ? view.removeStream(strm) : view);
 {
   struct inflate_state FAR *state;
   if (inflateStateCheck(strm))
@@ -885,11 +891,11 @@ c_fn int ZEXPORT inflateEnd(z_streamp strm)
 }
 
 c_fn int ZEXPORT inflateGetDictionary(z_streamp strm, Bytef *dictionary, uInt *dictLength)
-  requires StreamAlive tags owned view m strm .inflate;
-  requires DictWritable tags owned m strm dictionary false;
-  requires OptTypedCell tags m dictLength (.int .u32) ∧ DisjointFrom dictLength owned;
-  modifies writes [dictionary, dictLength];
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_INFLATE);
+  requires dict_writable(strm, dictionary, false);
+  requires valid_or_null(dictLength) && disjoint_owned(dictLength) && separated(dictLength, strm);
+  modifies dictionary, dictLength;
+  ensures  view' == view;
 {
   struct inflate_state FAR *state;
 
@@ -908,10 +914,11 @@ c_fn int ZEXPORT inflateGetDictionary(z_streamp strm, Bytef *dictionary, uInt *d
 }
 
 c_fn int ZEXPORT inflateSetDictionary(z_streamp strm, const Bytef *dictionary, uInt dictLength)
-  requires StreamAlive tags owned view m strm .inflate;
-  requires strm = .null ∨ dictionary = .null ∨ dictLength.toNat = 0 ∨ Readable m dictionary dictLength.toNat;
-  modifies writes [strm];
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_INFLATE);
+  requires strm == NULL || dictionary == NULL ||
+    (readable(dictionary, dictLength) && disjoint_owned(dictionary) && separated(dictionary, strm));
+  modifies strm;
+  ensures  view' == view;
 {
   struct inflate_state FAR *state;
   unsigned long dictid;
@@ -940,10 +947,10 @@ c_fn int ZEXPORT inflateSetDictionary(z_streamp strm, const Bytef *dictionary, u
 }
 
 c_fn int ZEXPORT inflateGetHeader(z_streamp strm, gz_headerp head)
-  requires StreamAlive tags owned view m strm .inflate;
-  requires strm = .null ∨ InflateHeaderReady tags owned m head;
-  modifies writes [head];
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_INFLATE);
+  requires strm == NULL || (inflate_header_ready(head) && header_disjoint(head, strm));
+  modifies head;
+  ensures  view' == view;
 {
   struct inflate_state FAR *state;
 
@@ -976,9 +983,9 @@ c_fn local unsigned syncsearch(unsigned FAR *have, const unsigned char FAR *buf,
 }
 
 c_fn int ZEXPORT inflateSync(z_streamp strm)
-  requires StreamReady tags owned view m strm .inflate;
-  modifies writes [strm];
-  ensures  view' = view;
+  requires stream_ready(strm, STREAM_INFLATE);
+  modifies strm;
+  ensures  view' == view;
 {
   unsigned len;
   int flags;
@@ -1039,11 +1046,11 @@ c_fn int ZEXPORT inflateSyncPoint(z_streamp strm) {
 }
 
 c_fn int ZEXPORT inflateCopy(z_streamp dest, z_streamp source)
-  requires dest = .null ∨ (TypedCell tags m dest (.structTy "z_stream_s") ∧ DisjointFrom dest owned ∧ (∀ k, ¬ view.hasStream dest k));
-  requires StreamAlive tags owned view m source .inflate;
-  requires dest = .null ∨ PtrBlock dest ≠ PtrBlock source;
-  modifies writes [dest];
-  ensures  view' = if ret == 0 then view.addStream dest .inflate else view;
+  requires dest == NULL || (zero_ptr(dest) && valid(dest) && disjoint_owned(dest) && forall(k, !view.hasStream(dest, k)));
+  requires stream_alive(source, STREAM_INFLATE);
+  requires dest == NULL || block(dest) != block(source);
+  modifies dest;
+  ensures  view' == (ret == 0 ? view.addStream(dest, STREAM_INFLATE) : view);
 {
   struct inflate_state FAR *state;
   struct inflate_state FAR *copy;
@@ -1117,8 +1124,8 @@ c_fn int ZEXPORT inflateValidate(z_streamp strm, int check) {
 }
 
 c_fn long ZEXPORT inflateMark(z_streamp strm)
-  requires StreamAlive tags owned view m strm .inflate;
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_INFLATE);
+  ensures  view' == view;
 {
   struct inflate_state FAR *state;
 

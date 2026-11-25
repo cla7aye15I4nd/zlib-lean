@@ -68,11 +68,6 @@ def hasPctN : List UInt8 → Bool
   | _ :: rest => hasPctN rest
   | [] => false
 
-def hasNul : List MemByte → Bool
-  | [] => false
-  | .byte 0 :: _ => true
-  | _ :: rest => hasNul rest
-
 def writeErrno (m : Mem) (os : OSState) (e : Int32) : Option Mem :=
   m.writeBytes os.errnoBlk 0 (Mem.encodeInt .i32 (BitVec.ofInt 32 e.toInt))
 
@@ -213,14 +208,14 @@ inductive ExtOk : String → List Val → Mem → OSState → Val → Mem → OS
         (.int .i32 (BitVec.ofInt 32 ret.toInt)) m' os
   | printf_ok (fn : String) (hfn : fn = "snprintf" ∨ fn = "vsnprintf")
       (bb : BlockId) (ob : Int64) (sz : Nat) (bf : BlockId) (of_ : Int64) (rest : List Val)
-      (outBytes : List MemByte) (ret e : Int32) (m m1 m2 : Mem) (os : OSState)
+      (outBytes : List UInt8) (ret e : Int32) (m m1 m2 : Mem) (os : OSState)
       (hva : fn = "vsnprintf" → ∃ rest', rest = .vaList true :: rest')
       (hsz : sz > 0)
       (hfmt : printfFmtOk m bf of_)
       (hbuf : validWritableRange m bb ob sz = true)
       (hlen : outBytes.length = sz)
-      (hnul : hasNul outBytes = true)
-      (hwr : m.writeBytes bb ob outBytes = some m1)
+      (hnul : (0 : UInt8) ∈ outBytes)
+      (hwr : m.writeBytes bb ob (outBytes.map MemByte.byte) = some m1)
       (herr : writeErrno m1 os e = some m2) :
       ExtOk fn (.ptr bb ob :: .int .u64 (BitVec.ofNat 64 sz) :: .ptr bf of_ :: rest) m os
         (.int .i32 (BitVec.ofInt 32 ret.toInt)) m2 os

@@ -14,6 +14,19 @@ namespace Zlib.Headers
 open C99
 
 c_spec_view Zlib.Spec.ClientView
+c_spec_lib Zlib.Spec
+c_spec_const STREAM_DEFLATE      := Zlib.Spec.StreamKind.deflate
+c_spec_const STREAM_INFLATE      := Zlib.Spec.StreamKind.inflate
+c_spec_const STREAM_INFLATE_BACK := Zlib.Spec.StreamKind.inflateBack
+c_spec_pred init_stream_ready    [tags, owned, view, m] := Zlib.Spec.InitStreamReady
+c_spec_pred stream_alive         [tags, owned, view, m] := Zlib.Spec.StreamAlive
+c_spec_pred stream_ready         [tags, owned, view, m] := Zlib.Spec.StreamReady
+c_spec_pred gz_ready             [view]                 := Zlib.Spec.GzReady
+c_spec_pred deflate_header_ready [tags, owned, m]       := Zlib.Spec.DeflateHeaderReady
+c_spec_pred inflate_header_ready [tags, owned, m]       := Zlib.Spec.InflateHeaderReady
+c_spec_pred header_disjoint      [tags, m]              := Zlib.Spec.HeaderDisjoint
+c_spec_pred dict_writable        [tags, owned, m]       := Zlib.Spec.DictWritable
+c_spec_pred writes_stream        [tags, m]              := Zlib.Spec.writesStream
 
 -- Register POSIX off_t aliases in persisted Lean DSL scope without duplicate C typedefs
 c_typedef long z_off_t;

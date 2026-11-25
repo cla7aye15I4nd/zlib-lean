@@ -176,9 +176,9 @@ c_fn local void fill_window(deflate_state *s) {
 }
 
 c_fn int ZEXPORT deflateInit_(z_streamp strm, int level, const char *version, int stream_size)
-  requires InitStreamReady tags owned view m strm ∧ OptCString m version;
-  modifies writes [strm];
-  ensures  view' = if ret == 0 then view.addStream strm .deflate else view;
+  requires init_stream_ready(strm) && opt_cstring(version);
+  modifies strm;
+  ensures  view' == (ret == 0 ? view.addStream(strm, STREAM_DEFLATE) : view);
 {
   return deflateInit2_(strm, level, Z_DEFLATED, MAX_WBITS, DEF_MEM_LEVEL,
                        Z_DEFAULT_STRATEGY, version, stream_size);
@@ -187,9 +187,9 @@ c_fn int ZEXPORT deflateInit_(z_streamp strm, int level, const char *version, in
 c_fn int ZEXPORT deflateInit2_(z_streamp strm, int level, int method,
                                int windowBits, int memLevel, int strategy,
                                const char *version, int stream_size)
-  requires InitStreamReady tags owned view m strm ∧ OptCString m version;
-  modifies writes [strm];
-  ensures  view' = if ret == 0 then view.addStream strm .deflate else view;
+  requires init_stream_ready(strm) && opt_cstring(version);
+  modifies strm;
+  ensures  view' == (ret == 0 ? view.addStream(strm, STREAM_DEFLATE) : view);
 {
   deflate_state *s;
   int wrap = 1;
@@ -291,10 +291,12 @@ c_fn local int deflateStateCheck(z_streamp strm) {
 }
 
 c_fn int ZEXPORT deflateSetDictionary(z_streamp strm, const Bytef *dictionary, uInt dictLength)
-  requires StreamAlive tags owned view m strm .deflate;
-  requires strm = .null ∨ dictionary = .null ∨ dictLength.toNat = 0 ∨ Readable m dictionary dictLength.toNat;
-  modifies writes [strm];
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_DEFLATE);
+  requires strm == NULL || (initialized(strm->next_in) && initialized(strm->avail_in));
+  requires strm == NULL || dictionary == NULL ||
+    (readable(dictionary, dictLength) && disjoint_owned(dictionary) && separated(dictionary, strm));
+  modifies strm;
+  ensures  view' == view;
 {
   deflate_state *s;
   uInt str, n;
@@ -356,11 +358,11 @@ c_fn int ZEXPORT deflateSetDictionary(z_streamp strm, const Bytef *dictionary, u
 }
 
 c_fn int ZEXPORT deflateGetDictionary(z_streamp strm, Bytef *dictionary, uInt *dictLength)
-  requires StreamAlive tags owned view m strm .deflate;
-  requires DictWritable tags owned m strm dictionary true;
-  requires OptTypedCell tags m dictLength (.int .u32) ∧ DisjointFrom dictLength owned;
-  modifies writes [dictionary, dictLength];
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_DEFLATE);
+  requires dict_writable(strm, dictionary, true);
+  requires valid_or_null(dictLength) && disjoint_owned(dictLength) && separated(dictLength, strm);
+  modifies dictionary, dictLength;
+  ensures  view' == view;
 {
   deflate_state *s;
   uInt len;
@@ -437,9 +439,9 @@ c_fn local void lm_init(deflate_state *s) {
 }
 
 c_fn int ZEXPORT deflateReset(z_streamp strm)
-  requires StreamAlive tags owned view m strm .deflate;
-  modifies writes [strm];
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_DEFLATE);
+  modifies strm;
+  ensures  view' == view;
 {
   int ret;
 
@@ -450,9 +452,9 @@ c_fn int ZEXPORT deflateReset(z_streamp strm)
 }
 
 c_fn int ZEXPORT deflateSetHeader(z_streamp strm, gz_headerp head)
-  requires StreamAlive tags owned view m strm .deflate;
-  requires strm = .null ∨ DeflateHeaderReady tags owned m head;
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_DEFLATE);
+  requires strm == NULL || (deflate_header_ready(head) && header_disjoint(head, strm));
+  ensures  view' == view;
 {
   if (deflateStateCheck(strm) || strm->state->wrap != 2)
     return Z_STREAM_ERROR;
@@ -461,11 +463,11 @@ c_fn int ZEXPORT deflateSetHeader(z_streamp strm, gz_headerp head)
 }
 
 c_fn int ZEXPORT deflatePending(z_streamp strm, unsigned *pending, int *bits)
-  requires StreamAlive tags owned view m strm .deflate;
-  requires OptTypedCell tags m pending (.int .u32) ∧ DisjointFrom pending owned;
-  requires OptTypedCell tags m bits (.int .i32) ∧ DisjointFrom bits owned;
-  modifies writes [pending, bits];
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_DEFLATE);
+  requires valid_or_null(pending) && disjoint_owned(pending) && separated(pending, strm);
+  requires valid_or_null(bits) && disjoint_owned(bits) && separated(bits, strm);
+  modifies pending, bits;
+  ensures  view' == view;
 {
   if (deflateStateCheck(strm)) return Z_STREAM_ERROR;
   if (bits != Z_NULL)
@@ -481,10 +483,10 @@ c_fn int ZEXPORT deflatePending(z_streamp strm, unsigned *pending, int *bits)
 }
 
 c_fn int ZEXPORT deflateUsed(z_streamp strm, int *bits)
-  requires StreamAlive tags owned view m strm .deflate;
-  requires OptTypedCell tags m bits (.int .i32) ∧ DisjointFrom bits owned;
-  modifies writes [bits];
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_DEFLATE);
+  requires valid_or_null(bits) && disjoint_owned(bits) && separated(bits, strm);
+  modifies bits;
+  ensures  view' == view;
 {
   if (deflateStateCheck(strm)) return Z_STREAM_ERROR;
   if (bits != Z_NULL)
@@ -493,8 +495,8 @@ c_fn int ZEXPORT deflateUsed(z_streamp strm, int *bits)
 }
 
 c_fn int ZEXPORT deflatePrime(z_streamp strm, int bits, int value)
-  requires StreamAlive tags owned view m strm .deflate;
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_DEFLATE);
+  ensures  view' == view;
 {
   deflate_state *s;
   int put;
@@ -528,9 +530,19 @@ c_fn int ZEXPORT deflatePrime(z_streamp strm, int bits, int value)
 }
 
 c_fn int ZEXPORT deflateParams(z_streamp strm, int level, int strategy)
-  requires StreamReady tags owned view m strm .deflate;
-  modifies writesStream tags m strm;
-  ensures  view' = view;
+  requires stream_ready(strm, STREAM_DEFLATE);
+  requires strm == NULL || (
+    let st = strm->state,
+    let h = st->gzhead,
+    deflate_header_ready(h) &&
+    (h == NULL || (
+      header_disjoint(h, strm) &&
+      (strm->avail_out == 0 || header_disjoint(h, strm->next_out)) &&
+      (st->status == 69 ==> st->gzindex <= h->extra_len % 65536) &&
+      (st->status == 73 ==> st->gzindex <= strlen(h->name)) &&
+      (st->status == 91 ==> st->gzindex <= strlen(h->comment)))));
+  modifies writes_stream(strm);
+  ensures  view' == view;
 {
   deflate_state *s;
   compress_func func;
@@ -572,8 +584,8 @@ c_fn int ZEXPORT deflateParams(z_streamp strm, int level, int strategy)
 
 c_fn int ZEXPORT deflateTune(z_streamp strm, int good_length, int max_lazy,
                              int nice_length, int max_chain)
-  requires StreamAlive tags owned view m strm .deflate;
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_DEFLATE);
+  ensures  view' == view;
 {
   deflate_state *s;
 
@@ -587,10 +599,9 @@ c_fn int ZEXPORT deflateTune(z_streamp strm, int good_length, int max_lazy,
 }
 
 c_fn z_size_t ZEXPORT deflateBound_z(z_streamp strm, z_size_t sourceLen)
-  requires StreamAlive tags owned view m strm .deflate;
-  requires strm = .null ∨ ∀ st h, readField? tags m strm "z_stream_s" "state" = some st →
-    readField? tags m st "internal_state" "gzhead" = some h → DeflateHeaderReady tags owned m h;
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_DEFLATE);
+  requires strm == NULL || (let st = strm->state, let h = st->gzhead, deflate_header_ready(h));
+  ensures  view' == view;
 {
   deflate_state *s;
   z_size_t fixedlen, storelen, wraplen, bound;
@@ -653,10 +664,9 @@ c_fn z_size_t ZEXPORT deflateBound_z(z_streamp strm, z_size_t sourceLen)
 }
 
 c_fn uLong ZEXPORT deflateBound(z_streamp strm, uLong sourceLen)
-  requires StreamAlive tags owned view m strm .deflate;
-  requires strm = .null ∨ ∀ st h, readField? tags m strm "z_stream_s" "state" = some st →
-    readField? tags m st "internal_state" "gzhead" = some h → DeflateHeaderReady tags owned m h;
-  ensures  view' = view;
+  requires stream_alive(strm, STREAM_DEFLATE);
+  requires strm == NULL || (let st = strm->state, let h = st->gzhead, deflate_header_ready(h));
+  ensures  view' == view;
 {
   z_size_t bound = deflateBound_z(strm, sourceLen);
   return (uLong)bound != bound ? (uLong)-1 : (uLong)bound;
@@ -693,11 +703,19 @@ c_stmt_macro HCRC_UPDATE(beg) := do {
 } while (0);
 
 c_fn int ZEXPORT deflate(z_streamp strm, int flush)
-  requires StreamReady tags owned view m strm .deflate;
-  requires strm = .null ∨ ∀ st h, readField? tags m strm "z_stream_s" "state" = some st →
-    readField? tags m st "internal_state" "gzhead" = some h → DeflateHeaderReady tags owned m h;
-  modifies writesStream tags m strm;
-  ensures  view' = view;
+  requires stream_ready(strm, STREAM_DEFLATE);
+  requires strm == NULL || (
+    let st = strm->state,
+    let h = st->gzhead,
+    deflate_header_ready(h) &&
+    (h == NULL || (
+      header_disjoint(h, strm) &&
+      (strm->avail_out == 0 || header_disjoint(h, strm->next_out)) &&
+      (st->status == 69 ==> st->gzindex <= h->extra_len % 65536) &&
+      (st->status == 73 ==> st->gzindex <= strlen(h->name)) &&
+      (st->status == 91 ==> st->gzindex <= strlen(h->comment)))));
+  modifies writes_stream(strm);
+  ensures  view' == view;
 {
   int old_flush;
   deflate_state *s;
@@ -965,9 +983,9 @@ c_fn int ZEXPORT deflate(z_streamp strm, int flush)
 }
 
 c_fn int ZEXPORT deflateEnd(z_streamp strm)
-  requires StreamAlive tags owned view m strm .deflate;
-  modifies writes [strm];
-  ensures  view' = if ret == 0 || ret == -3 then view.removeStream strm else view;
+  requires stream_alive(strm, STREAM_DEFLATE);
+  modifies strm;
+  ensures  view' == (ret == 0 || ret == -3 ? view.removeStream(strm) : view);
 {
   int status;
 
@@ -987,11 +1005,11 @@ c_fn int ZEXPORT deflateEnd(z_streamp strm)
 }
 
 c_fn int ZEXPORT deflateCopy(z_streamp dest, z_streamp source)
-  requires dest = .null ∨ (TypedCell tags m dest (.structTy "z_stream_s") ∧ DisjointFrom dest owned ∧ (∀ k, ¬ view.hasStream dest k));
-  requires StreamAlive tags owned view m source .deflate;
-  requires dest = .null ∨ PtrBlock dest ≠ PtrBlock source;
-  modifies writes [dest];
-  ensures  view' = if ret == 0 then view.addStream dest .deflate else view;
+  requires dest == NULL || (zero_ptr(dest) && valid(dest) && disjoint_owned(dest) && forall(k, !view.hasStream(dest, k)));
+  requires stream_alive(source, STREAM_DEFLATE);
+  requires dest == NULL || block(dest) != block(source);
+  modifies dest;
+  ensures  view' == (ret == 0 ? view.addStream(dest, STREAM_DEFLATE) : view);
 {
   deflate_state *ds;
   deflate_state *ss;

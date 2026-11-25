@@ -28,15 +28,15 @@ c_global z_const char * const z_errmsg[10] = {
 };
 
 c_fn const char * ZEXPORT zlibVersion(void)
-  requires True;
-  ensures  CString m' ret ∧ view' = view;
+  requires true;
+  ensures  cstring(ret) && view' == view;
 {
   return ZLIB_VERSION;
 }
 
 c_fn uLong ZEXPORT zlibCompileFlags(void)
-  requires True;
-  ensures  view' = view;
+  requires true;
+  ensures  view' == view;
 {
   uLong flags;
 

@@ -29,6 +29,9 @@ structure CScopeData where
   qualAliases : List (String × Bool) := []
   linkAliases : List (String × Linkage) := []
   specView : Option Name := none
+  specLib : Option Name := none
+  specPreds : List (String × List String × Name) := []
+  specConsts : List (String × Name) := []
   deriving Inhabited
 
 def mergeScopeData (a b : CScopeData) : CScopeData :=
@@ -38,7 +41,10 @@ def mergeScopeData (a b : CScopeData) : CScopeData :=
     macros := b.macros ++ a.macros
     qualAliases := b.qualAliases ++ a.qualAliases
     linkAliases := b.linkAliases ++ a.linkAliases
-    specView := b.specView.orElse fun _ => a.specView }
+    specView := b.specView.orElse fun _ => a.specView
+    specLib := b.specLib.orElse fun _ => a.specLib
+    specPreds := b.specPreds ++ a.specPreds
+    specConsts := b.specConsts ++ a.specConsts }
 
 /-- Persisted across module imports (used inside `c_header_begin` .. `c_header_end`). -/
 initialize persistedScopeExt : SimplePersistentEnvExtension CScopeData CScopeData ←
@@ -93,6 +99,18 @@ def lookupLinkAlias? (env : Environment) (s : String) : Option Linkage :=
 def lookupSpecView? (env : Environment) : Option Name :=
   ((localScopeExt.getState env).specView).orElse fun _ =>
     (persistedScopeExt.getState env).specView
+
+def lookupSpecLib? (env : Environment) : Option Name :=
+  ((localScopeExt.getState env).specLib).orElse fun _ =>
+    (persistedScopeExt.getState env).specLib
+
+def lookupSpecPred? (env : Environment) (s : String) : Option (List String × Name) :=
+  ((localScopeExt.getState env).specPreds.lookup s).orElse fun _ =>
+    (persistedScopeExt.getState env).specPreds.lookup s
+
+def lookupSpecConst? (env : Environment) (s : String) : Option Name :=
+  ((localScopeExt.getState env).specConsts.lookup s).orElse fun _ =>
+    (persistedScopeExt.getState env).specConsts.lookup s
 
 def pushScopeData (env : Environment) (d : CScopeData) : Environment :=
   let persist := match activeTUExt.getState env with

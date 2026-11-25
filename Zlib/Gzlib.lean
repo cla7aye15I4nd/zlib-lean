@@ -172,22 +172,22 @@ c_fn local gzFile gz_open(const void *path, int fd, const char *mode) {
 }
 
 c_fn gzFile ZEXPORT gzopen(const char *path, const char *mode)
-  requires OptCString m path ∧ OptCString m mode;
-  ensures  view' = if ret == .null then view else view.addGz ret;
+  requires opt_cstring(path) && opt_cstring(mode);
+  ensures  view' == (ret == NULL ? view : view.addGz(ret));
 {
   return gz_open(path, -1, mode);
 }
 
 c_fn gzFile ZEXPORT gzopen64(const char *path, const char *mode)
-  requires OptCString m path ∧ OptCString m mode;
-  ensures  view' = if ret == .null then view else view.addGz ret;
+  requires opt_cstring(path) && opt_cstring(mode);
+  ensures  view' == (ret == NULL ? view : view.addGz(ret));
 {
   return gz_open(path, -1, mode);
 }
 
 c_fn gzFile ZEXPORT gzdopen(int fd, const char *mode)
-  requires OptCString m mode;
-  ensures  view' = if ret == .null then view else view.addGz ret;
+  requires opt_cstring(mode);
+  ensures  view' == (ret == NULL ? view : view.addGz(ret));
 {
   char *path;
   gzFile gz;
@@ -201,8 +201,8 @@ c_fn gzFile ZEXPORT gzdopen(int fd, const char *mode)
 }
 
 c_fn int ZEXPORT gzbuffer(gzFile file, unsigned size)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   gz_statep state;
 
@@ -224,8 +224,8 @@ c_fn int ZEXPORT gzbuffer(gzFile file, unsigned size)
 }
 
 c_fn int ZEXPORT gzrewind(gzFile file)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   gz_statep state;
 
@@ -244,8 +244,8 @@ c_fn int ZEXPORT gzrewind(gzFile file)
 }
 
 c_fn z_off64_t ZEXPORT gzseek64(gzFile file, z_off64_t offset, int whence)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   unsigned n;
   z_off64_t ret, pos;
@@ -311,8 +311,8 @@ c_fn z_off64_t ZEXPORT gzseek64(gzFile file, z_off64_t offset, int whence)
 }
 
 c_fn z_off_t ZEXPORT gzseek(gzFile file, z_off_t offset, int whence)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   z_off64_t ret;
 
@@ -321,8 +321,8 @@ c_fn z_off_t ZEXPORT gzseek(gzFile file, z_off_t offset, int whence)
 }
 
 c_fn z_off64_t ZEXPORT gztell64(gzFile file)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   gz_statep state;
 
@@ -336,8 +336,8 @@ c_fn z_off64_t ZEXPORT gztell64(gzFile file)
 }
 
 c_fn z_off_t ZEXPORT gztell(gzFile file)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   z_off64_t ret;
 
@@ -346,8 +346,8 @@ c_fn z_off_t ZEXPORT gztell(gzFile file)
 }
 
 c_fn z_off64_t ZEXPORT gzoffset64(gzFile file)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   z_off64_t offset;
   gz_statep state;
@@ -367,8 +367,8 @@ c_fn z_off64_t ZEXPORT gzoffset64(gzFile file)
 }
 
 c_fn z_off_t ZEXPORT gzoffset(gzFile file)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   z_off64_t ret;
 
@@ -377,8 +377,8 @@ c_fn z_off_t ZEXPORT gzoffset(gzFile file)
 }
 
 c_fn int ZEXPORT gzeof(gzFile file)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   gz_statep state;
 
@@ -392,9 +392,9 @@ c_fn int ZEXPORT gzeof(gzFile file)
 }
 
 c_fn const char * ZEXPORT gzerror(gzFile file, int *errnum)
-  requires GzReady view file ∧ OptTypedCell tags m errnum (.int .i32) ∧ DisjointFrom errnum owned;
-  modifies writes [errnum];
-  ensures  view' = view;
+  requires gz_ready(file) && valid_or_null(errnum) && disjoint_owned(errnum);
+  modifies errnum;
+  ensures  view' == view;
 {
   gz_statep state;
 
@@ -411,8 +411,8 @@ c_fn const char * ZEXPORT gzerror(gzFile file, int *errnum)
 }
 
 c_fn void ZEXPORT gzclearerr(gzFile file)
-  requires GzReady view file;
-  ensures  view' = view;
+  requires gz_ready(file);
+  ensures  view' == view;
 {
   gz_statep state;
 
