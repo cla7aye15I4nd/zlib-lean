@@ -826,9 +826,7 @@ def resolveDeclTy (ty : CTy) (init? : Option InitVal) : CTy :=
   match ty, init? with
   | .array el none, some (.expr (.strLit s)) => .array el (some (s.utf8ByteSize + 1))
   | .array el none, some (.list xs) => .array el (some xs.length)
-  | .array el none, some (.intArray _ _ vals) => .array el (some vals.size)
-  | .array el none, some (.intArray2D _ _ rows) => .array el (some rows.size)
-  | .array el none, some (.tupleArray _ rows) => .array el (some rows.size)
+  | .array el none, some (.intSeq _ vals) => .array el (some (vals.size / max 1 el.flatElemCount))
   | .const_ t, _ => .const_ (resolveDeclTy t init?)
   | _, _ => ty
 
@@ -863,30 +861,6 @@ def evalConstExpr (prog : Prog) (env : Env) (m : Mem) (strBase : Nat → UInt64)
     return (rv, rt, m2, ns2)
   | _ => none
 
-private def flattenScalarKinds (tags : TypeEnv) (fuel : Nat) (ty : CTy) : List IntKind :=
-  match fuel, ty.unqual with
-  | 0, _ => []
-  | _, .int k => [k]
-  | _, .enumTy _ isU => [if isU then .u32 else .i32]
-  | n + 1, .anonStruct flds => flds.flatMap fun (_, t) => flattenScalarKinds tags n t
-  | n + 1, .anonUnion (f :: _) => flattenScalarKinds tags n f.2
-  | n + 1, .structTy tag => match tags.lookup tag with
-    | some (.structDef flds) => flds.flatMap fun (_, t) => flattenScalarKinds tags n t | _ => []
-  | n + 1, .unionTy tag => match tags.lookup tag with
-    | some (.unionDef (f :: _)) => flattenScalarKinds tags n f.2 | _ => []
-  | _, _ => []
-
-private def writeStructTuple (m : Mem) (b : BlockId) (off : Int64) (ks : List IntKind) (vals : List Int) : Option Mem :=
-  let rec go (o : Int) : List IntKind → List Int → Mem → Option Mem
-    | [], _, m => some m
-    | k :: kr, vs, m =>
-      let al : Int := max 1 k.align
-      let aligned := (alignUp o.toNat al.toNat : Int)
-      let v := vs.headD 0
-      (m.writeBytes b (Int64.ofInt aligned) (Mem.encodeInt k (BitVec.ofInt k.bits v))).bind fun m' =>
-        go (aligned + k.bytes) kr vs.tail m'
-  go off.toInt ks vals m
-
 mutual
 def writeInitList (prog : Prog) (env : Env) (m : Mem) (strBase : Nat → UInt64)
     (b : BlockId) (off : Int64) (elem : CTy) (idx : Nat) : List InitVal → Nat → Option (Mem × Nat)
@@ -917,19 +891,17 @@ def writeInitVal (prog : Prog) (env : Env) (m : Mem) (strBase : Nat → UInt64)
   | .list xs, .anonStruct flds => writeInitFields prog env m strBase b off.toInt.toNat 0 flds xs ns
   | .list xs, .structTy tag => match prog.tags.lookup tag with
     | some (.structDef flds) => writeInitFields prog env m strBase b off.toInt.toNat 0 flds xs ns | _ => none
-  | .intArray k _ vals, .array _ _ =>
-    let bs := vals.toList.flatMap fun v => Mem.encodeInt k (BitVec.ofInt k.bits v)
-    (m.writeBytes b off bs).map (·, ns)
-  | .intArray2D k _ rows, .array _ _ =>
-    let bs := rows.toList.flatMap fun r => r.toList.flatMap fun v => Mem.encodeInt k (BitVec.ofInt k.bits v)
-    (m.writeBytes b off bs).map (·, ns)
-  | .tupleArray _ rows, .array el _ => do
-    let ks := flattenScalarKinds prog.tags (prog.tags.length + 2) el
-    guard (!ks.isEmpty)
-    let esz := sizeofTy prog.tags el
-    let m' ← rows.toList.zipIdx.foldlM (fun acc (r, i) =>
-      writeStructTuple acc b (Int64.ofInt (off.toInt + i * esz)) ks r.toList) m
-    return (m', ns)
+  | .list (x :: _), .anonUnion ((_, fty) :: _) => writeInitVal prog env m strBase b off fty x ns
+  | .list [], .anonUnion _ => some (m, ns)
+  | .list (x :: _), .unionTy tag => match prog.tags.lookup tag with
+    | some (.unionDef ((_, fty) :: _)) => writeInitVal prog env m strBase b off fty x ns | _ => none
+  | .list [], .unionTy _ => some (m, ns)
+  | .intSeq _ vals, .array _ _ =>
+    match ty.arrayLeafIntKind? with
+    | some k =>
+      let bs := vals.toList.flatMap fun v => Mem.encodeInt k (BitVec.ofInt k.bits v)
+      (m.writeBytes b off bs).map (·, ns)
+    | none => none
   | _, _ => none
 end
 
@@ -940,7 +912,7 @@ def allocVarInit (prog : Prog) (env : Env) (m : Mem) (base strBase : Nat → UIn
   let (bid, m1) ← allocChecked m sz al .rw .global (base idx) (fun _ => .byte 0)
   let (m2, ns') ← match d.init? with
     | none => some (m1, ns) | some iv => writeInitVal prog env m1 strBase bid 0 ty iv ns
-  let isRo := d.isConst || ty.isConst || (match ty.unqual with | .array el _ => el.isConst | _ => false)
+  let isRo := ty.isReadOnly
   let m3 : Mem := if isRo then
     { m2 with
       blocks := fun x => if x == bid then (m2.blocks bid).map ({ · with perm := .ro }) else m2.blocks x

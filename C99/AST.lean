@@ -115,6 +115,29 @@ def isConst : CTy → Bool
   | .typedef _ t => t.isConst
   | _ => false
 
+/-- True when the declared object (including multi-dimensional arrays of `const` elements) is read-only. -/
+def isReadOnly : CTy → Bool
+  | .const_ _ => true
+  | .typedef _ t => t.isReadOnly
+  | .array el _ => el.isReadOnly
+  | _ => false
+
+/-- Leaf `IntKind` of a scalar or (possibly multi-dimensional) integer array type. -/
+def arrayLeafIntKind? : CTy → Option IntKind
+  | .const_ t => t.arrayLeafIntKind?
+  | .typedef _ t => t.arrayLeafIntKind?
+  | .array el _ => el.arrayLeafIntKind?
+  | .int k => some k
+  | _ => none
+
+/-- Total number of leaf elements in a statically-sized array type (`1` for non-arrays). -/
+def flatElemCount : CTy → Nat
+  | .const_ t => t.flatElemCount
+  | .typedef _ t => t.flatElemCount
+  | .array el (some n) => n * el.flatElemCount
+  | .array _ none => 0
+  | _ => 1
+
 def stripConst : CTy → CTy
   | .const_ t => t.stripConst
   | .typedef n t => .typedef n t.stripConst
@@ -314,20 +337,17 @@ inductive CExpr where
   | paren (e : CExpr)
   deriving BEq, Inhabited
 
-/-- Declaration initializers, including bulk numeric/table arrays for fast elaboration. -/
+/-- Declaration initializers, including a compact flattened scalar sequence for large numeric arrays. -/
 inductive InitVal where
   | expr (e : CExpr)
   | list (xs : List InitVal)
-  | intArray (k : IntKind) (radix : LitRadix) (vals : Array Int)
-  | intArray2D (k : IntKind) (radix : LitRadix) (rows : Array (Array Int))
-  | tupleArray (nestedBraces : Bool) (rows : Array (Array Int))
+  | intSeq (radix : LitRadix) (vals : Array Int)
   deriving BEq, Inhabited
 
 structure VarDecl where
   name : String
   ty : CTy
   isStatic : Bool := false
-  isConst : Bool := false
   init? : Option InitVal := none
   deriving BEq, Inhabited
 

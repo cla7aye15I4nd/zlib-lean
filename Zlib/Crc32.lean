@@ -29,7 +29,7 @@ c_fn local z_word_t byte_swap(z_word_t word) {
     (word & 0xff) << 24;
 }
 
-c_items Zlib.Tables.crc32Items
+c_include_tu Zlib.Tables.crc32H
 
 c_define POLY := 0xedb88320
 

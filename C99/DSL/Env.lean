@@ -26,6 +26,8 @@ structure CScopeData where
   tags : List (String × TagDef) := []
   consts : List (String × Int) := []
   macros : List (String × CMacroKind) := []
+  qualAliases : List (String × Bool) := []
+  linkAliases : List (String × Linkage) := []
   specView : Option Name := none
   deriving Inhabited
 
@@ -34,6 +36,8 @@ def mergeScopeData (a b : CScopeData) : CScopeData :=
     tags := b.tags ++ a.tags
     consts := b.consts ++ a.consts
     macros := b.macros ++ a.macros
+    qualAliases := b.qualAliases ++ a.qualAliases
+    linkAliases := b.linkAliases ++ a.linkAliases
     specView := b.specView.orElse fun _ => a.specView }
 
 /-- Persisted across module imports (used inside `c_header_begin` .. `c_header_end`). -/
@@ -77,6 +81,14 @@ def lookupConst? (env : Environment) (s : String) : Option Int :=
 def lookupTag? (env : Environment) (s : String) : Option TagDef :=
   ((localScopeExt.getState env).tags.lookup s).orElse fun _ =>
     (persistedScopeExt.getState env).tags.lookup s
+
+def lookupQualAlias? (env : Environment) (s : String) : Option Bool :=
+  ((localScopeExt.getState env).qualAliases.lookup s).orElse fun _ =>
+    (persistedScopeExt.getState env).qualAliases.lookup s
+
+def lookupLinkAlias? (env : Environment) (s : String) : Option Linkage :=
+  ((localScopeExt.getState env).linkAliases.lookup s).orElse fun _ =>
+    (persistedScopeExt.getState env).linkAliases.lookup s
 
 def lookupSpecView? (env : Environment) : Option Name :=
   ((localScopeExt.getState env).specView).orElse fun _ =>

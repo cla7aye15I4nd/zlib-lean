@@ -371,7 +371,7 @@ private def X2nTableValid (prog : Prog) (gEnv : Env) (m : Mem) : Prop :=
     m.blocks bx = some blk ∧ blk.size = 128 ∧
     ∀ idx < 32, ∃ bv : BitVec 32,
       Sem.readVal prog.tags m bx (Int64.ofNat (4 * idx)) crcConstTy = some (.int .u32 bv) ∧
-      bv = BitVec.ofInt 32 Zlib.Tables.x2nTableVals[idx]! ∧
+      bv = BitVec.ofInt 32 Zlib.Tables.crc32H_vals_x2n_table[idx]! ∧
       bv.toNat ≠ 0
 
 private theorem X2nTableValid.of_baseInv {prog gEnv m0 os0 v owned m os}
@@ -433,7 +433,7 @@ private theorem pureEval_x2n_table {prog cfg env m gEnv}
     (hidxLt : idxBv.toNat < 32) :
     ∃ bv : BitVec 32,
       PureEval prog cfg env m [] ((CExpr.var "x2n_table").index idxExpr) (.int .u32 bv) crcConstTy.decay ∧
-      bv = BitVec.ofInt 32 Zlib.Tables.x2nTableVals[idxBv.toNat]! ∧
+      bv = BitVec.ofInt 32 Zlib.Tables.crc32H_vals_x2n_table[idxBv.toNat]! ∧
       bv.toNat ≠ 0 := by
   rcases hx with ⟨bx, blk, hlux, hm_bx, hsz, hread⟩
   obtain ⟨bv, hrv, hval, hnz⟩ := hread idxBv.toNat hidxLt
@@ -467,8 +467,7 @@ private theorem pureEval_x2n_table {prog cfg env m gEnv}
     unfold Sem.readPlace
     simp only [crcConstTy, CTy.unqual, modSet_conflicts_nil, Bool.not_false,
       guard_true, bind, Option.bind, Option.map]
-    rw [show Sem.readVal prog.tags m bx (Int64.ofNat (4 * idxBv.toNat))
-        (.const_ (.typedef "z_crc_t" (.int .u32))) = some (.int .u32 bv) from hrv]
+    erw [hrv]
   have hstep1 : Sem.stepExprPure prog cfg env m []
       (.eval .rval (.var "x2n_table") (.indexBaseF .rval idxExpr :: fs)) =
       some (.ret (.rval (.ptr bx 0) (CTy.array crcConstTy (some 32)).decay)

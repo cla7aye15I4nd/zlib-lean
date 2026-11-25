@@ -20,6 +20,15 @@ c_typedef long z_off_t;
 c_typedef long z_off64_t;
 c_typedef unsigned long size_t;
 
+-- Register zlib C qualifier and linkage macro aliases in persisted DSL scope
+c_qual_alias z_const := const
+c_qual_alias TCONST := const
+c_qual_alias FAR := none
+c_link_alias local := static
+c_link_alias ZEXPORT := export
+c_link_alias ZEXPORTVA := export
+c_link_alias ZLIB_INTERNAL := hidden
+
 /-! ## 1. `abi_common.h` -/
 
 c_header_begin abiCommonH "abi_common.h"
@@ -179,7 +188,7 @@ c_define PRESET_DICT := 0x20
 c_define_const OS_CODE := 19
 
 -- Utility globals, prototypes, and macros
-c_var extern z_const char * const z_errmsg[10];
+c_global extern z_const char * const z_errmsg[10];
 c_macro ERR_MSG(err) := z_errmsg[(err) < -6 || (err) > 2 ? 9 : 2 - (err)]
 c_stmt_macro ERR_RETURN(strm, err) := return ((strm)->msg = ERR_MSG(err), (err));
 

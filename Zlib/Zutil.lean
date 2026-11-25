@@ -14,7 +14,7 @@ c_tu_begin zutilTU "zutil.c"
 c_include_local "abi_common.h"
 c_include_local "abi_gz.h"
 
-c_var z_const char * const z_errmsg[10] = {
+c_global z_const char * const z_errmsg[10] = {
   (z_const char *)"need dictionary",
   (z_const char *)"stream end",
   (z_const char *)"",

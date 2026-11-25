@@ -196,35 +196,50 @@ private def fmtArrayInt (k : IntKind) (rad : LitRadix) (v : Int) : String :=
     | _, _ => LitSuffix.none
   emitIntLit v k suf rad
 
-partial def emitInit (ind : Nat) : InitVal → String
+private def splitRows (stride : Nat) (xs : List Int) : List (List Int) :=
+  if h : stride > 0 ∧ xs ≠ [] then
+    have : (xs.drop stride).length < xs.length := by
+      cases xs with | nil => exact absurd rfl h.2 | cons _ _ => simp; omega
+    xs.take stride :: splitRows stride (xs.drop stride)
+  else []
+termination_by xs.length
+
+partial def emitIntSeq (ind : Nat) (k : IntKind) (rad : LitRadix) : CTy → List Int → String
+  | .const_ t, vs => emitIntSeq ind k rad t vs
+  | .typedef _ t, vs => emitIntSeq ind k rad t vs
+  | .array el _, vs =>
+    if el.isArray then
+      let stride := max 1 el.flatElemCount
+      let rows := splitRows stride vs
+      let rowStrs := rows.map fun r => indentStr (ind + 1) ++ emitIntSeq (ind + 1) k rad el r
+      "{\n" ++ String.intercalate ",\n" rowStrs ++ "\n" ++ indentStr ind ++ "}"
+    else
+      if vs.isEmpty then "{ 0 }"
+      else
+        let items := vs.map (fmtArrayInt k rad)
+        "{\n" ++ chunkLines (indentStr (ind + 1)) items ++ "\n" ++ indentStr ind ++ "}"
+  | _, _ => "{ 0 }"
+
+partial def emitInit (ind : Nat) (ty : CTy) : InitVal → String
   | .expr e => emitExpr e
   | .list xs =>
     if xs.isEmpty then "{ 0 }"
-    else "{ " ++ String.intercalate ", " (xs.map (emitInit ind)) ++ " }"
-  | .intArray k rad vals =>
-    if vals.isEmpty then "{ 0 }"
     else
-      let items := vals.toList.map (fmtArrayInt k rad)
-      "{\n" ++ chunkLines (indentStr (ind + 1)) items ++ "\n" ++ indentStr ind ++ "}"
-  | .intArray2D k rad rows =>
-    let rowStrs := rows.toList.map fun r =>
-      let items := r.toList.map (fmtArrayInt k rad)
-      indentStr (ind + 1) ++ "{\n" ++ chunkLines (indentStr (ind + 2)) items ++ "\n" ++ indentStr (ind + 1) ++ "}"
-    "{\n" ++ String.intercalate ",\n" rowStrs ++ "\n" ++ indentStr ind ++ "}"
-  | .tupleArray nestedBraces rows =>
-    let rowStrs := rows.toList.map fun r =>
-      let elems := r.toList.map toString
-      if nestedBraces then "{" ++ String.intercalate ", " (elems.map fun s => s!"\{{s}}") ++ "}"
-      else "{" ++ String.intercalate ", " elems ++ "}"
-    "{\n" ++ chunkLines (indentStr (ind + 1)) rowStrs 6 ++ "\n" ++ indentStr ind ++ "}"
+      let elemTy := match ty.unqual with | .array el _ => el | _ => .void
+      if xs.length > 16 then
+        let items := xs.map (emitInit (ind + 1) elemTy)
+        "{\n" ++ chunkLines (indentStr (ind + 1)) items 6 ++ "\n" ++ indentStr ind ++ "}"
+      else
+        "{ " ++ String.intercalate ", " (xs.map (emitInit ind elemTy)) ++ " }"
+  | .intSeq rad vals =>
+    emitIntSeq ind (ty.arrayLeafIntKind?.getD .i32) rad ty vals.toList
 
 def emitVarDecl (ind : Nat) (d : VarDecl) (skipStatic : Bool := false) : String :=
   let statPfx := if d.isStatic && !skipStatic then "static " else ""
-  let constPfx := if d.isConst && !d.ty.isConst then "const " else ""
-  let lhs := statPfx ++ constPfx ++ emitDecl d.name d.ty
+  let lhs := statPfx ++ emitDecl d.name d.ty
   match d.init? with
   | none => lhs
-  | some iv => s!"{lhs} = {emitInit ind iv}"
+  | some iv => s!"{lhs} = {emitInit ind d.ty iv}"
 
 private def emitArm (ind : Nat) (pfx : String) (body : CStmt) (emitS : Nat → CStmt → String) : String :=
   match body with

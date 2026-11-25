@@ -13,7 +13,7 @@ c_tu_begin deflateTU "deflate.c"
 
 c_include_local "abi_deflate.h"
 
-c_var const char deflate_copyright[] = " deflate 1.4.0.1 Copyright 1995-2026 Jean-loup Gailly and Mark Adler ";
+c_global const char deflate_copyright[] = " deflate 1.4.0.1 Copyright 1995-2026 Jean-loup Gailly and Mark Adler ";
 
 c_typedef enum {
   need_more,
@@ -41,7 +41,7 @@ c_typedef struct config_s {
   compress_func func;
 } config;
 
-c_var local const config configuration_table[10] = {
+c_global local const config configuration_table[10] = {
   {0,   0,   0,    0,    deflate_stored},
   {4,   4,   8,    4,    deflate_fast},
   {4,   5,   16,   8,    deflate_fast},

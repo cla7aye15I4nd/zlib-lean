@@ -397,22 +397,6 @@ local elab "unfold_head_lhs" : tactic => withMainContext do
   let some lhs' ← unfoldDefinition? lhs | throwError "cannot unfold head of {lhs}"
   replaceMainGoal [← (← getMainGoal).change (← mkEq lhs' rhs)]
 
-open Lean Meta Elab Tactic in
-local elab "gen_tuple_args" : tactic => withMainContext do
-  let tgt ← getMainTarget
-  let .forallE _ dom _ _ := tgt | throwError "expected forall"
-  let some (_, lhs, _) := dom.eq? | throwError "expected eq"
-  let args := lhs.getAppArgs
-  if args.size < 5 then throwError "unexpected args: {args.size}"
-  let goal ← getMainGoal
-  let (_, goal) ← goal.generalize #[
-    { expr := args[1]!, xName? := some `oGen },
-    { expr := args[2]!, xName? := some `ksGen },
-    { expr := args[3]!, xName? := some `vsGen },
-    { expr := args[4]!, xName? := some `mGen }
-  ]
-  replaceMainGoal [goal]
-
 private theorem fieldLayout_z_stream_s_eq (fld : String) :
     fieldLayout? (progOfTUs Zlib.allFiles).tags (.structTy "z_stream_s") fld =
       (if fld = "next_in" then some (0, .ptr (.const_ (.typedef "Bytef" (.typedef "Byte" (.int .u8)))))
@@ -1084,19 +1068,6 @@ private theorem writeBytes_preservedBelow {lim b : BlockId} {off : Int64} {bs : 
   refine ⟨by rw [writeBytes_nextBlock h]; exact Nat.le_refl _, fun x hx => ?_⟩
   exact writeBytes_blocks_ne h (Nat.ne_of_lt (Nat.lt_of_lt_of_le hx hb))
 
-private theorem foldlM_memPreserved {α : Type} {lim : BlockId} (f : Mem → α → Option Mem)
-    (hf : ∀ acc a m', f acc a = some m' → MemPreservedBelow lim acc m')
-    {xs : List α} {m m' : Mem} (h : xs.foldlM f m = some m') :
-    MemPreservedBelow lim m m' := by
-  induction xs generalizing m with
-  | nil => simp at h; subst h; exact MemPreservedBelow.refl _ _
-  | cons x xs ih =>
-    simp only [List.foldlM_cons, bind, Option.bind] at h
-    split at h
-    · cases h
-    · rename_i m1 heq
-      exact MemPreservedBelow.trans (hf m x m1 heq) (ih h)
-
 theorem mem_encodeInt_isByte {k : IntKind} {bv : BitVec k.bits} {x : MemByte}
     (hx : x ∈ Mem.encodeInt k bv) : ∃ u : UInt8, x = .byte u := by
   unfold Mem.encodeInt at hx
@@ -1110,13 +1081,6 @@ theorem mem_flatMap_encodeInt_isByte {k : IntKind} {vals : List Int} {x : MemByt
   rw [List.mem_flatMap] at hx
   rcases hx with ⟨v, _, hxv⟩
   exact mem_encodeInt_isByte hxv
-
-theorem mem_flatMap2D_encodeInt_isByte {k : IntKind} {rows : List (Array Int)} {x : MemByte}
-    (hx : x ∈ rows.flatMap fun r => r.toList.flatMap fun v => Mem.encodeInt k (BitVec.ofInt k.bits v)) :
-    ∃ u : UInt8, x = .byte u := by
-  rw [List.mem_flatMap] at hx
-  rcases hx with ⟨r, _, hxr⟩
-  exact mem_flatMap_encodeInt_isByte hxr
 
 theorem flatMap_encodeInt_length (k : IntKind) (xs : List Int) :
     (xs.flatMap fun v => Mem.encodeInt k (BitVec.ofInt k.bits v)).length = xs.length * k.bytes := by
@@ -1179,57 +1143,6 @@ private theorem writeBytes_allBytes_total {m m' : Mem} {b : BlockId} {off : Int6
     exact hbs _ (List.getElem_mem hj)
   · simp only [hrange, ↓reduceIte]
     exact hconcr i
-
-theorem writeInitVal_intArray_allBytes
-    {prog : Prog} {env : Env} {m m' : Mem} {strBase : Nat → UInt64}
-    {b : BlockId} {off : Int64} {ty el : CTy} {len? : Option Nat}
-    {k : IntKind} {rad : LitRadix} {vals : Array Int} {ns ns' : Nat} {blk : Block}
-    (hty : ty.unqual = .array el len?)
-    (hb : m.blocks b = some blk)
-    (hconcr : ∀ i < blk.size, ∃ u : UInt8, blk.bytes i = .byte u)
-    (hwr : writeInitVal prog env m strBase b off ty (.intArray k rad vals) ns = some (m', ns')) :
-    ns' = ns ∧ m'.nextBlock = m.nextBlock ∧
-    (∀ b' ≠ b, m'.blocks b' = m.blocks b') ∧
-    ∃ blk', m'.blocks b = some blk' ∧
-      blk'.size = blk.size ∧ blk'.align = blk.align ∧ blk'.perm = blk.perm ∧
-      blk'.kind = blk.kind ∧ blk'.baseAddr = blk.baseAddr ∧
-      (∀ i < blk'.size, ∃ u : UInt8, blk'.bytes i = .byte u) := by
-  unfold writeInitVal at hwr
-  rw [hty] at hwr
-  dsimp at hwr
-  cases hwb : m.writeBytes b off (vals.toList.flatMap fun v => Mem.encodeInt k (BitVec.ofInt k.bits v)) with
-  | none => simp [hwb] at hwr
-  | some m1 =>
-    simp [hwb] at hwr
-    obtain ⟨rfl, rfl⟩ := hwr
-    refine ⟨rfl, writeBytes_nextBlock hwb, fun b' hne => writeBytes_blocks_ne hwb hne, ?_⟩
-    exact writeBytes_allBytes hb hwb hconcr (fun _ hx => mem_flatMap_encodeInt_isByte hx)
-
-theorem writeInitVal_intArray2D_allBytes
-    {prog : Prog} {env : Env} {m m' : Mem} {strBase : Nat → UInt64}
-    {b : BlockId} {off : Int64} {ty el : CTy} {len? : Option Nat}
-    {k : IntKind} {rad : LitRadix} {rows : Array (Array Int)} {ns ns' : Nat} {blk : Block}
-    (hty : ty.unqual = .array el len?)
-    (hb : m.blocks b = some blk)
-    (hconcr : ∀ i < blk.size, ∃ u : UInt8, blk.bytes i = .byte u)
-    (hwr : writeInitVal prog env m strBase b off ty (.intArray2D k rad rows) ns = some (m', ns')) :
-    ns' = ns ∧ m'.nextBlock = m.nextBlock ∧
-    (∀ b' ≠ b, m'.blocks b' = m.blocks b') ∧
-    ∃ blk', m'.blocks b = some blk' ∧
-      blk'.size = blk.size ∧ blk'.align = blk.align ∧ blk'.perm = blk.perm ∧
-      blk'.kind = blk.kind ∧ blk'.baseAddr = blk.baseAddr ∧
-      (∀ i < blk'.size, ∃ u : UInt8, blk'.bytes i = .byte u) := by
-  unfold writeInitVal at hwr
-  rw [hty] at hwr
-  dsimp at hwr
-  cases hwb : m.writeBytes b off
-      (rows.toList.flatMap fun r => r.toList.flatMap fun v => Mem.encodeInt k (BitVec.ofInt k.bits v)) with
-  | none => simp [hwb] at hwr
-  | some m1 =>
-    simp [hwb] at hwr
-    obtain ⟨rfl, rfl⟩ := hwr
-    refine ⟨rfl, writeBytes_nextBlock hwb, fun b' hne => writeBytes_blocks_ne hwb hne, ?_⟩
-    exact writeBytes_allBytes hb hwb hconcr (fun _ hx => mem_flatMap2D_encodeInt_isByte hx)
 
 theorem readVal_writeBytes_intArray (tags : TypeEnv) {m m' : Mem} {b : BlockId} {blk : Block}
     {k : IntKind} {vals : Array Int}
@@ -1429,42 +1342,6 @@ theorem evalConstExpr_preserves {prog : Prog} {env : Env} {strBase : Nat → UIn
   | vaStart _ _ | vaEnd _ => simp [evalConstExpr] at h
 termination_by sizeOf e
 
-private theorem tuple_preserves (prog : Prog) (env : Env) (m m' : Mem) (strBase : Nat → UInt64)
-    (b : BlockId) (off : Int64) (ty el : CTy) (len? : Option Nat) (nb : Bool) (rows : Array (Array Int)) (ns ns' : Nat)
-    {lim : BlockId} (hlim : lim ≤ b) (hty : ty.unqual = .array el len?)
-    (h : writeInitVal prog env m strBase b off ty (.tupleArray nb rows) ns = some (m', ns')) :
-    MemPreservedBelow lim m m' := by
-  unfold writeInitVal at h
-  rw [hty] at h
-  dsimp [bind, Option.bind, pure, Pure.pure, guard] at h
-  split at h
-  · cases h
-  · split at h
-    · cases h
-    · next m1 hfold =>
-      simp only [Option.some.injEq, Prod.mk.injEq] at h
-      obtain ⟨rfl, _⟩ := h
-      refine foldlM_memPreserved _ ?_ hfold
-      intro acc a m2 hw
-      conv at hw => lhs; whnf
-      revert hw
-      gen_tuple_args
-      intro hw
-      revert oGen vsGen mGen hw
-      induction ksGen with
-      | nil =>
-        intro oGen vsGen mGen hw
-        conv at hw => lhs; whnf
-        cases hw
-        exact MemPreservedBelow.refl _ _
-      | cons k kr ih =>
-        intro oGen vsGen mGen hw
-        conv at hw => lhs; whnf
-        split at hw
-        · cases hw
-        · next m3 hwb =>
-          exact MemPreservedBelow.trans (writeBytes_preservedBelow hlim hwb) (ih _ _ _ hw)
-
 private theorem writeVal_preservedBelow {lim b : BlockId} {off : Int64} {ty : CTy} {v : Val}
     {m m' : Mem} (hb : lim ≤ b) (h : writeVal m b off ty v = some m') :
     MemPreservedBelow lim m m' := by
@@ -1651,31 +1528,49 @@ theorem writeInitVal_preserves {prog : Prog} {env : Env} {strBase : Nat → UInt
           simp [hlu] at h
           exact writeInitFields_preserves hb hm h
         | unionDef _ | enumDef _ _ => simp [hlu] at h
-    · cases h
+    · rename_i tag
+      cases xs with
+      | nil =>
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, _⟩ := h
+        exact MemPreservedBelow.refl _ _
+      | cons x _ =>
+        cases hlu : prog.tags.lookup tag with
+        | none => simp [hlu] at h
+        | some defn =>
+          cases defn with
+          | unionDef flds =>
+            cases flds with
+            | nil => simp [hlu] at h
+            | cons f _ =>
+              simp only [hlu] at h
+              exact writeInitVal_preserves hb hm h
+          | structDef _ | enumDef _ _ => simp [hlu] at h
     · exact writeInitFields_preserves hb hm h
+    · rename_i flds
+      cases xs with
+      | nil =>
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, _⟩ := h
+        exact MemPreservedBelow.refl _ _
+      | cons x _ =>
+        cases flds with
+        | nil => cases h
+        | cons f _ => exact writeInitVal_preserves hb hm h
     · cases h
     · cases h
     · cases h
     · cases h
-    · cases h
-  | intArray k rad vals =>
+  | intSeq rad vals =>
     unfold writeInitVal at h
     cases hty : ty.unqual <;> rw [hty] at h <;> dsimp only at h
     all_goals try cases h
-    simp only [Option.map_eq_some_iff, Prod.mk.injEq] at h
-    rcases h with ⟨m1, hwb, rfl, _⟩
-    exact writeBytes_preservedBelow hb hwb
-  | intArray2D k rad rows =>
-    unfold writeInitVal at h
-    cases hty : ty.unqual <;> rw [hty] at h <;> dsimp only at h
-    all_goals try cases h
-    simp only [Option.map_eq_some_iff, Prod.mk.injEq] at h
-    rcases h with ⟨m1, hwb, rfl, _⟩
-    exact writeBytes_preservedBelow hb hwb
-  | tupleArray nb rows =>
-    cases hty : ty.unqual
-    all_goals try (unfold writeInitVal at h; rw [hty] at h; cases h)
-    exact tuple_preserves prog env m m' strBase b off ty _ _ nb rows ns ns' hb hty h
+    cases hk : ty.arrayLeafIntKind? with
+    | none => simp [hk] at h
+    | some k =>
+      simp only [hk, Option.map_eq_some_iff, Prod.mk.injEq] at h
+      rcases h with ⟨m1, hwb, rfl, _⟩
+      exact writeBytes_preservedBelow hb hwb
 termination_by sizeOf iv
 end
 
@@ -1737,11 +1632,12 @@ theorem allocVarInit_preserves {prog : Prog} {env : Env} {m m' : Mem}
         have hp2 := writeInitVal_preserves (lim := m.nextBlock) (Nat.le_refl _) (by rw [hm1next]; exact Nat.le_succ _) hwr
         exact ⟨rfl, memPreservedBelow_roIf _ (hp1.trans hp2)⟩
 
-theorem allocVarInit_intArray_inv {prog : Prog} {env : Env} {m m' : Mem}
+theorem allocVarInit_intSeq_inv {prog : Prog} {env : Env} {m m' : Mem}
     {base strBase : Nat → UInt64} {idx ns ns' : Nat} {d : VarDecl}
     {el : CTy} {len? : Option Nat} {k : IntKind} {rad : LitRadix} {vals : Array Int}
     (hty : (resolveDeclTy d.ty d.init?).unqual = .array el len?)
-    (hinit : d.init? = some (.intArray k rad vals))
+    (hk : (resolveDeclTy d.ty d.init?).arrayLeafIntKind? = some k)
+    (hinit : d.init? = some (.intSeq rad vals))
     {bid : BlockId} {ty : CTy}
     (h : allocVarInit prog env m base strBase idx ns d = some (bid, ty, m', ns')) :
     bid = m.nextBlock ∧ ty = resolveDeclTy d.ty d.init? ∧ ns' = ns ∧
@@ -1751,7 +1647,7 @@ theorem allocVarInit_intArray_inv {prog : Prog} {env : Env} {m m' : Mem}
       blk.size = max 1 (sizeofTy prog.tags ty) ∧
       blk.align = max 1 (alignofTy prog.tags ty) ∧
       blk.kind = .global ∧
-      blk.perm = (if d.isConst || ty.isConst || el.isConst then .ro else .rw) ∧
+      blk.perm = (if ty.isReadOnly then .ro else .rw) ∧
       (∀ i, ∃ u : UInt8, blk.bytes i = .byte u) ∧
       (k.align ∣ blk.align → ∀ i (hi : i < vals.size),
         Sem.readVal prog.tags m' bid (Int64.ofNat (k.bytes * i)) (.int k) =
@@ -1789,8 +1685,9 @@ theorem allocVarInit_intArray_inv {prog : Prog} {env : Env} {m m' : Mem}
       have hwr1 := hwr
       unfold writeInitVal at hwr
       have hty' := hty
-      rw [hinit] at hty'
-      rw [hty'] at hwr
+      have hk' := hk
+      rw [hinit] at hty' hk'
+      rw [hty', hk'] at hwr
       dsimp at hwr
       cases hwb : m1.writeBytes m.nextBlock 0
           (vals.toList.flatMap fun v => Mem.encodeInt k (BitVec.ofInt k.bits v)) with
@@ -1807,108 +1704,25 @@ theorem allocVarInit_intArray_inv {prog : Prog} {env : Env} {m m' : Mem}
           intro hdvd i hi
           have hd1 : k.align ∣ blk1.align := by rw [← hal2]; exact hdvd
           exact readVal_writeBytes_intArray prog.tags hblk1 hd1 hwb hi
-        rw [hty'] at h
-        dsimp only at h
         split at h <;> rename_i hro <;> cases h
-        · rw [← hinit] at hro
-          refine ⟨rfl, by rw [hinit], rfl, ?_, fun x hx => ?_, ?_⟩
+        · refine ⟨rfl, by rw [hinit], rfl, ?_, fun x hx => ?_, ?_⟩
           · simp [writeBytes_nextBlock hwb, hm1next]
           · simp only [beq_false_of_ne (Nat.ne_of_lt hx), Bool.false_eq_true, ↓reduceIte]
             rw [writeBytes_blocks_ne hwb (Nat.ne_of_lt hx), hm1lt x hx]
           · refine ⟨{ blk2 with perm := .ro }, by simp [hblk2], by rw [hsz2, hsz1, hinit],
               by rw [hal2, hal1, hinit], by rw [hk2, hk1], ?_, hconcr2, ?_⟩
-            · rw [← hinit]; simp [hro]
+            · rw [ite_eq_left hro]
             · intro hdvd i hi
               have hr := hread hdvd i hi
-              -- `readVal` ignores `blk.perm`, only depends on size/align/baseAddr/bytes
               unfold Sem.readVal Mem.readBytes at hr ⊢
               rw [hblk2] at hr
               simp only [beq_self_eq_true, ↓reduceIte, hblk2, Option.map_some]
               exact hr
-        · rw [← hinit] at hro
-          refine ⟨rfl, by rw [hinit], rfl, ?_, fun x hx => ?_, ?_⟩
+        · refine ⟨rfl, by rw [hinit], rfl, ?_, fun x hx => ?_, ?_⟩
           · rw [writeBytes_nextBlock hwb, hm1next]
           · rw [writeBytes_blocks_ne hwb (Nat.ne_of_lt hx), hm1lt x hx]
           · refine ⟨blk2, hblk2, by rw [hsz2, hsz1, hinit], by rw [hal2, hal1, hinit], by rw [hk2, hk1], ?_, hconcr2, hread⟩
-            rw [← hinit]; simp [hro, hperm2, hperm1]
-
-theorem allocVarInit_intArray2D_inv {prog : Prog} {env : Env} {m m' : Mem}
-    {base strBase : Nat → UInt64} {idx ns ns' : Nat} {d : VarDecl}
-    {el : CTy} {len? : Option Nat} {k : IntKind} {rad : LitRadix} {rows : Array (Array Int)}
-    (hty : (resolveDeclTy d.ty d.init?).unqual = .array el len?)
-    (hinit : d.init? = some (.intArray2D k rad rows))
-    {bid : BlockId} {ty : CTy}
-    (h : allocVarInit prog env m base strBase idx ns d = some (bid, ty, m', ns')) :
-    bid = m.nextBlock ∧ ty = resolveDeclTy d.ty d.init? ∧ ns' = ns ∧
-    m'.nextBlock = m.nextBlock + 1 ∧
-    (∀ x < m.nextBlock, m'.blocks x = m.blocks x) ∧
-    ∃ blk, m'.blocks bid = some blk ∧
-      blk.size = max 1 (sizeofTy prog.tags ty) ∧
-      blk.align = max 1 (alignofTy prog.tags ty) ∧
-      blk.kind = .global ∧
-      blk.perm = (if d.isConst || ty.isConst || el.isConst then .ro else .rw) ∧
-      (∀ i, ∃ u : UInt8, blk.bytes i = .byte u) := by
-  unfold allocVarInit at h
-  simp only [bind, Option.bind, pure, Pure.pure] at h
-  split at h
-  · cases h
-  · next a halloc =>
-    rcases a with ⟨bid0, m1⟩
-    dsimp only at h
-    unfold_lhs halloc
-    have ha : bid0 = m.nextBlock ∧ m1.nextBlock = m.nextBlock + 1 ∧
-        (∀ x < m.nextBlock, m1.blocks x = m.blocks x) ∧
-        ∃ blk1, m1.blocks bid0 = some blk1 ∧
-          blk1.size = max 1 (sizeofTy prog.tags (resolveDeclTy d.ty d.init?)) ∧
-          blk1.align = max 1 (alignofTy prog.tags (resolveDeclTy d.ty d.init?)) ∧
-          blk1.perm = .rw ∧ blk1.kind = .global ∧ (∀ i, blk1.bytes i = .byte 0) := by
-      split at halloc
-      · split at halloc
-        · split at halloc
-          · cases halloc
-            refine ⟨rfl, rfl, fun x hx => alloc_blocks_ne _ _ _ _ _ _ _ _ _ _ (Nat.ne_of_lt hx),
-              _, alloc_blocks_eq _ _ _ _ _ _ _ _ _ _, rfl, rfl, rfl, rfl, fun _ => rfl⟩
-          · cases halloc
-        · cases halloc
-      · cases halloc
-    rcases ha with ⟨rfl, hm1next, hm1lt, blk1, hblk1, hsz1, hal1, hperm1, hk1, hbytes1⟩
-    rw [hinit] at h
-    dsimp only at h
-    split at h
-    · cases h
-    · next m2 ns2 hwr =>
-      dsimp only at h
-      unfold writeInitVal at hwr
-      have hty' := hty
-      rw [hinit] at hty'
-      rw [hty'] at hwr
-      dsimp at hwr
-      cases hwb : m1.writeBytes m.nextBlock 0
-          (rows.toList.flatMap fun r => r.toList.flatMap fun v => Mem.encodeInt k (BitVec.ofInt k.bits v)) with
-      | none => simp [hwb] at hwr
-      | some m2' =>
-        simp [hwb] at hwr
-        obtain ⟨rfl, rfl⟩ := hwr
-        obtain ⟨blk2, hblk2, hsz2, hal2, hperm2, hk2, _, hconcr2⟩ :=
-          writeBytes_allBytes_total hblk1 hwb (fun i => ⟨0, hbytes1 i⟩)
-            (fun _ hx => mem_flatMap2D_encodeInt_isByte hx)
-        rw [hty'] at h
-        dsimp only at h
-        split at h <;> rename_i hro <;> cases h
-        · rw [← hinit] at hro
-          refine ⟨rfl, by rw [hinit], rfl, ?_, fun x hx => ?_, ?_⟩
-          · simp [writeBytes_nextBlock hwb, hm1next]
-          · simp only [beq_false_of_ne (Nat.ne_of_lt hx), Bool.false_eq_true, ↓reduceIte]
-            rw [writeBytes_blocks_ne hwb (Nat.ne_of_lt hx), hm1lt x hx]
-          · refine ⟨{ blk2 with perm := .ro }, by simp [hblk2], by rw [hsz2, hsz1, hinit],
-              by rw [hal2, hal1, hinit], by rw [hk2, hk1], ?_, hconcr2⟩
-            rw [← hinit]; simp [hro]
-        · rw [← hinit] at hro
-          refine ⟨rfl, by rw [hinit], rfl, ?_, fun x hx => ?_, ?_⟩
-          · rw [writeBytes_nextBlock hwb, hm1next]
-          · rw [writeBytes_blocks_ne hwb (Nat.ne_of_lt hx), hm1lt x hx]
-          · refine ⟨blk2, hblk2, by rw [hsz2, hsz1, hinit], by rw [hal2, hal1, hinit], by rw [hk2, hk1], ?_, hconcr2⟩
-            rw [← hinit]; simp [hro, hperm2, hperm1]
+            rw [ite_eq_right hro, hperm2, hperm1]
 
 /-! ### String Pointer List Initialization (for `z_errmsg`) -/
 
@@ -2229,7 +2043,7 @@ theorem allocVarInit_zErrmsg_inv {prog : Prog} {env : Env} {m m' : Mem}
         writeInitList_strPtr_inv hblk1 (by rw [hm1next]; exact Nat.lt_succ_self _) hperm1
           (by rw [hal1]; exact Nat.dvd_refl 8) h0len hok hwr
       rw [hres'] at h
-      simp only [CTy.unqual, zErrmsgElemTy, CTy.isConst, Bool.or_true, ↓reduceIte,
+      simp only [zErrmsgElemTy, CTy.isReadOnly, ↓reduceIte,
         Option.some.injEq, Prod.mk.injEq] at h
       obtain ⟨rfl, rfl, rfl, _⟩ := h
       refine ⟨rfl, rfl, ⟨Nat.le_trans (by rw [hm1next]; exact Nat.le_succ _) hm2next, fun x hx => ?_⟩, ?_⟩
@@ -2413,20 +2227,20 @@ theorem initStatics_fnStatics_empty {staticBase strBase : Nat → UInt64} {prog0
 
 /-! ## 5. `InitLibzProps` and `initLibz_props` -/
 
-def crcConstTy : CTy := .const_ (.typedef "z_crc_t" (.int .u32))
+def crcConstTy : CTy := .const_ (.typedef "z_crc_t" (.typedef "Z_U4" (.int .u32)))
 
-theorem crcTableVals_size : Zlib.Tables.crcTableVals.size = 256 := by decide +kernel
-theorem crcBraid2Rows_size : Zlib.Tables.crcBraid2Rows.size = 4 := rfl
-theorem crcBraid5Rows_size : Zlib.Tables.crcBraid5Rows.size = 4 := rfl
-theorem x2nTableVals_size : Zlib.Tables.x2nTableVals.size = 32 := rfl
+theorem crcTableVals_size : Zlib.Tables.crc32H_vals_crc_table.size = 256 := by decide +kernel
+theorem crcBraid2Vals_size : Zlib.Tables.crc32H_vals_crc_braid2_table.size = 1024 := by decide +kernel
+theorem crcBraid5Vals_size : Zlib.Tables.crc32H_vals_crc_braid5_table.size = 1024 := by decide +kernel
+theorem x2nTableVals_size : Zlib.Tables.crc32H_vals_x2n_table.size = 32 := rfl
 
 theorem x2nTableVals_pos :
     (List.range 32).all (fun i =>
-      decide (0 < Zlib.Tables.x2nTableVals[i]! ∧ Zlib.Tables.x2nTableVals[i]! < 2 ^ 32)) = true := by
+      decide (0 < Zlib.Tables.crc32H_vals_x2n_table[i]! ∧ Zlib.Tables.crc32H_vals_x2n_table[i]! < 2 ^ 32)) = true := by
   decide
 
 private theorem x2nTableVals_bounds {i : Nat} (hi : i < 32) :
-    0 < Zlib.Tables.x2nTableVals[i]! ∧ Zlib.Tables.x2nTableVals[i]! < 2 ^ 32 := by
+    0 < Zlib.Tables.crc32H_vals_x2n_table[i]! ∧ Zlib.Tables.crc32H_vals_x2n_table[i]! < 2 ^ 32 := by
   have hm := List.all_eq_true.mp x2nTableVals_pos i (List.mem_range.mpr hi)
   exact of_decide_eq_true hm
 
@@ -2455,31 +2269,33 @@ private theorem inffast_globals_nil : tuGlobals Zlib.Inffast.inffastTU = [] := r
 
 private theorem zutil_globals_eq :
     tuGlobals Zlib.Zutil.zutilTU = [
-      (.export_, {
-        name := "z_errmsg"
-        ty := .array zErrmsgElemTy (some 10)
-        init? := some (.list (zErrmsgStrs.map fun s => .expr (.cast (.ptr (.const_ (.int .i8))) (.strLit s))))
-      })
+      (.export_, Zlib.Zutil.zutilTU_global_z_errmsg)
     ] := rfl
 
-private def inflateCopyrightDecl : VarDecl := {
-  name := "inflate_copyright"
-  ty := .array (.const_ (.int .i8)) none
-  init? := some (.expr (.strLit " inflate 1.4.0.1 Copyright 1995-2026 Mark Adler "))
-}
+private theorem zErrmsg_global_ty :
+    Zlib.Zutil.zutilTU_global_z_errmsg.ty = .array zErrmsgElemTy (some zErrmsgStrs.length) := rfl
+
+private theorem zErrmsg_global_init :
+    Zlib.Zutil.zutilTU_global_z_errmsg.init? =
+      some (.list (zErrmsgStrs.map fun s => .expr (.cast (.ptr (.const_ (.int .i8))) (.strLit s)))) := rfl
 
 private theorem inftrees_globals_eq :
     tuGlobals Zlib.Inftrees.inftreesTU = [
-      (.export_, inflateCopyrightDecl),
-      (.static_, Zlib.Tables.lenfixDecl),
-      (.static_, Zlib.Tables.distfixDecl)
+      (.export_, Zlib.Inftrees.inftreesTU_global_inflate_copyright),
+      (.static_, Zlib.Tables.inffixedH_global_lenfix),
+      (.static_, Zlib.Tables.inffixedH_global_distfix)
     ] := rfl
 
 private theorem crc32_globals_eq :
-    tuGlobals Zlib.Crc32.crc32TU =
-      Zlib.Tables.crc32Items.filterMap (fun
-        | .globalDecl l d => if l == .extern_ then none else some (l, d)
-        | _ => none) := rfl
+    tuGlobals Zlib.Crc32.crc32TU = [
+      (.static_, Zlib.Tables.crc32H_global_crc_table),
+      (.static_, Zlib.Tables.crc32H_global_crc_big_table),
+      (.static_, Zlib.Tables.crc32H_global_crc_braid2_table),
+      (.static_, Zlib.Tables.crc32H_global_crc_braid2_big_table),
+      (.static_, Zlib.Tables.crc32H_global_crc_braid5_table),
+      (.static_, Zlib.Tables.crc32H_global_crc_braid5_big_table),
+      (.static_, Zlib.Tables.crc32H_global_x2n_table)
+    ] := rfl
 
 private theorem prefix_globals_eq :
     (progOfTUs Zlib.allFiles).globals =
@@ -2688,12 +2504,12 @@ structure InitLibzProps (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState) : 
     (∀ i, ∃ u : UInt8, blk.bytes i = .byte u)
   crc_braid2_table_prop : ∃ b blk,
     gEnv.lookup "crc_braid2_table" = some (b, .array (.array crcConstTy (some 256)) (some 4)) ∧
-    m0.blocks b = some blk ∧ blk.perm = .rw ∧ blk.kind = .global ∧
+    m0.blocks b = some blk ∧ blk.perm = .ro ∧ blk.kind = .global ∧
     blk.size = 4096 ∧ blk.align = 4 ∧
     (∀ i, ∃ u : UInt8, blk.bytes i = .byte u)
   crc_braid5_table_prop : ∃ b blk,
     gEnv.lookup "crc_braid5_table" = some (b, .array (.array crcConstTy (some 256)) (some 4)) ∧
-    m0.blocks b = some blk ∧ blk.perm = .rw ∧ blk.kind = .global ∧
+    m0.blocks b = some blk ∧ blk.perm = .ro ∧ blk.kind = .global ∧
     blk.size = 4096 ∧ blk.align = 4 ∧
     (∀ i, ∃ u : UInt8, blk.bytes i = .byte u)
   x2n_table_prop : ∃ b blk,
@@ -2703,7 +2519,7 @@ structure InitLibzProps (prog : Prog) (gEnv : Env) (m0 : Mem) (os0 : OSState) : 
     (∀ i, ∃ u : UInt8, blk.bytes i = .byte u) ∧
     (∀ i < 32, ∃ bv : BitVec 32,
       Sem.readVal prog.tags m0 b (Int64.ofNat (4 * i)) (.int .u32) = some (.int .u32 bv) ∧
-      bv = BitVec.ofInt 32 Zlib.Tables.x2nTableVals[i]! ∧
+      bv = BitVec.ofInt 32 Zlib.Tables.crc32H_vals_x2n_table[i]! ∧
       bv.toNat ≠ 0)
   gEnv_lookup_none : ∀ sym, sym ∉ allGlobalVarNames → gEnv.lookup sym = none
 
@@ -2765,13 +2581,12 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
               exact hnot (heq ▸ hmem)
           -- Rewrite `prog0.globals` into explicit 11-item prefix ++ suffix
           rw [prefix_globals_eq, zutil_globals_eq, inftrees_globals_eq, crc32_globals_eq] at hglobs
-          simp only [Zlib.Tables.crc32Items, List.filterMap_cons, List.filterMap_nil,
-            List.cons_append, List.nil_append] at hglobs
+          simp only [List.cons_append, List.nil_append] at hglobs
           -- Step 1: z_errmsg
           obtain ⟨bid_err, ty_err, m_err, ns_err, hal_err, hglobs⟩ :=
             initGlobs_step_fresh (by rfl) hglobs
           obtain ⟨hbid_err, hty_err, hp_err, blk_err, hblk_err, hsz_err, hal_err', hk_err, hperm_err, hptrs_err⟩ :=
-            allocVarInit_zErrmsg_inv rfl rfl zErrmsgStrs_ok hal_err
+            allocVarInit_zErrmsg_inv zErrmsg_global_ty zErrmsg_global_init zErrmsgStrs_ok hal_err
           -- Step 2: inflate_copyright
           obtain ⟨bid_ic, ty_ic, m_ic, ns_ic, hal_ic, hglobs⟩ :=
             initGlobs_step_fresh (by rfl) hglobs
@@ -2789,8 +2604,7 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
             initGlobs_step_fresh (by rfl) hglobs
           obtain ⟨hbid_ct, hty_ct, _, hm_ct_next, hm_ct_lt, blk_ct, hblk_ct, hsz_ct, hal_ct', hk_ct,
               hperm_ct, hconcr_ct, _⟩ :=
-            allocVarInit_intArray_inv (el := crcConstTy) (len? := some 256)
-              (by dsimp only [resolveDeclTy]; rw [crcTableVals_size]; rfl) rfl hal_ct
+            allocVarInit_intSeq_inv (el := crcConstTy) (len? := some 256) (k := .u32) rfl rfl rfl hal_ct
           have hp_ct : MemPreservedBelow m_df.nextBlock m_df m_ct :=
             ⟨by rw [hm_ct_next]; exact Nat.le_succ _, hm_ct_lt⟩
           -- Step 6: crc_big_table
@@ -2801,9 +2615,9 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
           obtain ⟨bid_b2, ty_b2, m_b2, ns_b2, hal_b2, hglobs⟩ :=
             initGlobs_step_fresh (by rfl) hglobs
           obtain ⟨hbid_b2, hty_b2, _, hm_b2_next, hm_b2_lt, blk_b2, hblk_b2, hsz_b2, hal_b2', hk_b2,
-              hperm_b2, hconcr_b2⟩ :=
-            allocVarInit_intArray2D_inv (el := .array crcConstTy (some 256)) (len? := some 4)
-              (by dsimp only [resolveDeclTy]; rw [crcBraid2Rows_size]; rfl) rfl hal_b2
+              hperm_b2, hconcr_b2, _⟩ :=
+            allocVarInit_intSeq_inv (el := .array crcConstTy (some 256)) (len? := some 4) (k := .u32)
+              rfl rfl rfl hal_b2
           have hp_b2 : MemPreservedBelow m_cbt.nextBlock m_cbt m_b2 :=
             ⟨by rw [hm_b2_next]; exact Nat.le_succ _, hm_b2_lt⟩
           -- Step 8: crc_braid2_big_table
@@ -2814,9 +2628,9 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
           obtain ⟨bid_b5, ty_b5, m_b5, ns_b5, hal_b5, hglobs⟩ :=
             initGlobs_step_fresh (by rfl) hglobs
           obtain ⟨hbid_b5, hty_b5, _, hm_b5_next, hm_b5_lt, blk_b5, hblk_b5, hsz_b5, hal_b5', hk_b5,
-              hperm_b5, hconcr_b5⟩ :=
-            allocVarInit_intArray2D_inv (el := .array crcConstTy (some 256)) (len? := some 4)
-              (by dsimp only [resolveDeclTy]; rw [crcBraid5Rows_size]; rfl) rfl hal_b5
+              hperm_b5, hconcr_b5, _⟩ :=
+            allocVarInit_intSeq_inv (el := .array crcConstTy (some 256)) (len? := some 4) (k := .u32)
+              rfl rfl rfl hal_b5
           have hp_b5 : MemPreservedBelow m_b2b.nextBlock m_b2b m_b5 :=
             ⟨by rw [hm_b5_next]; exact Nat.le_succ _, hm_b5_lt⟩
           -- Step 10: crc_braid5_big_table
@@ -2828,8 +2642,8 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
             initGlobs_step_fresh (by rfl) hglobs
           obtain ⟨hbid_x2n, hty_x2n, _, hm_x2n_next, hm_x2n_lt, blk_x2n, hblk_x2n, hsz_x2n, hal_x2n',
               hk_x2n, hperm_x2n, hconcr_x2n, hread_x2n⟩ :=
-            allocVarInit_intArray_inv (el := crcConstTy) (len? := some 32)
-              (by dsimp only [resolveDeclTy]; rw [x2nTableVals_size]; rfl) rfl hal_x2n
+            allocVarInit_intSeq_inv (el := crcConstTy) (len? := some 32) (k := .u32)
+              rfl rfl rfl hal_x2n
           have hp_x2n : MemPreservedBelow m_b5b.nextBlock m_b5b m_x2n :=
             ⟨by rw [hm_x2n_next]; exact Nat.le_succ _, hm_x2n_lt⟩
           -- Step 12: suffix globals
@@ -2873,7 +2687,18 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
             rw [hp_from_start.2 0 (by rw [hmStartNext]; exact Nat.zero_lt_one), heblk]
           · -- errno_env
             apply henv_suf
-            simp only [List.lookup, inflateCopyrightDecl, Zlib.Tables.lenfixDecl, Zlib.Tables.distfixDecl,
+            simp only [List.lookup,
+              show Zlib.Tables.crc32H_global_x2n_table.name = "x2n_table" from rfl,
+              show Zlib.Tables.crc32H_global_crc_braid5_big_table.name = "crc_braid5_big_table" from rfl,
+              show Zlib.Tables.crc32H_global_crc_braid5_table.name = "crc_braid5_table" from rfl,
+              show Zlib.Tables.crc32H_global_crc_braid2_big_table.name = "crc_braid2_big_table" from rfl,
+              show Zlib.Tables.crc32H_global_crc_braid2_table.name = "crc_braid2_table" from rfl,
+              show Zlib.Tables.crc32H_global_crc_big_table.name = "crc_big_table" from rfl,
+              show Zlib.Tables.crc32H_global_crc_table.name = "crc_table" from rfl,
+              show Zlib.Tables.inffixedH_global_distfix.name = "distfix" from rfl,
+              show Zlib.Tables.inffixedH_global_lenfix.name = "lenfix" from rfl,
+              show Zlib.Inftrees.inftreesTU_global_inflate_copyright.name = "inflate_copyright" from rfl,
+              show Zlib.Zutil.zutilTU_global_z_errmsg.name = "z_errmsg" from rfl,
               show ("errno" == "x2n_table") = false from rfl,
               show ("errno" == "crc_braid5_big_table") = false from rfl,
               show ("errno" == "crc_braid5_table") = false from rfl,
@@ -2891,7 +2716,18 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
               have hty_err' : ty_err = .array zErrmsgElemTy (some 10) := hty_err
               rw [← hty_err']
               apply henv_suf
-              simp only [List.lookup, inflateCopyrightDecl, Zlib.Tables.lenfixDecl, Zlib.Tables.distfixDecl,
+              simp only [List.lookup,
+                show Zlib.Tables.crc32H_global_x2n_table.name = "x2n_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid5_big_table.name = "crc_braid5_big_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid5_table.name = "crc_braid5_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid2_big_table.name = "crc_braid2_big_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid2_table.name = "crc_braid2_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_big_table.name = "crc_big_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_table.name = "crc_table" from rfl,
+                show Zlib.Tables.inffixedH_global_distfix.name = "distfix" from rfl,
+                show Zlib.Tables.inffixedH_global_lenfix.name = "lenfix" from rfl,
+                show Zlib.Inftrees.inftreesTU_global_inflate_copyright.name = "inflate_copyright" from rfl,
+                show Zlib.Zutil.zutilTU_global_z_errmsg.name = "z_errmsg" from rfl,
                 show ("z_errmsg" == "x2n_table") = false from rfl,
                 show ("z_errmsg" == "crc_braid5_big_table") = false from rfl,
                 show ("z_errmsg" == "crc_braid5_table") = false from rfl,
@@ -2913,12 +2749,18 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
               · rw [hp_from_err.readVal hbid_err_lt]; exact hrv
               · rw [hp_from_err.strlenAt hsb_lt]; exact hstr
           · -- crc_table_prop
-            have hty_ct' : ty_ct = .array crcConstTy (some 256) := by
-              rw [hty_ct]; dsimp only [resolveDeclTy]; rw [crcTableVals_size]; rfl
+            have hty_ct' : ty_ct = .array crcConstTy (some 256) := hty_ct
             have hlu_ct : gEnv'.lookup "crc_table" = some (bid_ct, .array crcConstTy (some 256)) := by
               rw [← hty_ct']
               apply henv_suf
               simp only [List.lookup,
+                show Zlib.Tables.crc32H_global_x2n_table.name = "x2n_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid5_big_table.name = "crc_braid5_big_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid5_table.name = "crc_braid5_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid2_big_table.name = "crc_braid2_big_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid2_table.name = "crc_braid2_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_big_table.name = "crc_big_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_table.name = "crc_table" from rfl,
                 show ("crc_table" == "x2n_table") = false from rfl,
                 show ("crc_table" == "crc_braid5_big_table") = false from rfl,
                 show ("crc_table" == "crc_braid5_table") = false from rfl,
@@ -2927,7 +2769,7 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
                 show ("crc_table" == "crc_big_table") = false from rfl,
                 beq_self_eq_true]
             have hperm_ct' : blk_ct.perm = .ro := by
-              rw [hperm_ct]; simp [crcConstTy, CTy.isConst]
+              rw [hperm_ct, hty_ct']; rfl
             have hsz_ct' : blk_ct.size = 1024 := by
               rw [hsz_ct, hty_ct']; simp [crcConstTy]; rfl
             have hal_ct'' : blk_ct.align = 4 := by
@@ -2935,22 +2777,24 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
             refine ⟨bid_ct, blk_ct, hlu_ct, ?_, hperm_ct', hk_ct, hsz_ct', hal_ct'', hconcr_ct⟩
             rw [hp_from_ct.2 bid_ct (by rw [hbid_ct, hm_ct_next]; exact Nat.lt_succ_self _), hblk_ct]
           · -- crc_braid2_table_prop
+            have hty_b2' : ty_b2 = .array (.array crcConstTy (some 256)) (some 4) := hty_b2
             have hlu_b2 : gEnv'.lookup "crc_braid2_table" =
                 some (bid_b2, .array (.array crcConstTy (some 256)) (some 4)) := by
-              have hty_b2' : ty_b2 = .array (.array crcConstTy (some 256)) (some 4) := by
-                rw [hty_b2]; dsimp only [resolveDeclTy]; rw [crcBraid2Rows_size]; rfl
               rw [← hty_b2']
               apply henv_suf
               simp only [List.lookup,
+                show Zlib.Tables.crc32H_global_x2n_table.name = "x2n_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid5_big_table.name = "crc_braid5_big_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid5_table.name = "crc_braid5_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid2_big_table.name = "crc_braid2_big_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid2_table.name = "crc_braid2_table" from rfl,
                 show ("crc_braid2_table" == "x2n_table") = false from rfl,
                 show ("crc_braid2_table" == "crc_braid5_big_table") = false from rfl,
                 show ("crc_braid2_table" == "crc_braid5_table") = false from rfl,
                 show ("crc_braid2_table" == "crc_braid2_big_table") = false from rfl,
                 beq_self_eq_true]
-            have hty_b2' : ty_b2 = .array (.array crcConstTy (some 256)) (some 4) := by
-              rw [hty_b2]; dsimp only [resolveDeclTy]; rw [crcBraid2Rows_size]; rfl
-            have hperm_b2' : blk_b2.perm = .rw := by
-              rw [hperm_b2, hty_b2']; simp [CTy.isConst]
+            have hperm_b2' : blk_b2.perm = .ro := by
+              rw [hperm_b2, hty_b2']; rfl
             have hsz_b2' : blk_b2.size = 4096 := by
               rw [hsz_b2, hty_b2']; simp [crcConstTy]; rfl
             have hal_b2'' : blk_b2.align = 4 := by
@@ -2958,20 +2802,20 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
             refine ⟨bid_b2, blk_b2, hlu_b2, ?_, hperm_b2', hk_b2, hsz_b2', hal_b2'', hconcr_b2⟩
             rw [hp_from_b2.2 bid_b2 (by rw [hbid_b2, hm_b2_next]; exact Nat.lt_succ_self _), hblk_b2]
           · -- crc_braid5_table_prop
+            have hty_b5' : ty_b5 = .array (.array crcConstTy (some 256)) (some 4) := hty_b5
             have hlu_b5 : gEnv'.lookup "crc_braid5_table" =
                 some (bid_b5, .array (.array crcConstTy (some 256)) (some 4)) := by
-              have hty_b5' : ty_b5 = .array (.array crcConstTy (some 256)) (some 4) := by
-                rw [hty_b5]; dsimp only [resolveDeclTy]; rw [crcBraid5Rows_size]; rfl
               rw [← hty_b5']
               apply henv_suf
               simp only [List.lookup,
+                show Zlib.Tables.crc32H_global_x2n_table.name = "x2n_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid5_big_table.name = "crc_braid5_big_table" from rfl,
+                show Zlib.Tables.crc32H_global_crc_braid5_table.name = "crc_braid5_table" from rfl,
                 show ("crc_braid5_table" == "x2n_table") = false from rfl,
                 show ("crc_braid5_table" == "crc_braid5_big_table") = false from rfl,
                 beq_self_eq_true]
-            have hty_b5' : ty_b5 = .array (.array crcConstTy (some 256)) (some 4) := by
-              rw [hty_b5]; dsimp only [resolveDeclTy]; rw [crcBraid5Rows_size]; rfl
-            have hperm_b5' : blk_b5.perm = .rw := by
-              rw [hperm_b5, hty_b5']; simp [CTy.isConst]
+            have hperm_b5' : blk_b5.perm = .ro := by
+              rw [hperm_b5, hty_b5']; rfl
             have hsz_b5' : blk_b5.size = 4096 := by
               rw [hsz_b5, hty_b5']; simp [crcConstTy]; rfl
             have hal_b5'' : blk_b5.align = 4 := by
@@ -2979,16 +2823,15 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
             refine ⟨bid_b5, blk_b5, hlu_b5, ?_, hperm_b5', hk_b5, hsz_b5', hal_b5'', hconcr_b5⟩
             rw [hp_from_b5.2 bid_b5 (by rw [hbid_b5, hm_b5_next]; exact Nat.lt_succ_self _), hblk_b5]
           · -- x2n_table_prop
+            have hty_x2n' : ty_x2n = .array crcConstTy (some 32) := hty_x2n
             have hlu_x2n : gEnv'.lookup "x2n_table" = some (bid_x2n, .array crcConstTy (some 32)) := by
-              have hty_x2n' : ty_x2n = .array crcConstTy (some 32) := by
-                rw [hty_x2n]; dsimp only [resolveDeclTy]; rw [x2nTableVals_size]; rfl
               rw [← hty_x2n']
               apply henv_suf
-              simp [List.lookup]
-            have hty_x2n' : ty_x2n = .array crcConstTy (some 32) := by
-              rw [hty_x2n]; dsimp only [resolveDeclTy]; rw [x2nTableVals_size]; rfl
+              simp only [List.lookup,
+                show Zlib.Tables.crc32H_global_x2n_table.name = "x2n_table" from rfl,
+                beq_self_eq_true]
             have hperm_x2n' : blk_x2n.perm = .ro := by
-              rw [hperm_x2n]; simp [crcConstTy, CTy.isConst]
+              rw [hperm_x2n, hty_x2n']; rfl
             have hsz_x2n' : blk_x2n.size = 128 := by
               rw [hsz_x2n, hty_x2n']; simp [crcConstTy]; rfl
             have hal_x2n'' : blk_x2n.align = 4 := by
@@ -2996,11 +2839,11 @@ theorem initLibz_props {globBase staticBase strBase : Nat → UInt64} {errnoBase
             refine ⟨bid_x2n, blk_x2n, hlu_x2n, ?_, hperm_x2n', hk_x2n, hsz_x2n', hal_x2n'',
               hconcr_x2n, fun i hi => ?_⟩
             · rw [hp_from_x2n.2 bid_x2n (by rw [hbid_x2n, hm_x2n_next]; exact Nat.lt_succ_self _), hblk_x2n]
-            · have hi' : i < Zlib.Tables.x2nTableVals.size := by rw [x2nTableVals_size]; exact hi
+            · have hi' : i < Zlib.Tables.crc32H_vals_x2n_table.size := by rw [x2nTableVals_size]; exact hi
               have hr := hread_x2n (by rw [hal_x2n'']; exact Nat.dvd_refl 4) i hi'
-              refine ⟨BitVec.ofInt 32 Zlib.Tables.x2nTableVals[i]!, ?_, rfl, ?_⟩
-              · have hget : Zlib.Tables.x2nTableVals[i] = Zlib.Tables.x2nTableVals[i]! := by
-                  simp [getElem!_pos Zlib.Tables.x2nTableVals i hi']
+              refine ⟨BitVec.ofInt 32 Zlib.Tables.crc32H_vals_x2n_table[i]!, ?_, rfl, ?_⟩
+              · have hget : Zlib.Tables.crc32H_vals_x2n_table[i] = Zlib.Tables.crc32H_vals_x2n_table[i]! := by
+                  simp [getElem!_pos Zlib.Tables.crc32H_vals_x2n_table i hi']
                 rw [← hget, hp_from_x2n.readVal (by rw [hbid_x2n, hm_x2n_next]; exact Nat.lt_succ_self _)]
                 exact hr
               · have hbounds := x2nTableVals_bounds hi

@@ -20,35 +20,35 @@ c_define REP_3_6 := 16
 c_define REPZ_3_10 := 17
 c_define REPZ_11_138 := 18
 
-c_var local const int extra_lbits[LENGTH_CODES] = {
+c_global local const int extra_lbits[LENGTH_CODES] = {
   0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0
 };
 
-c_var local const int extra_dbits[D_CODES] = {
+c_global local const int extra_dbits[D_CODES] = {
   0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13
 };
 
-c_var local const int extra_blbits[BL_CODES] = {
+c_global local const int extra_blbits[BL_CODES] = {
   0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,3,7
 };
 
-c_var local const uch bl_order[BL_CODES] = {
+c_global local const uch bl_order[BL_CODES] = {
   16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15
 };
 
 c_define DIST_CODE_LEN := 512
 
-c_items Zlib.Tables.treesItems
+c_include_tu Zlib.Tables.treesH
 
-c_var local TCONST static_tree_desc static_l_desc = {
+c_global local TCONST static_tree_desc static_l_desc = {
   static_ltree, extra_lbits, LITERALS + 1, L_CODES, MAX_BITS
 };
 
-c_var local TCONST static_tree_desc static_d_desc = {
+c_global local TCONST static_tree_desc static_d_desc = {
   static_dtree, extra_dbits, 0, D_CODES, MAX_BITS
 };
 
-c_var local TCONST static_tree_desc static_bl_desc = {
+c_global local TCONST static_tree_desc static_bl_desc = {
   (const ct_data *)0, extra_blbits, 0, BL_CODES, MAX_BL_BITS
 };
 

@@ -162,7 +162,7 @@ theorem BaseInv.crc_braid2_table (hlib : InitLibzProps prog gEnv m0 os0)
     (hb : BaseInv m0 os0 v owned m os) :
     ∃ b blk,
       gEnv.lookup "crc_braid2_table" = some (b, .array (.array crcConstTy (some 256)) (some 4)) ∧
-      m.blocks b = some blk ∧ blk.perm = .rw ∧ blk.kind = .global ∧
+      m.blocks b = some blk ∧ blk.perm = .ro ∧ blk.kind = .global ∧
       blk.size = 4096 ∧ blk.align = 4 ∧ (∀ i, ∃ u : UInt8, blk.bytes i = .byte u) := by
   rcases hlib.crc_braid2_table_prop with ⟨b, blk, hlu, hblk, hperm, hkind, hsz, hal, hbytes⟩
   have hm : m.blocks b = some blk :=
@@ -173,7 +173,7 @@ theorem BaseInv.crc_braid5_table (hlib : InitLibzProps prog gEnv m0 os0)
     (hb : BaseInv m0 os0 v owned m os) :
     ∃ b blk,
       gEnv.lookup "crc_braid5_table" = some (b, .array (.array crcConstTy (some 256)) (some 4)) ∧
-      m.blocks b = some blk ∧ blk.perm = .rw ∧ blk.kind = .global ∧
+      m.blocks b = some blk ∧ blk.perm = .ro ∧ blk.kind = .global ∧
       blk.size = 4096 ∧ blk.align = 4 ∧ (∀ i, ∃ u : UInt8, blk.bytes i = .byte u) := by
   rcases hlib.crc_braid5_table_prop with ⟨b, blk, hlu, hblk, hperm, hkind, hsz, hal, hbytes⟩
   have hm : m.blocks b = some blk :=
@@ -188,7 +188,7 @@ theorem BaseInv.x2n_table (hlib : InitLibzProps prog gEnv m0 os0)
       blk.size = 128 ∧ blk.align = 4 ∧ (∀ i, ∃ u : UInt8, blk.bytes i = .byte u) ∧
       (∀ i < 32, ∃ bv : BitVec 32,
         Sem.readVal prog.tags m b (Int64.ofNat (4 * i)) (.int .u32) = some (.int .u32 bv) ∧
-        bv = BitVec.ofInt 32 Zlib.Tables.x2nTableVals[i]! ∧
+        bv = BitVec.ofInt 32 Zlib.Tables.crc32H_vals_x2n_table[i]! ∧
         bv.toNat ≠ 0) := by
   rcases hlib.x2n_table_prop with ⟨b, blk, hlu, hblk, hperm, hkind, hsz, hal, hbytes, hread⟩
   have hm : m.blocks b = some blk :=

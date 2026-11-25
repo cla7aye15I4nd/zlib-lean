@@ -233,13 +233,13 @@ private theorem x2nTableVals_inv_all :
     (List.range 32).all (fun i =>
       (List.range 32).all (fun j =>
         decide (multmodpSpec (x2nInvVals[i]!)
-          (multmodpSpec (BitVec.ofInt 32 Zlib.Tables.x2nTableVals[i]!) (1#32 <<< j)) ==
+          (multmodpSpec (BitVec.ofInt 32 Zlib.Tables.crc32H_vals_x2n_table[i]!) (1#32 <<< j)) ==
           1#32 <<< j))) = true := by
   decide +kernel
 
 theorem x2nTableVals_inv_check (i j : Fin 32) :
     multmodpSpec (x2nInvVals[i.val]!)
-      (multmodpSpec (BitVec.ofInt 32 Zlib.Tables.x2nTableVals[i.val]!) (1#32 <<< j.val)) =
+      (multmodpSpec (BitVec.ofInt 32 Zlib.Tables.crc32H_vals_x2n_table[i.val]!) (1#32 <<< j.val)) =
     1#32 <<< j.val := by
   have hi := List.all_eq_true.mp x2nTableVals_inv_all i.val (List.mem_range.mpr i.isLt)
   have hj := List.all_eq_true.mp hi j.val (List.mem_range.mpr j.isLt)
@@ -247,10 +247,10 @@ theorem x2nTableVals_inv_check (i j : Fin 32) :
 
 theorem x2nTableVals_nonzero_mul :
     ∀ i < 32, ∀ b : BitVec 32, b ≠ 0#32 →
-      multmodpSpec (BitVec.ofInt 32 Zlib.Tables.x2nTableVals[i]!) b ≠ 0#32 := by
+      multmodpSpec (BitVec.ofInt 32 Zlib.Tables.crc32H_vals_x2n_table[i]!) b ≠ 0#32 := by
   intro i hi b hb
   exact multmodpSpec_nonzero_of_inv
-    (BitVec.ofInt 32 Zlib.Tables.x2nTableVals[i]!) (x2nInvVals[i]!)
+    (BitVec.ofInt 32 Zlib.Tables.crc32H_vals_x2n_table[i]!) (x2nInvVals[i]!)
     (x2nTableVals_inv_check ⟨i, hi⟩) b hb
 
 theorem mask32_split_all :
@@ -1274,7 +1274,7 @@ theorem readVal_x2n_table {prog : Prog} {gEnv : Env} {m0 m0' m : Mem} {os0 os : 
       b < m0'.nextBlock ∧
       ∀ idx < 32, ∃ bv : BitVec 32,
         Sem.readVal prog.tags m b (Int64.ofNat (4 * idx)) crcConstTy = some (.int .u32 bv) ∧
-        bv = BitVec.ofInt 32 Zlib.Tables.x2nTableVals[idx]! ∧
+        bv = BitVec.ofInt 32 Zlib.Tables.crc32H_vals_x2n_table[idx]! ∧
         bv.toNat ≠ 0 := by
   obtain ⟨b, blk, hlu, hblk, _, _, _, _, _, hread⟩ := hb.x2n_table hlib
   have hlt : b < m0'.nextBlock := lt_nextBlock_of_some hblk

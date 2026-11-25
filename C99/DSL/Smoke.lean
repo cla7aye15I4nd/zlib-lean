@@ -51,7 +51,8 @@ c_define STEP_MAX := 8
 c_stmt_macro ACC_ONE(p, i) := { total += (p)[i]; step++; }
 c_stmt_macro ACC_TWO(p, i) := { ACC_ONE(p, i); ACC_ONE(p, i + 1); }
 
-c_var static const u16_t kTable[2][3] = { {1, 2, 3}, {4, 5, 6} };
+c_global static const u16_t kTable[2][3] = { {1, 2, 3}, {4, 5, 6} };
+c_global static const smoke_node kNodes[2] = { {{1}, {2}}, {{3}, {4}} };
 
 c_fn static u32_t helper_add(u32_t a, u32_t b) {
   return a + b;

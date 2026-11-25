@@ -16,8 +16,7 @@ private def cReservedWords : List String :=
     "else", "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long",
     "register", "restrict", "return", "short", "signed", "sizeof", "static", "struct",
     "switch", "typedef", "union", "unsigned", "void", "volatile", "while",
-    "va_list", "va_start", "va_end", "z_const", "FAR", "TCONST", "local",
-    "ZEXPORT", "ZEXPORTVA", "ZLIB_INTERNAL" ]
+    "va_list", "va_start", "va_end" ]
 
 def isCReserved (s : String) : Bool :=
   cReservedWords.contains s
@@ -29,39 +28,60 @@ private partial def scanCIdentEnd (c : InputContext) (p : String.Pos.Raw) : Stri
     if ch.isAlphanum || ch == '_' then scanCIdentEnd c (c.next p)
     else p
 
-def cIdentFn : ParserFn := fun c s =>
+private def scanIdentToken (ok : Environment → String → Bool) (err : String) : ParserFn := fun c s =>
   let iniPos := s.pos
-  if c.atEnd iniPos then s.mkError "expected C identifier"
+  if c.atEnd iniPos then s.mkError err
   else
     let ch := c.get iniPos
-    if !(ch.isAlpha || ch == '_') then s.mkError "expected C identifier"
+    if !(ch.isAlpha || ch == '_') then s.mkError err
     else
       let stopPos := scanCIdentEnd c (c.next iniPos)
       let val := c.extract iniPos stopPos
-      if isCReserved val then s.mkError "expected C identifier"
+      if !ok c.env val then s.mkError err
       else
         let s := s.setPos stopPos
         let s := whitespace c s
         let info := SourceInfo.original "".toRawSubstring iniPos (c.substring stopPos s.pos) stopPos
         s.pushSyntax (Syntax.ident info (c.substring iniPos stopPos) (Name.mkSimple val) [])
 
+private def isCAliasOrReserved (env : Environment) (val : String) : Bool :=
+  isCReserved val || (lookupQualAlias? env val).isSome || (lookupLinkAlias? env val).isSome
+
+def cRawIdentFn : ParserFn :=
+  scanIdentToken (fun _ _ => true) "expected C identifier"
+
+def cRawIdent : Parser := { fn := cRawIdentFn }
+@[combinator_formatter cRawIdent] def cRawIdent.formatter : PrettyPrinter.Formatter := fun _ => pure ()
+@[combinator_parenthesizer cRawIdent] def cRawIdent.parenthesizer : PrettyPrinter.Parenthesizer := fun _ => pure ()
+
+def cIdentFn : ParserFn :=
+  scanIdentToken (fun env val => !isCAliasOrReserved env val) "expected C identifier"
+
 def cIdent : Parser := { fn := cIdentFn }
 @[combinator_formatter cIdent] def cIdent.formatter : PrettyPrinter.Formatter := fun _ => pure ()
 @[combinator_parenthesizer cIdent] def cIdent.parenthesizer : PrettyPrinter.Parenthesizer := fun _ => pure ()
 
-def cTypedefNameFn : ParserFn := fun c s =>
-  let iniPos := s.pos
-  let iniSz := s.stxStack.size
-  let s := cIdentFn c s
-  if s.hasError then s
-  else
-    let id := s.stxStack.back.getId.toString
-    if (lookupTypedef? c.env id).isSome then s
-    else ((s.setPos iniPos).shrinkStack iniSz).mkError "expected registered C typedef name"
+def cTypedefNameFn : ParserFn :=
+  scanIdentToken (fun env val => !isCAliasOrReserved env val && (lookupTypedef? env val).isSome)
+    "expected registered C typedef name"
 
 def cTypedefName : Parser := { fn := cTypedefNameFn }
 @[combinator_formatter cTypedefName] def cTypedefName.formatter : PrettyPrinter.Formatter := fun _ => pure ()
 @[combinator_parenthesizer cTypedefName] def cTypedefName.parenthesizer : PrettyPrinter.Parenthesizer := fun _ => pure ()
+
+def cQualAliasNameFn : ParserFn :=
+  scanIdentToken (fun env val => (lookupQualAlias? env val).isSome) "expected C qualifier alias"
+
+def cQualAliasName : Parser := { fn := cQualAliasNameFn }
+@[combinator_formatter cQualAliasName] def cQualAliasName.formatter : PrettyPrinter.Formatter := fun _ => pure ()
+@[combinator_parenthesizer cQualAliasName] def cQualAliasName.parenthesizer : PrettyPrinter.Parenthesizer := fun _ => pure ()
+
+def cLinkAliasNameFn : ParserFn :=
+  scanIdentToken (fun env val => (lookupLinkAlias? env val).isSome) "expected C linkage alias"
+
+def cLinkAliasName : Parser := { fn := cLinkAliasNameFn }
+@[combinator_formatter cLinkAliasName] def cLinkAliasName.formatter : PrettyPrinter.Formatter := fun _ => pure ()
+@[combinator_parenthesizer cLinkAliasName] def cLinkAliasName.parenthesizer : PrettyPrinter.Parenthesizer := fun _ => pure ()
 
 private def litSuffixes : List String :=
   ["U", "L", "UL", "LL", "ULL", "u", "l", "ul", "ll", "ull"]
@@ -100,9 +120,7 @@ declare_syntax_cat c_link_mid
 declare_syntax_cat c_enum_item
 
 syntax (name := cQualConst) "const" : c_qual
-syntax (name := cQualZConst) "z_const" : c_qual
-syntax (name := cQualFar) "FAR" : c_qual
-syntax (name := cQualTConst) "TCONST" : c_qual
+syntax (name := cQualAlias) cQualAliasName : c_qual
 syntax (name := cQualVolatile) "volatile" : c_qual
 
 syntax (name := cSignChar) "char" : c_sign_rest
@@ -205,11 +223,10 @@ syntax (name := cInitExpr) c_expr:15 : c_init
 
 syntax (name := cDeclFnPtr) atomic(c_ptr_mod* "(" "*" cIdent ")") "(" c_param,* ")" ("=" c_init)? : c_init_decl
 syntax (name := cDeclVar) c_ptr_mod* cIdent ("[" (c_expr)? "]")* ("=" c_init)? : c_init_decl
-syntax (name := cDecl) ("static" <|> "local")? c_ty_spec c_init_decl,+ : c_decl
+syntax (name := cDecl) ("static")? c_ty_spec c_init_decl,+ : c_decl
 
 -- Statements
 syntax (name := cStmtNop) ";" : c_stmt
-syntax (name := cStmtLocalDecls) "c_stmt_decls" ident ";" : c_stmt
 syntax (name := cStmtDecl) (priority := high) atomic(c_decl ";") : c_stmt
 syntax (name := cStmtBlock) "{" c_stmt* "}" : c_stmt
 syntax (name := cStmtIf) "if" "(" c_expr ")" c_stmt ("else" c_stmt)? : c_stmt
@@ -227,13 +244,11 @@ syntax (name := cStmtLabel) atomic(cIdent ":") : c_stmt
 syntax (name := cStmtExpr) c_expr ";" : c_stmt
 
 -- Linkage and top-level `c_*` commands
-syntax (name := cLinkLocal) "local" : c_link_pre
+syntax (name := cLinkPreAlias) cLinkAliasName : c_link_pre
 syntax (name := cLinkStatic) "static" : c_link_pre
 syntax (name := cLinkStaticInline) "static" "inline" : c_link_pre
 syntax (name := cLinkExtern) "extern" : c_link_pre
-syntax (name := cLinkExport) "ZEXPORT" : c_link_mid
-syntax (name := cLinkExportVa) "ZEXPORTVA" : c_link_mid
-syntax (name := cLinkHidden) "ZLIB_INTERNAL" : c_link_mid
+syntax (name := cLinkMidAlias) cLinkAliasName : c_link_mid
 syntax (name := cEnumItem) cIdent ("=" c_expr:15)? : c_enum_item
 
 syntax (name := cTuBegin) "c_tu_begin" ident str : command
@@ -243,7 +258,9 @@ syntax (name := cHeaderEnd) "c_header_end" ident : command
 syntax (name := cIncludeStr) "c_include" str : command
 syntax (name := cIncludeLocal) "c_include_local" str : command
 syntax (name := cPpRaw) "c_pp" str : command
-syntax (name := cItemsCmd) "c_items" term : command
+syntax (name := cIncludeTuCmd) "c_include_tu" term : command
+syntax (name := cQualAliasCmd) "c_qual_alias" cRawIdent ":=" cRawIdent : command
+syntax (name := cLinkAliasCmd) "c_link_alias" cRawIdent ":=" cRawIdent : command
 syntax (name := cDefineConst) "c_define_const" cIdent ":=" c_expr : command
 syntax (name := cDefineExpr) "c_define" cIdent ":=" c_expr : command
 syntax (name := cDefineField) "c_define_field" cIdent ":=" cIdent,+ : command
@@ -257,7 +274,7 @@ syntax (name := cFwdTag) "c_fwd" ("struct" <|> "union") cIdent ";" : command
 syntax (name := cStructCmd) "c_struct" cIdent "{" (c_field_decl ";")* "}" ";" : command
 syntax (name := cUnionCmd) "c_union" cIdent "{" (c_field_decl ";")* "}" ";" : command
 syntax (name := cEnumCmd) "c_enum" (cIdent)? "{" c_enum_item,*,? "}" ";" : command
-syntax (name := cVarCmd) "c_var" (c_link_pre)? c_ty_spec (c_link_mid)? c_init_decl,+ ";" : command
+syntax (name := cGlobalCmd) "c_global" (c_link_pre)? c_ty_spec (c_link_mid)? c_init_decl,+ ";" : command
 syntax (name := cProtoCmd) "c_proto" (c_link_pre)? c_ty_spec c_ptr_mod* (c_link_mid)? cIdent "(" c_param,* ")" ";" : command
 declare_syntax_cat c_spec_clause
 syntax (name := cSpecRequires) "requires" term ";" : c_spec_clause

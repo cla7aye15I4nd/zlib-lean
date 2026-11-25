@@ -16,7 +16,7 @@ c_include_local "abi_inflate.h"
 
 c_define MAXBITS := 15
 
-c_var const char inflate_copyright[] = " inflate 1.4.0.1 Copyright 1995-2026 Mark Adler ";
+c_global const char inflate_copyright[] = " inflate 1.4.0.1 Copyright 1995-2026 Mark Adler ";
 
 c_fn int ZLIB_INTERNAL inflate_table(codetype type, unsigned short FAR *lens,
                                      unsigned codes, code FAR * FAR *table,
@@ -204,7 +204,7 @@ c_fn int ZLIB_INTERNAL inflate_table(codetype type, unsigned short FAR *lens,
   return 0;
 }
 
-c_items Zlib.Tables.inffixedItems
+c_include_tu Zlib.Tables.inffixedH
 
 c_fn void ZLIB_INTERNAL inflate_fixed(struct inflate_state FAR *state) {
   state->lencode = lenfix;

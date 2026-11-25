@@ -146,19 +146,21 @@ private partial def exprOfCExpr : CExpr → Expr
 
 instance : ToExpr CExpr where toExpr := exprOfCExpr; toTypeExpr := mkConst ``CExpr
 
+private def mkArrayIntExpr (vals : Array Int) : Expr :=
+  mkApp2 (mkConst ``Array.mk [Level.zero]) (mkConst ``Int)
+    (mkListExpr (mkConst ``Int) (vals.toList.map toExpr))
+
 private partial def exprOfInit : InitVal → Expr
   | .expr e => mkCon ``InitVal.expr #[exprOfCExpr e]
   | .list xs => mkCon ``InitVal.list #[mkListExpr (mkConst ``InitVal) (xs.map exprOfInit)]
-  | .intArray k r vs => mkCon ``InitVal.intArray #[toExpr k, toExpr r, toExpr vs]
-  | .intArray2D k r rs => mkCon ``InitVal.intArray2D #[toExpr k, toExpr r, toExpr rs]
-  | .tupleArray b rs => mkCon ``InitVal.tupleArray #[toExpr b, toExpr rs]
+  | .intSeq r vs => mkCon ``InitVal.intSeq #[toExpr r, mkArrayIntExpr vs]
 
 instance : ToExpr InitVal where toExpr := exprOfInit; toTypeExpr := mkConst ``InitVal
 
 instance : ToExpr VarDecl where
   toTypeExpr := mkConst ``VarDecl
   toExpr d := mkCon ``VarDecl.mk
-    #[toExpr d.name, exprOfCTy d.ty, toExpr d.isStatic, toExpr d.isConst,
+    #[toExpr d.name, exprOfCTy d.ty, toExpr d.isStatic,
       mkOptExpr (mkConst ``InitVal) (d.init?.map exprOfInit)]
 
 private partial def exprOfStmt : CStmt → Expr
@@ -293,10 +295,11 @@ private partial def evalConstCExpr (env : Environment) (e : CExpr) : CoreM Int :
 private def optArgs? (stx : Syntax) : Option (Array Syntax) :=
   if stx.getNumArgs == 0 then none else some stx.getArgs
 
-private def qualsHaveConst (stx : Syntax) : Bool :=
+private def qualsHaveConst (env : Environment) (stx : Syntax) : Bool :=
   stx.getArgs.any fun q =>
     let k := q.getKind
-    k == ``cQualConst || k == ``cQualZConst || k == ``cQualTConst
+    k == ``cQualConst ||
+      (k == ``cQualAlias && lookupQualAlias? env q[0].getId.toString == some true)
 
 private def wrapConst (isConst : Bool) (t : CTy) : CTy :=
   if isConst && !t.isConst then .const_ t else t
@@ -410,8 +413,8 @@ private partial def elabDimsExpanded (env : Environment) (stx : Syntax) :
       if n < 0 then throwErrorAt eStx "negative array dimension `{n}`"
       return some n.toNat
 
-private partial def applyPtrMods (stx : Syntax) (base : CTy) : CTy :=
-  stx.getArgs.foldl (fun acc pm => wrapConst (qualsHaveConst pm.getArgs[1]!) (.ptr acc)) base
+private partial def applyPtrMods (env : Environment) (stx : Syntax) (base : CTy) : CTy :=
+  stx.getArgs.foldl (fun acc pm => wrapConst (qualsHaveConst env pm.getArgs[1]!) (.ptr acc)) base
 
 private partial def elabTyBase (env : Environment) (stx : Syntax) : CommandElabM CTy := do
   let k := stx.getKind
@@ -444,7 +447,7 @@ private partial def elabTyBase (env : Environment) (stx : Syntax) : CommandElabM
 
 private partial def elabTySpec (env : Environment) (stx : Syntax) : CommandElabM CTy := do
   let args := stx.getArgs
-  let isC := qualsHaveConst args[0]! || qualsHaveConst args[2]!
+  let isC := qualsHaveConst env args[0]! || qualsHaveConst env args[2]!
   let base ← elabTyBase env args[1]!
   return wrapConst isC base
 
@@ -466,14 +469,14 @@ private partial def elabParams (env : Environment) (sepStx : Syntax) :
     else if p.getKind == ``cParamSimple then
       let args := p.getArgs
       let mut ty ← elabTySpec env args[0]!
-      ty := applyPtrMods args[1]! ty
+      ty := applyPtrMods env args[1]! ty
       let nm := (args[2]!.getOptional?.map (·.getId.toString)).getD ""
       let dims ← elabDimsExpanded env args[3]!
       ty := dims.foldr (fun d? acc => .array acc d?) ty
       ps := ps ++ [{ name := nm, ty }]
     else if p.getKind == ``cParamFnPtr then
       let args := p.getArgs
-      let ret := applyPtrMods args[1]! (← elabTySpec env args[0]!)
+      let ret := applyPtrMods env args[1]! (← elabTySpec env args[0]!)
       let nm := (args[4]!.getOptional?.map (·.getId.toString)).getD ""
       let (fps, fv) ← elabParams env args[7]!
       ps := ps ++ [{ name := nm, ty := .fnPtr ret (fps.map (·.ty)) fv }]
@@ -485,11 +488,11 @@ private partial def elabTyExpanded (env : Environment) (stx : Syntax) : CommandE
   let args := stx.getArgs
   if k == ``cTySimple then
     let mut ty ← elabTySpec env args[0]!
-    ty := applyPtrMods args[1]! ty
+    ty := applyPtrMods env args[1]! ty
     let dims ← elabDimsExpanded env args[2]!
     return dims.foldr (fun d? acc => .array acc d?) ty
   else if k == ``cTyFnPtr then
-    let ret := applyPtrMods args[1]! (← elabTySpec env args[0]!)
+    let ret := applyPtrMods env args[1]! (← elabTySpec env args[0]!)
     let (ps, v) ← elabParams env args[6]!
     return .fnPtr ret (ps.map (·.ty)) v
   else throwErrorAt stx "unsupported C type `{k}`"
@@ -507,23 +510,23 @@ private partial def elabInitDeclExpanded (env : Environment) (baseTy : CTy) (isS
   let k := stx.getKind
   let args := stx.getArgs
   if k == ``cDeclVar then
-    let mut ty := applyPtrMods args[0]! baseTy
+    let mut ty := applyPtrMods env args[0]! baseTy
     let nm := args[1]!.getId.toString
     let dims ← elabDimsExpanded env args[2]!
     ty := dims.foldr (fun d? acc => .array acc d?) ty
     let init? ← match optArgs? args[3]! with
       | none => pure none
       | some grp => some <$> elabInitExpanded env grp[1]!
-    return { name := nm, ty, isStatic, isConst := ty.isConst, init? }
+    return { name := nm, ty, isStatic, init? }
   else if k == ``cDeclFnPtr then
-    let ret := applyPtrMods args[0]! baseTy
+    let ret := applyPtrMods env args[0]! baseTy
     let nm := args[3]!.getId.toString
     let (ps, v) ← elabParams env args[6]!
     let ty := CTy.fnPtr ret (ps.map (·.ty)) v
     let init? ← match optArgs? args[8]! with
       | none => pure none
       | some grp => some <$> elabInitExpanded env grp[1]!
-    return { name := nm, ty, isStatic, isConst := false, init? }
+    return { name := nm, ty, isStatic, init? }
   else throwErrorAt stx "unsupported C declarator `{k}`"
 
 private partial def elabFieldList (env : Environment) (listStx : Syntax) :
@@ -542,12 +545,6 @@ private partial def elabStmtExpanded (env : Environment) (stx : Syntax) : Comman
   let k := stx.getKind
   let args := stx.getArgs
   if k == ``cStmtNop then return .nop
-  else if k == ``cStmtLocalDecls then
-    let sym := args[1]!.getId
-    let decls ← liftTermElabM do
-      let ty := mkApp (mkConst ``List [Level.zero]) (mkConst ``VarDecl)
-      unsafe Meta.evalExpr (List VarDecl) ty (mkConst sym)
-    return .decls decls
   else if k == ``cStmtDecl then
     let dStx := args[0]!.getArgs
     let isStat := dStx[0]!.getNumArgs > 0
@@ -591,17 +588,21 @@ private partial def elabStmtExpanded (env : Environment) (stx : Syntax) : Comman
     return .expr (← elabExprExpanded env args[0]!)
   else throwErrorAt stx "unsupported C statement `{k}`"
 
-private def resolveLinkage (pre? mid? : Syntax) : Linkage :=
+private def resolveLinkage (env : Environment) (pre? mid? : Syntax) : Linkage :=
   match mid?.getOptional? with
   | some m =>
-    if m.getKind == ``cLinkHidden then .hidden else .export_
+    if m.getKind == ``cLinkMidAlias then
+      (lookupLinkAlias? env m[0].getId.toString).getD .export_
+    else .export_
   | none =>
     match pre?.getOptional? with
     | some p =>
       let pk := p.getKind
-      if pk == ``cLinkLocal || pk == ``cLinkStatic then .static_
+      if pk == ``cLinkStatic then .static_
       else if pk == ``cLinkStaticInline then .staticInline
       else if pk == ``cLinkExtern then .extern_
+      else if pk == ``cLinkPreAlias then
+        (lookupLinkAlias? env p[0].getId.toString).getD .export_
       else .export_
     | none => .export_
 
@@ -709,13 +710,34 @@ def elabCPpRaw : CommandElab := fun stx => do
   let some txt := stx[1].isStrLit? | throwErrorAt stx "expected preprocessor text"
   appendTopItems [.ppRaw txt]
 
-@[command_elab cItemsCmd]
-def elabCItems : CommandElab := fun stx => do
+@[command_elab cIncludeTuCmd]
+def elabCIncludeTu : CommandElab := fun stx => do
   let chunk ← liftTermElabM do
-    let e ← Term.elabTerm stx[1] (some (mkApp (mkConst ``List [Level.zero]) (mkConst ``TopItem)))
+    let tuExpr ← Term.elabTerm stx[1] (some (mkConst ``TU))
     Term.synthesizeSyntheticMVarsNoPostponing
-    pure e
+    pure (mkApp (mkConst ``TU.items) tuExpr)
   appendItemChunk chunk
+
+@[command_elab cQualAliasCmd]
+def elabCQualAlias : CommandElab := fun stx => do
+  let aliasName := stx[1].getId.toString
+  let isConst ← match stx[3].getId.toString with
+    | "const" => pure true
+    | "none" => pure false
+    | other => throwErrorAt stx[3] "expected `const` or `none`, got `{other}`"
+  modifyEnv fun env => pushScopeData env { qualAliases := [(aliasName, isConst)] }
+
+@[command_elab cLinkAliasCmd]
+def elabCLinkAlias : CommandElab := fun stx => do
+  let aliasName := stx[1].getId.toString
+  let link ← match stx[3].getId.toString with
+    | "static" => pure Linkage.static_
+    | "export" => pure Linkage.export_
+    | "hidden" => pure Linkage.hidden
+    | "staticInline" => pure Linkage.staticInline
+    | "extern" => pure Linkage.extern_
+    | other => throwErrorAt stx[3] "expected `static`, `export`, or `hidden`, got `{other}`"
+  modifyEnv fun env => pushScopeData env { linkAliases := [(aliasName, link)] }
 
 @[command_elab cDefineConst]
 def elabCDefineConst : CommandElab := fun stx => do
@@ -829,24 +851,83 @@ private def elabEnumCmdCommon (isTypedef : Bool) (stx : Syntax) : CommandElabM U
 @[command_elab cEnumCmd] def elabCEnum : CommandElab := elabEnumCmdCommon false
 @[command_elab cTypedefEnumCmd] def elabCTypedefEnum : CommandElab := elabEnumCmdCommon true
 
-@[command_elab cVarCmd]
-def elabCVar : CommandElab := fun stx => do
+private def extractPureIntLit? : CExpr → Option (Int × LitRadix)
+  | .lit v _ _ r none => some (v, r)
+  | .unary .neg (.lit v _ _ r none) => some (-v, r)
+  | .unary .plus (.lit v _ _ r none) => some (v, r)
+  | .paren e => extractPureIntLit? e
+  | _ => none
+
+private partial def collectIntSeq (ty : CTy) (iv : InitVal) (acc : Array Int) (rad? : Option LitRadix) :
+    Option (Array Int × Option LitRadix) := do
+  match ty.unqual, iv with
+  | .array el len?, .list xs =>
+    guard (!xs.isEmpty)
+    match len? with
+    | some n => guard (xs.length == n)
+    | none => pure ()
+    if el.isArray then
+      xs.foldlM (fun (a, r?) x => collectIntSeq el x a r?) (acc, rad?)
+    else
+      match el.unqual with
+      | .int _ =>
+        xs.foldlM (fun (a, r?) x => do
+          match x with
+          | .expr e =>
+            let (v, r) ← extractPureIntLit? e
+            pure (a.push v, r?.orElse fun _ => some r)
+          | _ => none) (acc, rad?)
+      | _ => none
+  | _, _ => none
+
+private def tryFoldIntSeq (ty : CTy) (iv : InitVal) : Option (LitRadix × Array Int) := do
+  let (vals, rad?) ← collectIntSeq ty iv #[] none
+  return (rad?.getD .dec, vals)
+
+@[command_elab cGlobalCmd]
+def elabCGlobal : CommandElab := fun stx => do
   let env ← getEnv
-  let link := resolveLinkage stx[1] stx[3]
+  let link := resolveLinkage env stx[1] stx[3]
   let expSpec ← liftCoreM <| expandCMacros env [] 64 stx[2]
   let base ← elabTySpec env expSpec
-  let mut items : List TopItem := []
+  let mut items : List Expr := []
+  let ns ← getCurrNamespace
+  let atu? := activeTUExt.getState env
   for dStx in stx[4].getSepArgs do
     let expD ← liftCoreM <| expandCMacros env [] 64 dStx
-    let d ← elabInitDeclExpanded env base (link == .static_) expD
-    items := items ++ [.globalDecl link d]
-  appendTopItems items
+    let mut d ← elabInitDeclExpanded env base false expD
+    if d.ty.isArray && d.ty.arrayLeafIntKind?.isSome then
+      if let some iv := d.init? then
+        if let some (rad, vals) := tryFoldIntSeq d.ty iv then
+          d := { d with init? := some (.intSeq rad vals) }
+    match atu?, link != .extern_ with
+    | some atu, true =>
+      let dExpr ← match d.init? with
+        | some (.intSeq rad vals) =>
+          let valsName := ns ++ Name.mkSimple s!"{atu.leanName}_vals_{d.name}"
+          liftTermElabM <| addAndCompile <| Declaration.defnDecl {
+            name := valsName, levelParams := [], type := mkApp (mkConst ``Array [Level.zero]) (mkConst ``Int),
+            value := mkArrayIntExpr vals, hints := .abbrev, safety := .safe
+          }
+          let seqExpr := mkCon ``InitVal.intSeq #[toExpr rad, mkConst valsName]
+          pure <| mkCon ``VarDecl.mk #[toExpr d.name, exprOfCTy d.ty, toExpr d.isStatic,
+            mkOptExpr (mkConst ``InitVal) (some seqExpr)]
+        | _ => pure (toExpr d)
+      let globalName := ns ++ Name.mkSimple s!"{atu.leanName}_global_{d.name}"
+      liftTermElabM <| addAndCompile <| Declaration.defnDecl {
+        name := globalName, levelParams := [], type := mkConst ``VarDecl,
+        value := dExpr, hints := .abbrev, safety := .safe
+      }
+      items := items ++ [mkCon ``TopItem.globalDecl #[toExpr link, mkConst globalName]]
+    | _, _ =>
+      items := items ++ [toExpr (TopItem.globalDecl link d)]
+  appendItemChunk (mkListExpr (mkConst ``TopItem) items)
 
 @[command_elab cProtoCmd]
 def elabCProto : CommandElab := fun stx => do
   let env ← getEnv
-  let link := resolveLinkage stx[1] stx[4]
-  let ret := applyPtrMods (← liftCoreM <| expandCMacros env [] 64 stx[3])
+  let link := resolveLinkage env stx[1] stx[4]
+  let ret := applyPtrMods env (← liftCoreM <| expandCMacros env [] 64 stx[3])
     (← elabTySpec env (← liftCoreM <| expandCMacros env [] 64 stx[2]))
   let nm := stx[5].getId.toString
   let (ps, v) ← elabParams env (← liftCoreM <| expandCMacros env [] 64 stx[7])
@@ -914,8 +995,8 @@ def elabCSpecView : CommandElab := fun stx => do
 @[command_elab cFnCmd]
 def elabCFn : CommandElab := fun stx => do
   let env ← getEnv
-  let link := resolveLinkage stx[1] stx[4]
-  let ret := applyPtrMods (← liftCoreM <| expandCMacros env [] 64 stx[3])
+  let link := resolveLinkage env stx[1] stx[4]
+  let ret := applyPtrMods env (← liftCoreM <| expandCMacros env [] 64 stx[3])
     (← elabTySpec env (← liftCoreM <| expandCMacros env [] 64 stx[2]))
   let nm := stx[5].getId.toString
   let (ps, v) ← elabParams env (← liftCoreM <| expandCMacros env [] 64 stx[7])
