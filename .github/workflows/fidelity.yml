@@ -23,10 +23,12 @@ jobs:
         run: make build
       - name: Verify public API Verus contract coverage and TCB hygiene
         run: make check-api && make check-tcb
-      - name: Emit standalone C ABI units
-        run: bin/lean2c abi-sources build/abi-sources
+      - name: Emit standalone C ABI units and _Static_assert checks
+        run: |
+          lake exe lean2c emit build/abi-sources
+          lake exe lean2c emit-abi-check build/abi-checks
       - name: Verify 15/15 byte-for-byte archive equality with pinned Clang
-        run: python3 tools/archive.py --pinned --lean-dir build/abi-sources
+        run: scripts/verify.sh binary --pinned --lean-dir build/abi-sources --abi-check-dir build/abi-checks
       - uses: actions/upload-artifact@v4
         with:
           name: lean-abi-sources
@@ -69,7 +71,7 @@ jobs:
           key: compcert-coq-8.20-v2
       - name: Install CompCert toolchain
         run: |
-          apt-get update -qq && apt-get install -y python3 gcc make binutils git m4 unzip pkg-config libgmp-dev
+          apt-get update -qq && apt-get install -y gcc make binutils git m4 unzip pkg-config libgmp-dev
           eval "$(opam env --root=/home/coq/.opam --set-root)"
           if ! command -v ccomp >/dev/null 2>&1; then
             opam repo list --short | grep -qx coq-released || opam repo add coq-released https://coq.inria.fr/opam/released
@@ -86,7 +88,7 @@ jobs:
       - name: Verify 15/15 byte-for-byte archive equality with CompCert
         run: |
           eval "$(opam env --root=/home/coq/.opam --set-root)"
-          python3 tools/archive.py --compcert --lean-dir build/abi-sources
+          scripts/verify.sh binary --compcert --lean-dir build/abi-sources
       - if: always()
         uses: actions/upload-artifact@v4
         with:

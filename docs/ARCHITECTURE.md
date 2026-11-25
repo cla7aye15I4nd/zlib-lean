@@ -11,7 +11,7 @@
 | [`Zlib/Headers/Common.lean`](../Zlib/Headers/Common.lean) & [`Zlib/Tables/`](../Zlib/Tables) | 1,612 | Shared ABI headers (`abi_common.h`, `abi_deflate.h`, `abi_inflate.h`, `abi_gz.h`), `c_spec_view Zlib.Spec.ClientView`, and static tables (`crc32.h`, `inffixed.h`, `trees.h`). |
 | `Zlib/*.lean` (15 TUs + [`Zlib.lean`](../Zlib.lean)) | 6,780 | Human-readable C-like translations of all 15 zlib source files plus 86 Verus-style `c_fn` safety contracts. |
 | [`Zlib/Spec/`](../Zlib/Spec/Safety.lean) | 316 | Safety-only memory/handle predicates ([`Memory.lean`](../Zlib/Spec/Memory.lean), 203) and whole-library safety goal [`Safety.lean`](../Zlib/Spec/Safety.lean) (113). |
-| [`Main.lean`](../Main.lean) & [`tools/`](../tools/verify_binary.py) | — | C/layout emitter CLI (`abi-sources`, `emit`, `layout-json`), binary/archive identity checkers, API & TCB audits. |
+| [`Main.lean`](../Main.lean) & [`scripts/verify.sh`](../scripts/verify.sh) | — | Unified Lean CLI (`emit`, `emit-abi-check`, `check-api`, `check-tcb`) and POSIX Clang/CompCert byte-equality verifier. |
 
 ## 2. Single-Source-of-Truth Pipeline
 
@@ -26,5 +26,5 @@
 
 3. **Pure 1-to-1 C99 Emission ([`C99/EmitC.lean`](../C99/EmitC.lean)) & Byte-Identity Verification**:
    - `C99.EmitC` is a 335-LOC pure AST printer with zero metaprogramming or zlib knowledge.
-   - [`Main.lean`](../Main.lean) emits all ABI headers (`abi_*.h`), table headers (`crc32.h`, `inffixed.h`, `trees.h`), and all 15 `.c` units (`bin/lean2c abi-sources` / `bin/lean2c emit`), plus `layout-json` so C `_Static_assert` checks verify every size and field offset of all 10 ABI structs (163 fields).
-   - [`tools/verify_binary.py`](../tools/verify_binary.py) and [`tools/archive.py`](../tools/archive.py) compile both reconstructed patched zlib (`build/reference/`) and Lean-emitted C with the pinned Clang flags and assert **15/15 byte-identical `.o` object files** and **byte-identical `libz.a`**, replacing differential test suites completely.
+   - [`Main.lean`](../Main.lean) (`lake exe lean2c`) emits all ABI headers (`abi_*.h`), table headers (`crc32.h`, `inffixed.h`, `trees.h`), all 15 `.c` units (`emit`), and direct AST-derived `_Static_assert` checks (`emit-abi-check`) verifying every size and field offset of all 10 ABI structs (163 fields).
+   - [`scripts/verify.sh`](../scripts/verify.sh) materializes patched zlib (`build/reference/`), compiles both trees with identical Clang or CompCert flags, and asserts **15/15 byte-identical `.o` object files** and **byte-identical `libz.a`**, replacing differential test suites completely.

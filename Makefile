@@ -8,25 +8,26 @@ build:
 	$(LAKE) build --wfail C99 Zlib Zlib.Spec.Safety lean2c
 
 reference:
-	python3 tools/reference.py
+	scripts/verify.sh reference build/reference
 
-emit:
-	bin/lean2c emit build/generated
+emit: build
+	$(LAKE) exe lean2c emit build/generated
 
-binary-equal:
-	python3 tools/verify_binary.py
+binary-equal: build
+	scripts/verify.sh binary
 
-archive-equal:
-	python3 tools/archive.py --pinned
+archive-equal: build
+	scripts/verify.sh binary --pinned
 
-archive-equal-compcert:
-	python3 tools/archive.py --compcert
+archive-equal-compcert: build
+	scripts/verify.sh binary --compcert
 
-check-api:
-	python3 tools/check_public_api.py
+check-api: build
+	scripts/verify.sh reference build/reference
+	$(LAKE) exe lean2c check-api build/reference/zlib.h
 
-check-tcb:
-	python3 tools/check_tcb.py
+check-tcb: build
+	$(LAKE) exe lean2c check-tcb
 
 check-kernel: build
 	$(LAKE) env leanchecker --fresh Zlib.Spec.Safety

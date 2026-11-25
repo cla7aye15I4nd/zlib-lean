@@ -22,14 +22,14 @@ This document defines the safety-only specification in `zlib-lean`, the minimal 
 
 Running `make check-tcb` and `make check-kernel` enforces:
 
-1. **Zero `sorry` and zero custom `axiom`** across all Lean modules (`C99/`, `Zlib/`, `Zlib.lean`, `Main.lean`), verified by [`tools/check_tcb.py`](../tools/check_tcb.py) and replayed in a fresh Lean kernel via `lake env leanchecker --fresh Zlib.Spec.Safety`.
+1. **Zero `sorry` and zero custom `axiom`** across all Lean modules (`C99/`, `Zlib/`, `Zlib.lean`, `Main.lean`), verified at kernel + source level by `make check-tcb` ([`Main.lean`](../Main.lean)) and replayed in a fresh Lean kernel via `lake env leanchecker --fresh Zlib.Spec.Safety`.
 2. **Compact, zlib-agnostic Core C99 TCB (2,179 LOC, limit 2,300 LOC)**:
    - [`C99/AST.lean`](../C99/AST.lean) (406 LOC): C99 types, LP64 size/alignment/field-offset rules, expressions, statements, translation units.
    - [`C99/Mem.lean`](../C99/Mem.lean) (222 LOC): flat never-reused `BlockId` heap/stack/global memory, `ptrFrag`/`fnFrag` pointer bytes, `ptrDiffLimit = 2^63`.
    - [`C99/Libc.lean`](../C99/Libc.lean) (233 LOC): safety-only `ExtStep` relation for `malloc`/`calloc`/`free`/`memcpy`/`memmove`/`memset`/`memcmp`/`strlen`/`memchr` and POSIX `open`/`close`/`fcntl`/`lseek`/`lseek64`/`read`/`write`/`strerror`/`snprintf`/`vsnprintf` (including `%n` rejection).
    - [`C99/Semantics.lean`](../C99/Semantics.lean) (978 LOC): small-step operational semantics (`Step`, `Safe`, `TerminatesSafely`, `initProg`).
    - [`C99/EmitC.lean`](../C99/EmitC.lean) (335 LOC) and [`C99.lean`](../C99.lean) (5 LOC): pure 1-to-1 structural C99 printer.
-3. **Verus Contract Wrapper & Safety Spec**: [`C99/DSL/Contract.lean`](../C99/DSL/Contract.lean) (22 LOC) and [`Zlib/Spec/`](../Zlib/Spec/Safety.lean) (316 LOC, limit 500 LOC), plus 86/86 `zlib.h` API & ABI signature matching in [`tools/check_public_api.py`](../tools/check_public_api.py).
+3. **Verus Contract Wrapper & Safety Spec**: [`C99/DSL/Contract.lean`](../C99/DSL/Contract.lean) (22 LOC) and [`Zlib/Spec/`](../Zlib/Spec/Safety.lean) (316 LOC, limit 500 LOC), plus 86/86 `zlib.h` API & ABI signature matching verified by `make check-api` ([`Main.lean`](../Main.lean)).
 4. **Outside-kernel compilation trust**: Faithfulness of the modeled x86-64 LP64 semantics to compiled C relies on Clang compilation and byte-for-byte identity checks (`make binary-equal` / `make archive-equal`), which verify `_Static_assert` sizes/offsets across 10 ABI structs (163 fields) and byte equality of all 15 `.o` object files and `libz.a` against configured reference zlib.
 
 ## 3. Manual Undefined-Behavior Exceptions

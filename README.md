@@ -27,13 +27,13 @@ flowchart LR
 | **C-like DSL + Verus Interface** | C99 parser/macros/elaborator erasing Verus `requires`/`modifies`/`ensures` clauses from C output | [Contract.lean](C99/DSL/Contract.lean) · [Syntax.lean](C99/DSL/Syntax.lean) · [Macro.lean](C99/DSL/Macro.lean) · [Elab.lean](C99/DSL/Elab.lean) |
 | **Patched zlib in Lean** | All 4 shared ABI headers, 3 static tables, and all 15 C translation units with 86 Verus contracts | [Headers/Common.lean](Zlib/Headers/Common.lean) · [Tables/](Zlib/Tables) · [Zlib.lean](Zlib.lean) |
 | **Safety-Only Spec (316 LOC)** | Client handle view, buffer/ownership predicates, and top-level `Goal.libz_safety` target | [Memory.lean](Zlib/Spec/Memory.lean) · [Safety.lean](Zlib/Spec/Safety.lean) |
-| **Binary Equality & Audits** | 15/15 object/archive byte comparison, ABI `_Static_assert` verification, API coverage, TCB hygiene | [verify_binary.py](tools/verify_binary.py) · [archive.py](tools/archive.py) · [check_public_api.py](tools/check_public_api.py) · [check_tcb.py](tools/check_tcb.py) |
+| **Binary Equality & Audits** | 15/15 object/archive byte comparison, ABI `_Static_assert` verification, API coverage, kernel axiom & TCB hygiene | [Main.lean](Main.lean) · [verify.sh](scripts/verify.sh) |
 
 For detailed module responsibilities and design rationale, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). For safety scope, Trusted Computing Base limits, and C17 UB exceptions, see [docs/SAFETY.md](docs/SAFETY.md).
 
 ## Commands
 
-Requires Git, Python 3.9+, Make, Clang (`clang-18` + `llvm-18` on Linux for pinned archive comparison), and the Lean toolchain in [lean-toolchain](lean-toolchain).
+Requires Git, Make, Clang (`clang-18` + `llvm-18` on Linux for pinned archive comparison), and the Lean toolchain in [lean-toolchain](lean-toolchain). Zero Python dependencies.
 
 ```sh
 git clone --recurse-submodules https://github.com/cla7aye15I4nd/zlib-lean
@@ -44,14 +44,14 @@ make build && make binary-equal && make check-api && make check-tcb
 | Command | Purpose |
 | --- | --- |
 | `make build` | Build `C99`, `Zlib`, `Zlib.Spec.Safety`, and `lean2c` with `--wfail`. |
-| `make binary-equal` | Emit C sources, verify 10 ABI struct layouts (163 fields) via `_Static_assert`, compile all 15 units, and verify byte-for-byte equality of every `.o` and `libz.a` against configured reference zlib ([verify_binary.py](tools/verify_binary.py)). |
-| `make archive-equal` | Strict pinned Linux `clang-18` / `llvm-ar-18` archive equality check for CI ([archive.py](tools/archive.py)). |
-| `make archive-equal-compcert` | Byte-for-byte Linux archive equality check compiled with CompCert `ccomp` ([archive.py](tools/archive.py)). |
-| `make check-api` | Verify 86/86 Verus contracts in `Zlib.allContracts`, 95/95 POSIX exports in `Zlib.allTUs`, and exact ABI type alignment against `zlib.h` ([check_public_api.py](tools/check_public_api.py)). |
-| `make check-tcb` | Audit 0 `sorry`, 0 `axiom`, 0 zlib identifiers in the Core C99 TCB, and enforce Core TCB ≤ 2,300 LOC and `Zlib/Spec/` ≤ 500 LOC ([check_tcb.py](tools/check_tcb.py)). |
+| `make binary-equal` | Emit C sources, verify 10 ABI struct layouts (163 fields) via `_Static_assert`, compile all 15 units, and verify byte-for-byte equality of every `.o` and `libz.a` against configured reference zlib ([verify.sh](scripts/verify.sh)). |
+| `make archive-equal` | Strict pinned Linux `clang-18` / `llvm-ar-18` archive equality check for CI ([verify.sh](scripts/verify.sh)). |
+| `make archive-equal-compcert` | Byte-for-byte Linux archive equality check compiled with CompCert `ccomp` ([verify.sh](scripts/verify.sh)). |
+| `make check-api` | Verify 86/86 Verus contracts in `Zlib.allContracts`, 95/95 POSIX exports in `Zlib.allTUs`, and exact ABI type alignment against `zlib.h` ([Main.lean](Main.lean)). |
+| `make check-tcb` | Kernel axiom check (`Lean.collectAxioms`) + import isolation + 0 `sorry`, 0 `axiom`, 0 zlib identifiers in Core TCB, enforcing Core TCB ≤ 2,300 LOC and `Zlib/Spec/` ≤ 500 LOC ([Main.lean](Main.lean)). |
 | `make check-kernel` | Build with `--wfail` and replay `Zlib.Spec.Safety` in a fresh Lean kernel (`leanchecker --fresh`). |
 | `make emit` | Emit the standalone C headers and 15 translation units into `build/generated/`. |
-| `make reference` | Reconstruct the pinned patched C reference tree in `build/reference/` ([reference.py](tools/reference.py)). |
+| `make reference` | Reconstruct the pinned patched C reference tree in `build/reference/` ([verify.sh](scripts/verify.sh)). |
 
 ## Provenance & License
 

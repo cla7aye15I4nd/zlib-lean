@@ -1,6 +1,0 @@
-#!/bin/sh
-set -eu
-cd "$(dirname "$0")/.."
-export LEAN_NUM_THREADS="${LEAN_NUM_THREADS:-3}"
-lake build --wfail lean2c >&2
-exec .lake/build/bin/lean2c "$@"
